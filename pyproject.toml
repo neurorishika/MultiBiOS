@@ -1,0 +1,19 @@
+[project]
+name = "multibios"
+version = "0.1.0"
+description = "A Multispecies Bilateral Odor Delivery System"
+authors = [
+    {name = "Rishika Mohanta",email = "10175857+neurorishika@users.noreply.github.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "mkinit (>=1.1.0,<2.0.0)",
+    "lazy-loader (>=0.4,<0.5)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
