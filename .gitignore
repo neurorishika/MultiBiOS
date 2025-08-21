@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Poetry
+.poetry/
+*.lock
+poetry.lock
+
+# VSCode
+.vscode/
+
+# Arduino
+*.hex
+*.elf
+*.eep
+*.bin
+*.ino.*
+*.dmp
+*.dep
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
