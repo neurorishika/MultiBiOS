@@ -1,0 +1,105 @@
+/* Custom CSS for MultiBiOS Documentation */
+
+/* Add custom styling for code blocks */
+.highlight .filename {
+  background: var(--md-code-bg-color);
+  border-radius: 0.1rem 0.1rem 0 0;
+  color: var(--md-code-fg-color);
+  font-size: 0.85em;
+  font-weight: 700;
+  margin: 1em 0 0;
+  padding: 0.5em 1.2em;
+}
+
+/* Enhance admonition styling */
+.md-typeset .admonition,
+.md-typeset details {
+  border-left: 0.2rem solid;
+  border-radius: 0.2rem;
+  box-shadow: 0 0.2rem 1rem rgba(0, 0, 0, 0.1);
+}
+
+/* Custom styling for hardware diagrams */
+.hardware-diagram {
+  text-align: center;
+  margin: 2em 0;
+}
+
+.hardware-diagram img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Protocol example styling */
+.protocol-example {
+  background: var(--md-code-bg-color);
+  border-radius: 0.5rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  margin: 1em 0;
+  padding: 1em;
+}
+
+.protocol-example .title {
+  font-weight: 700;
+  color: var(--md-primary-fg-color);
+  margin-bottom: 0.5em;
+}
+
+/* Device state tables */
+.device-states table {
+  font-size: 0.9em;
+}
+
+.device-states th {
+  background: var(--md-primary-fg-color--light);
+  color: var(--md-primary-bg-color);
+}
+
+.device-states td:first-child {
+  font-family: var(--md-code-font);
+  font-weight: 700;
+}
+
+/* Navigation improvements */
+.md-nav__item--nested > .md-nav__link {
+  font-weight: 700;
+}
+
+/* Footer customization */
+.md-footer-meta {
+  background: var(--md-primary-fg-color);
+}
+
+/* Custom button styling */
+.custom-button {
+  background: var(--md-primary-fg-color);
+  border-radius: 0.2rem;
+  color: var(--md-primary-bg-color);
+  display: inline-block;
+  font-weight: 700;
+  padding: 0.625em 2em;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.custom-button:hover {
+  background: var(--md-accent-fg-color);
+  transform: translateY(-1px);
+}
+
+/* Responsive improvements */
+@media screen and (max-width: 76.1875em) {
+  .md-nav--primary .md-nav__title {
+    background: var(--md-primary-fg-color);
+  }
+}
+
+/* Code copy button improvements */
+.md-code__copy {
+  color: var(--md-default-fg-color--light);
+}
+
+.md-code__copy:hover {
+  color: var(--md-accent-fg-color);
+}
