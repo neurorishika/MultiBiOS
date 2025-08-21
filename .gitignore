@@ -34,3 +34,6 @@ Thumbs.db
 
 # Data
 data/*
+
+# mkdocs
+site/*
