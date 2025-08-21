@@ -16,41 +16,42 @@ protocol:
     load_req_ms: 1               # width of LOAD_REQ pulse
     rck_pulse_ms: 1              # width of RCK pulse
     trig_pulse_ms: 5             # width of microscope pulses
-    setup_hold_samples: 1        # samples to hold S-bits before/after LOAD_REQ
+    setup_hold_samples: 100      # samples to hold S-bits before/after LOAD_REQ
 
 # Protocol sequence definition
 sequence:
   # Pre-protocol setup phase
   - phase: "BOOT SEQUENCE"
-    duration: 10000
+    duration: 11000 # 1 s for warmup and 10 s for stabilization
     repeat: 0
     actions:
       - device: "mfc.air_left_setpoint"
         value: 2.1 # 0-5V <,0-5sccm
-        timing: 0
+        timing: 1000
       - device: "mfc.air_right_setpoint"
         value: 2.1
-        timing: 0
+        timing: 1000
       - device: "mfc.odor_left_setpoint"
         value: 2.1
-        timing: 0
+        timing: 1000
       - device: "mfc.odor_right_setpoint"
         value: 2.1
+        timing: 1000
       - device: "olfactometer.left"
         state: "AIR" # [OFF,AIR,ODOR1,ODOR2,ODOR3,ODOR4,ODOR5,FLUSH]
-        timing: 0
+        timing: 1000
       - device: "olfactometer.right"
         state: "AIR"
-        timing: 0
+        timing: 1005
       - device: "switch_valve.left"
         state: "CLEAN" # [“CLEAN","ODOR"]
-        timing: 0
+        timing: 1010
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 0
+        timing: 1015
       - device: "triggers.camera_continuous"
         state: true
-        timing: 0
+        timing: 1000
 
   # Odor presentation trials
   - phase: "30s ODOR REGISTER + 30S RECORDING (100ms lag) + 30S ISI"
@@ -66,7 +67,7 @@ sequence:
         timing: 0
       - device: "olfactometer.right"
         state: "COPY"                            # Copy from the other side
-        timing: 0
+        timing: 5
       - device: "triggers.microscope"
         state: true
         timing: 30000           # starts at 30s
@@ -108,13 +109,13 @@ sequence:
         timing: 0
       - device: "olfactometer.right"
         state: "OFF"
-        timing: 0
+        timing: 5
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 0
+        timing: 10
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 0
+        timing: 15
       - device: "triggers.camera_continuous"
         timing: 0
         state: false

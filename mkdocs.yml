@@ -1,0 +1,138 @@
+site_name: MultiBiOS Odor Delivery System
+site_description: High-precision olfactometer control system for behavioral neuroscience
+site_author: Neurorishika
+repo_url: https://github.com/neurorishika/multibios
+repo_name: neurorishika/MultiBiOS
+docs_dir: docs
+site_url: https://neurorishika.github.io/MultiBiOS/
+
+theme:
+  name: material
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode  
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - announce.dismiss
+    - content.code.annotate
+    - content.code.copy
+    - content.tooltips
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+  icon:
+    logo: material/test-tube
+    repo: fontawesome/brands/github
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      title: On this page
+  - tables
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: neurorishika
+      repo: MultiBiOS
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: index.md
+      - Safety Notes: safety.md
+  - Hardware:
+      - System Architecture: hardware.md
+      - Wiring & Pin Maps: wiring.md
+      - Timing & Guardrails: timing.md
+  - Software:
+      - Firmware (Teensy 4.1): firmware.md
+      - Protocol Specification: protocol.md
+      - Runner Application: runner.md
+  - Analysis & Visualization:
+      - Data Visualization: visualization.md
+      - Logging & Data: logging.md
+  - Quality Assurance:
+      - Validation & Testing: validation.md
+      - Troubleshooting: troubleshooting.md
+  - Reference:
+      - FAQ: faq.md
+      - Contributing: contributing.md
+
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - minify:
+      minify_html: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/neurorishika/MultiBiOS
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/multibios/
+    - icon: material/email
+      link: mailto:neurorishika@gmail.com
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to recognize your repeated visits and preferences, as well
+      as to measure the effectiveness of our documentation and whether users
+      find what they're searching for. With your consent, you're helping us to
+      make our documentation better.
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; 2025 Neurorishika
