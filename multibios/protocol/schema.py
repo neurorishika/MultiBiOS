@@ -2,7 +2,7 @@
 """
 NI USB-6363 hardware-clocked protocol parser
 """
-
+from __future__ import annotations
 import argparse
 import sys
 import yaml
@@ -115,13 +115,21 @@ class ProtocolCompiler:
         S0, S1, S2 = (code & 1), ((code >> 1) & 1), ((code >> 2) & 1)
 
         if side == "left":
-            S0n, S1n, S2n = "A_S0", "A_S1", "A_S2"
-            LOADn, RCKn = "A_LOAD_REQ", "RCK_A"
-            rck_label = "RCK_A"
+            S0n, S1n, S2n = (
+                "OLFACTOMETER_LEFT_S0",
+                "OLFACTOMETER_LEFT_S1",
+                "OLFACTOMETER_LEFT_S2",
+            )
+            LOADn, RCKn = "OLFACTOMETER_LEFT_LOAD_REQ", "RCK_OLFACTOMETER_LEFT"
+            rck_label = "RCK_OLFACTOMETER_LEFT"
         elif side == "right":
-            S0n, S1n, S2n = "B_S0", "B_S1", "B_S2"
-            LOADn, RCKn = "B_LOAD_REQ", "RCK_B"
-            rck_label = "RCK_B"
+            S0n, S1n, S2n = (
+                "OLFACTOMETER_RIGHT_S0",
+                "OLFACTOMETER_RIGHT_S1",
+                "OLFACTOMETER_RIGHT_S2",
+            )
+            LOADn, RCKn = "OLFACTOMETER_RIGHT_LOAD_REQ", "RCK_OLFACTOMETER_RIGHT"
+            rck_label = "RCK_OLFACTOMETER_RIGHT"
         else:
             raise CompileError("Big side must be 'left' or 'right'.")
 
@@ -155,11 +163,19 @@ class ProtocolCompiler:
         bit = SMALL_STATE_CODE[state_name]
 
         if side == "left":
-            Sn, LOADn, RCKn = "C_S", "C_LOAD_REQ", "RCK_C"
-            rck_label = "RCK_C"
+            Sn, LOADn, RCKn = (
+                "SWITCHVALVE_LEFT_S",
+                "SWITCHVALVE_LEFT_LOAD_REQ",
+                "RCK_SWITCHVALVE_LEFT",
+            )
+            rck_label = "RCK_SWITCHVALVE_LEFT"
         elif side == "right":
-            Sn, LOADn, RCKn = "D_S", "D_LOAD_REQ", "RCK_D"
-            rck_label = "RCK_D"
+            Sn, LOADn, RCKn = (
+                "SWITCHVALVE_RIGHT_S",
+                "SWITCHVALVE_RIGHT_LOAD_REQ",
+                "RCK_SWITCHVALVE_RIGHT",
+            )
+            rck_label = "RCK_SWITCHVALVE_RIGHT"
         else:
             raise CompileError("Small side must be 'left' or 'right'.")
 

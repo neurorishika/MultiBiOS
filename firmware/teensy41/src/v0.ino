@@ -1,229 +1,648 @@
-/*
-  Teensy 4.1 -> SHIFT REGISTERS (DAQ-controlled commit)
-  ------------------------------------------------
-  - Shared MOSI/SCK from Teensy to all shift register chains (no latching here)
-  - NI-DAQ drives each chain's RCK (register clock) and timestamps that edge
-  - Teensy preloads requested pattern upon *_LOAD_REQ, then asserts *_READY
-  - When DAQ later pulses RCK_*, Teensy senses the edge, drops READY, unlocks SPI
-
-  Electrical assumptions:
-  - SHIFT REGISTER outputs sink current; a stored '1' turns output ON (OE\ low). (TI datasheet)
-  - SRCLR\ tied HIGH, OE\ tied LOW on each shift register
-  - Teensy I/O is 3.3V only (NOT 5V tolerant): level-shift/isolate DAQ -> Teensy inputs
-
-  Pin plan (change if you like):
-    SPI:    MOSI=11, SCK=13  (hardware SPI0)
-    RCK sense inputs:   A=2,  B=3,  C=4,  D=5   (connected to the same DAQ-driven RCK nets)
-    READY outputs:      A=6,  B=7,  C=8,  D=9
-    State inputs:       A_S0=14, A_S1=15, A_S2=16
-                        B_S0=17, B_S1=18, B_S2=19
-                        C_S=20,  D_S=21
-    LOAD_REQ inputs:    A=22, B=23, C=24, D=25
-*/
+/**
+ * @file v0.ino
+ * @brief MultiBiOS Olfactometer Control Firmware for Teensy 4.1
+ * @version 1.0
+ * @date 2025
+ * 
+ * @description
+ * This firmware controls 4 shift register chains for olfactometer valve control.
+ * The system uses a DAQ-controlled commit mechanism where the Teensy preloads
+ * valve patterns and the NI-DAQ provides precise timing for valve state changes.
+ * 
+ * @hardware_setup
+ * - Teensy 4.1 microcontroller
+ * - 4x TPIC6B595 shift register chains
+ * - NI-DAQ for timing control
+ * - Level shifters for 5V/3.3V compatibility
+ * 
+ * @operation_principle
+ * 1. DAQ sets state bits and pulses LOAD_REQ
+ * 2. Teensy reads state, preloads SPI pattern, asserts READY
+ * 3. DAQ pulses RCK (register clock) to commit pattern
+ * 4. Teensy senses RCK edge, drops READY, unlocks SPI bus
+ * 
+ * @electrical_notes
+ * - SHIFT REGISTER outputs sink current; '1' bit turns valve ON (when OE\ low)
+ * - SRCLR\ tied HIGH, OE\ tied LOW on all shift registers
+ * - Teensy I/O is 3.3V only: use level shifters for DAQ interface
+ * - All timing-critical operations are interrupt-driven
+ */
 
 #include <Arduino.h>
 #include <SPI.h>
 
-// -------------------- Pins --------------------
-constexpr int PIN_MOSI = 11;
-constexpr int PIN_SCK  = 13;
+// =====================================================================================
+// PIN DEFINITIONS
+// =====================================================================================
 
-constexpr int PIN_RCK_SENSE_A = 2;
-constexpr int PIN_RCK_SENSE_B = 3;
-constexpr int PIN_RCK_SENSE_C = 4;
-constexpr int PIN_RCK_SENSE_D = 5;
+/**
+ * @section SPI_PINS Hardware SPI pins for shift register communication
+ * Using Teensy 4.1 hardware SPI0 for maximum speed and reliability
+ */
+constexpr int PIN_MOSI = 11;  ///< Master Out Slave In - data to shift registers
+constexpr int PIN_SCK  = 13;  ///< Serial Clock - shared clock for all chains
 
-constexpr int PIN_A_READY = 6;
-constexpr int PIN_B_READY = 7;
-constexpr int PIN_C_READY = 8;
-constexpr int PIN_D_READY = 9;
+/**
+ * @section RCK_SENSE_PINS Register Clock sense inputs from DAQ
+ * These pins monitor when the DAQ pulses RCK to commit preloaded patterns
+ */
+constexpr int PIN_RCK_SENSE_OLFACTOMETER_LEFT  = 2;  ///< Left olfactometer RCK sense
+constexpr int PIN_RCK_SENSE_OLFACTOMETER_RIGHT = 3;  ///< Right olfactometer RCK sense
+constexpr int PIN_RCK_SENSE_SWITCHVALVE_LEFT   = 4;  ///< Left switchvalve RCK sense
+constexpr int PIN_RCK_SENSE_SWITCHVALVE_RIGHT  = 5;  ///< Right switchvalve RCK sense
 
-// Big A 3-bit state + load
-constexpr int PIN_A_S0 = 14, PIN_A_S1 = 15, PIN_A_S2 = 16;
-constexpr int PIN_A_LOAD = 22;
+/**
+ * @section READY_PINS Ready signal outputs to DAQ
+ * These signals indicate when Teensy has preloaded a pattern and is ready for commit
+ */
+constexpr int PIN_OLFACTOMETER_LEFT_READY  = 6;  ///< Left olfactometer ready signal
+constexpr int PIN_OLFACTOMETER_RIGHT_READY = 7;  ///< Right olfactometer ready signal
+constexpr int PIN_SWITCHVALVE_LEFT_READY   = 8;  ///< Left switchvalve ready signal
+constexpr int PIN_SWITCHVALVE_RIGHT_READY  = 9;  ///< Right switchvalve ready signal
 
-// Big B 3-bit state + load
-constexpr int PIN_B_S0 = 17, PIN_B_S1 = 18, PIN_B_S2 = 19;
-constexpr int PIN_B_LOAD = 23;
+/**
+ * @section OLFACTOMETER_LEFT_PINS Left olfactometer state and control pins
+ * 3-bit state input allows 8 different valve configurations
+ */
+constexpr int PIN_OLFACTOMETER_LEFT_S0   = 14;  ///< State bit 0 (LSB)
+constexpr int PIN_OLFACTOMETER_LEFT_S1   = 15;  ///< State bit 1
+constexpr int PIN_OLFACTOMETER_LEFT_S2   = 16;  ///< State bit 2 (MSB)
+constexpr int PIN_OLFACTOMETER_LEFT_LOAD = 22;  ///< Load request trigger
 
-// Small C 1-bit state + load
-constexpr int PIN_C_S = 20;
-constexpr int PIN_C_LOAD = 24;
+/**
+ * @section OLFACTOMETER_RIGHT_PINS Right olfactometer state and control pins
+ * 3-bit state input allows 8 different valve configurations
+ */
+constexpr int PIN_OLFACTOMETER_RIGHT_S0   = 17;  ///< State bit 0 (LSB)
+constexpr int PIN_OLFACTOMETER_RIGHT_S1   = 18;  ///< State bit 1
+constexpr int PIN_OLFACTOMETER_RIGHT_S2   = 19;  ///< State bit 2 (MSB)
+constexpr int PIN_OLFACTOMETER_RIGHT_LOAD = 23;  ///< Load request trigger
 
-// Small D 1-bit state + load
-constexpr int PIN_D_S = 21;
-constexpr int PIN_D_LOAD = 25;
+/**
+ * @section SWITCHVALVE_LEFT_PINS Left switchvalve state and control pins
+ * 1-bit state input allows 2 different valve configurations (clean/odor)
+ */
+constexpr int PIN_SWITCHVALVE_LEFT_S    = 20;  ///< State bit (0=clean, 1=odor)
+constexpr int PIN_SWITCHVALVE_LEFT_LOAD = 24;  ///< Load request trigger
 
-// -------------------- SPI config --------------------
-constexpr uint32_t SPI_HZ = 10000000;  // 10 MHz: safe for TPIC6B595
-// SPI mode 0, MSB-first is standard and fine for TPICs.
+/**
+ * @section SWITCHVALVE_RIGHT_PINS Right switchvalve state and control pins
+ * 1-bit state input allows 2 different valve configurations (clean/odor)
+ */
+constexpr int PIN_SWITCHVALVE_RIGHT_S    = 21;  ///< State bit (0=clean, 1=odor)
+constexpr int PIN_SWITCHVALVE_RIGHT_LOAD = 25;  ///< Load request trigger
+// =====================================================================================
+// SPI CONFIGURATION
+// =====================================================================================
 
-// -------------------- Helper macros --------------------
+/**
+ * @section SPI_CONFIG SPI communication parameters
+ * Optimized for TPIC6B595 shift registers with safety margins
+ */
+constexpr uint32_t SPI_HZ = 10000000;  ///< 10 MHz SPI clock (safe for TPIC6B595)
+// Note: Using SPI_MODE0 (CPOL=0, CPHA=0) and MSBFIRST as standard for shift registers
+
+// =====================================================================================
+// HELPER MACROS
+// =====================================================================================
+
 #ifndef BIT
+/**
+ * @brief Bit manipulation macro for creating bit masks
+ * @param n Bit position (0-based)
+ * @return Unsigned integer with bit n set
+ */
 #define BIT(n) (1u << (n))
 #endif
 
-// -------------------- State tables (bit n = valve v_n) --------------------
-// Big: 16-bit word, using v0..v11 (v12..v15 spare)
-enum : uint8_t { ST_OFF=0, ST_AIR, ST_ODOR1, ST_ODOR2, ST_ODOR3, ST_ODOR4, ST_ODOR5, ST_FLUSH };
+// =====================================================================================
+// VALVE STATE DEFINITIONS
+// =====================================================================================
 
-constexpr uint16_t BIG_STATES[8] = {
-  /* OFF   */ 0x0000,
-  /* AIR   */ BIT(0) | BIT(1),
-  /* ODOR1 */ BIT(2) | BIT(3),
-  /* ODOR2 */ BIT(4) | BIT(5),
-  /* ODOR3 */ BIT(6) | BIT(7),
-  /* ODOR4 */ BIT(8) | BIT(9),
-  /* ODOR5 */ BIT(10) | BIT(11),
-  /* FLUSH */ (uint16_t)0x0FFF  // v0..v11 = 1
+/**
+ * @enum OlfactometerState
+ * @brief Enumeration of possible olfactometer states
+ * 
+ * Each olfactometer can be in one of 8 states, controlled by 3-bit input.
+ * These states determine which valves are opened for different odor delivery modes.
+ */
+enum OlfactometerState : uint8_t {
+  ST_OFF   = 0,  ///< All valves closed
+  ST_AIR   = 1,  ///< Air delivery (clean carrier)
+  ST_ODOR1 = 2,  ///< Odor channel 1
+  ST_ODOR2 = 3,  ///< Odor channel 2
+  ST_ODOR3 = 4,  ///< Odor channel 3
+  ST_ODOR4 = 5,  ///< Odor channel 4
+  ST_ODOR5 = 6,  ///< Odor channel 5
+  ST_FLUSH = 7   ///< Flush mode (all odor valves open for cleaning)
 };
 
-// Small: 8-bit word, using v0..v1 (rest spare)
-constexpr uint8_t SMALL_STATES_2LEVEL[2] = {
-  /* CLEAN */ 0b00000000,         // both OFF
-  /* ODOR  */ 0b00000011          // v0 & v1 ON
+/**
+ * @brief Olfactometer valve pattern lookup table
+ * 
+ * Maps state enum to 16-bit valve control pattern.
+ * Bits 0-11 control valves v0-v11, bits 12-15 are spare.
+ * 
+ * Valve assignment:
+ * - v0,v1: Air delivery valves
+ * - v2,v3: Odor 1 valves
+ * - v4,v5: Odor 2 valves
+ * - etc.
+ */
+constexpr uint16_t OLFACTOMETER_STATES[8] = {
+  /* ST_OFF   */ 0x0000,                    // All valves closed
+  /* ST_AIR   */ BIT(0) | BIT(1),           // Air valves open
+  /* ST_ODOR1 */ BIT(2) | BIT(3),           // Odor 1 valves open
+  /* ST_ODOR2 */ BIT(4) | BIT(5),           // Odor 2 valves open
+  /* ST_ODOR3 */ BIT(6) | BIT(7),           // Odor 3 valves open
+  /* ST_ODOR4 */ BIT(8) | BIT(9),           // Odor 4 valves open
+  /* ST_ODOR5 */ BIT(10) | BIT(11),         // Odor 5 valves open
+  /* ST_FLUSH */ 0x0FFF                     // All odor valves open (v0-v11)
 };
 
-// If both big manifolds share identical state patterns, use BIG_STATES for A & B.
-// If they differ physically, copy and edit one array specifically for B:
-constexpr uint16_t A_STATES[8] = {
-  BIG_STATES[0], BIG_STATES[1], BIG_STATES[2], BIG_STATES[3],
-  BIG_STATES[4], BIG_STATES[5], BIG_STATES[6], BIG_STATES[7]
+/**
+ * @brief Switchvalve pattern lookup table
+ * 
+ * Maps 1-bit state to 8-bit valve control pattern.
+ * Only uses bits 0-1 for valve control, rest are spare.
+ * 
+ * States:
+ * - 0 (CLEAN): Both valves closed for clean air path
+ * - 1 (ODOR):  Both valves open for odor delivery path
+ */
+constexpr uint8_t SWITCHVALVE_STATES_2LEVEL[2] = {
+  /* CLEAN */ 0b00000000,         // Both valves closed
+  /* ODOR  */ 0b00000011          // v0 & v1 open
 };
-constexpr uint16_t B_STATES[8] = {
-  BIG_STATES[0], BIG_STATES[1], BIG_STATES[2], BIG_STATES[3],
-  BIG_STATES[4], BIG_STATES[5], BIG_STATES[6], BIG_STATES[7]
+
+// =====================================================================================
+// DEVICE-SPECIFIC STATE TABLES
+// =====================================================================================
+
+/**
+ * @brief Left olfactometer state lookup table
+ * 
+ * Individual state table allows for device-specific calibration if needed.
+ * Currently identical to base OLFACTOMETER_STATES but can be customized
+ * for left manifold characteristics.
+ */
+constexpr uint16_t OLFACTOMETER_LEFT_STATES[8] = {
+  OLFACTOMETER_STATES[ST_OFF],   OLFACTOMETER_STATES[ST_AIR],
+  OLFACTOMETER_STATES[ST_ODOR1], OLFACTOMETER_STATES[ST_ODOR2],
+  OLFACTOMETER_STATES[ST_ODOR3], OLFACTOMETER_STATES[ST_ODOR4],
+  OLFACTOMETER_STATES[ST_ODOR5], OLFACTOMETER_STATES[ST_FLUSH]
 };
-constexpr uint8_t  C_STATES[2] = { SMALL_STATES_2LEVEL[0], SMALL_STATES_2LEVEL[1] };
-constexpr uint8_t  D_STATES[2] = { SMALL_STATES_2LEVEL[0], SMALL_STATES_2LEVEL[1] };
 
-// -------------------- Handshake state --------------------
-enum Owner : uint8_t { OWNER_NONE=0, OWNER_A, OWNER_B, OWNER_C, OWNER_D };
-volatile Owner busOwner = OWNER_NONE;    // who currently has a preloaded-but-unlatched pattern
-volatile bool readyA=false, readyB=false, readyC=false, readyD=false;
+/**
+ * @brief Right olfactometer state lookup table
+ * 
+ * Individual state table allows for device-specific calibration if needed.
+ * Currently identical to base OLFACTOMETER_STATES but can be customized
+ * for right manifold characteristics.
+ */
+constexpr uint16_t OLFACTOMETER_RIGHT_STATES[8] = {
+  OLFACTOMETER_STATES[ST_OFF],   OLFACTOMETER_STATES[ST_AIR],
+  OLFACTOMETER_STATES[ST_ODOR1], OLFACTOMETER_STATES[ST_ODOR2],
+  OLFACTOMETER_STATES[ST_ODOR3], OLFACTOMETER_STATES[ST_ODOR4],
+  OLFACTOMETER_STATES[ST_ODOR5], OLFACTOMETER_STATES[ST_FLUSH]
+};
 
-// -------------------- SPI helpers --------------------
-inline void spiShift16(uint16_t v) {
-  // TPIC6B595: '1' in storage register turns output ON when latched and OE\ low. No inversion needed.
+/**
+ * @brief Left switchvalve state lookup table
+ * Copy of base 2-level states for consistency and future customization
+ */
+constexpr uint8_t SWITCHVALVE_LEFT_STATES[2] = {
+  SWITCHVALVE_STATES_2LEVEL[0], // CLEAN
+  SWITCHVALVE_STATES_2LEVEL[1]  // ODOR
+};
+
+/**
+ * @brief Right switchvalve state lookup table
+ * Copy of base 2-level states for consistency and future customization
+ */
+constexpr uint8_t SWITCHVALVE_RIGHT_STATES[2] = {
+  SWITCHVALVE_STATES_2LEVEL[0], // CLEAN
+  SWITCHVALVE_STATES_2LEVEL[1]  // ODOR
+};
+
+// =====================================================================================
+// HANDSHAKE STATE MANAGEMENT
+// =====================================================================================
+
+/**
+ * @enum Owner
+ * @brief Tracks which device currently owns the SPI bus
+ * 
+ * Only one device can have a preloaded pattern at a time to prevent
+ * SPI bus conflicts. This enum tracks the current bus owner.
+ */
+enum Owner : uint8_t {
+  OWNER_NONE = 0,               ///< No device owns the bus (idle state)
+  OWNER_OLFACTOMETER_LEFT,      ///< Left olfactometer has preloaded pattern
+  OWNER_OLFACTOMETER_RIGHT,     ///< Right olfactometer has preloaded pattern
+  OWNER_SWITCHVALVE_LEFT,       ///< Left switchvalve has preloaded pattern
+  OWNER_SWITCHVALVE_RIGHT       ///< Right switchvalve has preloaded pattern
+};
+
+/**
+ * @brief Current SPI bus owner
+ * 
+ * Volatile because it's modified in interrupt service routines.
+ * Tracks which device currently has a preloaded-but-uncommitted pattern.
+ */
+volatile Owner busOwner = OWNER_NONE;
+
+/**
+ * @brief Ready state flags for each device
+ * 
+ * These volatile flags track whether each device has successfully preloaded
+ * a pattern and is ready for the DAQ to pulse RCK for commit.
+ * All flags are modified in interrupt service routines.
+ */
+volatile bool readyOlfactometerLeft  = false;  ///< Left olfactometer ready flag
+volatile bool readyOlfactometerRight = false;  ///< Right olfactometer ready flag
+volatile bool readySwitchvalveLeft   = false;  ///< Left switchvalve ready flag
+volatile bool readySwitchvalveRight  = false;  ///< Right switchvalve ready flag
+
+// =====================================================================================
+// SPI COMMUNICATION HELPERS
+// =====================================================================================
+
+/**
+ * @brief Send 16-bit data via SPI to shift register chain
+ * @param value 16-bit pattern to send (MSB first)
+ * 
+ * Configures SPI transaction and sends 16-bit value.
+ * For TPIC6B595: '1' in storage register turns output ON when latched (OE\ low).
+ * No bit inversion needed - direct mapping from bit to valve state.
+ * 
+ * @note This only shifts data into storage registers, does not latch to outputs.
+ *       Latching occurs when DAQ pulses RCK (register clock).
+ */
+inline void spiShift16(uint16_t value) {
   SPI.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
-  SPI.transfer16(v);    // sends high byte then low byte (MSB-first)
+  SPI.transfer16(value);    // Sends high byte then low byte (MSB-first)
   SPI.endTransaction();
 }
-inline void spiShift8(uint8_t v) {
+
+/**
+ * @brief Send 8-bit data via SPI to shift register chain
+ * @param value 8-bit pattern to send
+ * 
+ * Similar to spiShift16 but for single-byte transfers to smaller chains.
+ * Used for switchvalve control which only requires 8 bits.
+ * 
+ * @note This only shifts data into storage registers, does not latch to outputs.
+ *       Latching occurs when DAQ pulses RCK (register clock).
+ */
+inline void spiShift8(uint8_t value) {
   SPI.beginTransaction(SPISettings(SPI_HZ, MSBFIRST, SPI_MODE0));
-  SPI.transfer(v);
+  SPI.transfer(value);
   SPI.endTransaction();
 }
 
-// -------------------- LOAD_REQ ISRs: Preload only, assert READY --------------------
-void isr_load_A() {
-  if (busOwner != OWNER_NONE) return;           // a different preload is pending
-  uint8_t idx = (digitalReadFast(PIN_A_S2) << 2)
-              | (digitalReadFast(PIN_A_S1) << 1)
-              |  digitalReadFast(PIN_A_S0);
-  spiShift16(A_STATES[idx & 0x07]);             // preload (no latch)
-  readyA = true; busOwner = OWNER_A;
-  digitalWriteFast(PIN_A_READY, HIGH);
-}
-void isr_load_B() {
-  if (busOwner != OWNER_NONE) return;
-  uint8_t idx = (digitalReadFast(PIN_B_S2) << 2)
-              | (digitalReadFast(PIN_B_S1) << 1)
-              |  digitalReadFast(PIN_B_S0);
-  spiShift16(B_STATES[idx & 0x07]);
-  readyB = true; busOwner = OWNER_B;
-  digitalWriteFast(PIN_B_READY, HIGH);
-}
-void isr_load_C() {
-  if (busOwner != OWNER_NONE) return;
-  uint8_t idx = digitalReadFast(PIN_C_S);
-  spiShift8(C_STATES[idx & 0x01]);
-  readyC = true; busOwner = OWNER_C;
-  digitalWriteFast(PIN_C_READY, HIGH);
-}
-void isr_load_D() {
-  if (busOwner != OWNER_NONE) return;
-  uint8_t idx = digitalReadFast(PIN_D_S);
-  spiShift8(D_STATES[idx & 0x01]);
-  readyD = true; busOwner = OWNER_D;
-  digitalWriteFast(PIN_D_READY, HIGH);
+// =====================================================================================
+// LOAD REQUEST INTERRUPT SERVICE ROUTINES
+// =====================================================================================
+//
+// These ISRs are triggered when DAQ pulses a LOAD_REQ line (rising edge).
+// They read the state bits, look up the corresponding valve pattern,
+// preload it into the shift registers via SPI, and assert the READY signal.
+//
+// The pattern is NOT yet committed to the valve outputs - that happens when
+// the DAQ later pulses the RCK line, which triggers the RCK sense ISRs.
+
+/**
+ * @brief Load request ISR for left olfactometer
+ * 
+ * Triggered on rising edge of PIN_OLFACTOMETER_LEFT_LOAD.
+ * Reads 3-bit state, looks up valve pattern, preloads via SPI, asserts READY.
+ * 
+ * @note Only proceeds if no other device currently owns the SPI bus
+ * @note Uses digitalReadFast for time-critical state bit reading
+ */
+void isr_load_olfactometer_left() {
+  // Check if SPI bus is available
+  if (busOwner != OWNER_NONE) {
+    return;  // Another device has a pending preload
+  }
+  
+  // Read 3-bit state from DAQ (S2:S1:S0)
+  uint8_t stateIndex = (digitalReadFast(PIN_OLFACTOMETER_LEFT_S2) << 2) |
+                       (digitalReadFast(PIN_OLFACTOMETER_LEFT_S1) << 1) |
+                       digitalReadFast(PIN_OLFACTOMETER_LEFT_S0);
+  
+  // Look up and preload valve pattern (mask to ensure valid array index)
+  spiShift16(OLFACTOMETER_LEFT_STATES[stateIndex & 0x07]);
+  
+  // Claim bus ownership and assert ready signal
+  readyOlfactometerLeft = true;
+  busOwner = OWNER_OLFACTOMETER_LEFT;
+  digitalWriteFast(PIN_OLFACTOMETER_LEFT_READY, HIGH);
 }
 
-// -------------------- RCK sense ISRs: Commit happened (DAQ edge), drop READY --------------------
-void isr_rck_A() {
-  if (busOwner == OWNER_A && readyA) {
-    readyA = false; busOwner = OWNER_NONE;
-    digitalWriteFast(PIN_A_READY, LOW);
+/**
+ * @brief Load request ISR for right olfactometer
+ * 
+ * Triggered on rising edge of PIN_OLFACTOMETER_RIGHT_LOAD.
+ * Reads 3-bit state, looks up valve pattern, preloads via SPI, asserts READY.
+ */
+void isr_load_olfactometer_right() {
+  if (busOwner != OWNER_NONE) {
+    return;
   }
+  
+  uint8_t stateIndex = (digitalReadFast(PIN_OLFACTOMETER_RIGHT_S2) << 2) |
+                       (digitalReadFast(PIN_OLFACTOMETER_RIGHT_S1) << 1) |
+                       digitalReadFast(PIN_OLFACTOMETER_RIGHT_S0);
+  
+  spiShift16(OLFACTOMETER_RIGHT_STATES[stateIndex & 0x07]);
+  
+  readyOlfactometerRight = true;
+  busOwner = OWNER_OLFACTOMETER_RIGHT;
+  digitalWriteFast(PIN_OLFACTOMETER_RIGHT_READY, HIGH);
 }
-void isr_rck_B() {
-  if (busOwner == OWNER_B && readyB) {
-    readyB = false; busOwner = OWNER_NONE;
-    digitalWriteFast(PIN_B_READY, LOW);
+
+/**
+ * @brief Load request ISR for left switchvalve
+ * 
+ * Triggered on rising edge of PIN_SWITCHVALVE_LEFT_LOAD.
+ * Reads 1-bit state, looks up valve pattern, preloads via SPI, asserts READY.
+ */
+void isr_load_switchvalve_left() {
+  if (busOwner != OWNER_NONE) {
+    return;
   }
+  
+  uint8_t stateIndex = digitalReadFast(PIN_SWITCHVALVE_LEFT_S);
+  
+  spiShift8(SWITCHVALVE_LEFT_STATES[stateIndex & 0x01]);
+  
+  readySwitchvalveLeft = true;
+  busOwner = OWNER_SWITCHVALVE_LEFT;
+  digitalWriteFast(PIN_SWITCHVALVE_LEFT_READY, HIGH);
 }
-void isr_rck_C() {
-  if (busOwner == OWNER_C && readyC) {
-    readyC = false; busOwner = OWNER_NONE;
-    digitalWriteFast(PIN_C_READY, LOW);
+
+/**
+ * @brief Load request ISR for right switchvalve
+ * 
+ * Triggered on rising edge of PIN_SWITCHVALVE_RIGHT_LOAD.
+ * Reads 1-bit state, looks up valve pattern, preloads via SPI, asserts READY.
+ */
+void isr_load_switchvalve_right() {
+  if (busOwner != OWNER_NONE) {
+    return;
   }
+  
+  uint8_t stateIndex = digitalReadFast(PIN_SWITCHVALVE_RIGHT_S);
+  
+  spiShift8(SWITCHVALVE_RIGHT_STATES[stateIndex & 0x01]);
+  
+  readySwitchvalveRight = true;
+  busOwner = OWNER_SWITCHVALVE_RIGHT;
+  digitalWriteFast(PIN_SWITCHVALVE_RIGHT_READY, HIGH);
 }
-void isr_rck_D() {
-  if (busOwner == OWNER_D && readyD) {
-    readyD = false; busOwner = OWNER_NONE;
-    digitalWriteFast(PIN_D_READY, LOW);
+
+// =====================================================================================
+// REGISTER CLOCK SENSE INTERRUPT SERVICE ROUTINES
+// =====================================================================================
+//
+// These ISRs are triggered when DAQ pulses an RCK line (rising edge).
+// The RCK pulse commits the preloaded pattern from shift register storage
+// to the output registers, actually changing the valve states.
+//
+// The ISRs drop the READY signal and release SPI bus ownership, allowing
+// the next device to preload a pattern.
+
+/**
+ * @brief RCK sense ISR for left olfactometer
+ * 
+ * Triggered on rising edge of PIN_RCK_SENSE_OLFACTOMETER_LEFT.
+ * Verifies this device owns the bus and is ready, then releases ownership.
+ * 
+ * @note Only acts if this device currently owns the bus and is in ready state
+ * @note DAQ timing ensures RCK pulse occurs only when device is ready
+ */
+void isr_rck_olfactometer_left() {
+  if (busOwner == OWNER_OLFACTOMETER_LEFT && readyOlfactometerLeft) {
+    // Pattern has been committed to outputs, release bus
+    readyOlfactometerLeft = false;
+    busOwner = OWNER_NONE;
+    digitalWriteFast(PIN_OLFACTOMETER_LEFT_READY, LOW);
   }
 }
 
+/**
+ * @brief RCK sense ISR for right olfactometer
+ * 
+ * Triggered on rising edge of PIN_RCK_SENSE_OLFACTOMETER_RIGHT.
+ * Verifies this device owns the bus and is ready, then releases ownership.
+ */
+void isr_rck_olfactometer_right() {
+  if (busOwner == OWNER_OLFACTOMETER_RIGHT && readyOlfactometerRight) {
+    readyOlfactometerRight = false;
+    busOwner = OWNER_NONE;
+    digitalWriteFast(PIN_OLFACTOMETER_RIGHT_READY, LOW);
+  }
+}
+
+/**
+ * @brief RCK sense ISR for left switchvalve
+ * 
+ * Triggered on rising edge of PIN_RCK_SENSE_SWITCHVALVE_LEFT.
+ * Verifies this device owns the bus and is ready, then releases ownership.
+ */
+void isr_rck_switchvalve_left() {
+  if (busOwner == OWNER_SWITCHVALVE_LEFT && readySwitchvalveLeft) {
+    readySwitchvalveLeft = false;
+    busOwner = OWNER_NONE;
+    digitalWriteFast(PIN_SWITCHVALVE_LEFT_READY, LOW);
+  }
+}
+
+/**
+ * @brief RCK sense ISR for right switchvalve
+ * 
+ * Triggered on rising edge of PIN_RCK_SENSE_SWITCHVALVE_RIGHT.
+ * Verifies this device owns the bus and is ready, then releases ownership.
+ */
+void isr_rck_switchvalve_right() {
+  if (busOwner == OWNER_SWITCHVALVE_RIGHT && readySwitchvalveRight) {
+    readySwitchvalveRight = false;
+    busOwner = OWNER_NONE;
+    digitalWriteFast(PIN_SWITCHVALVE_RIGHT_READY, LOW);
+  }
+}
+
+// =====================================================================================
+// ARDUINO SETUP AND MAIN LOOP
+// =====================================================================================
+
+/**
+ * @brief Arduino setup function - runs once at startup
+ * 
+ * Initializes all hardware interfaces:
+ * 1. SPI communication for shift register control
+ * 2. GPIO pins for DAQ interface
+ * 3. Interrupt service routines for real-time operation
+ * 4. Initial valve states (all OFF)
+ * 
+ * After setup completes, the system is ready to respond to DAQ commands.
+ */
 void setup() {
-  // SPI
-  pinMode(10, OUTPUT); // keep hardware CS as output per SPI library convention
-  SPI.begin();         // MOSI=11, SCK=13 on Teensy 4.1 hardware SPI
+  // ---------------------------------------------------------------------------------
+  // SPI Initialization
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Initialize hardware SPI (SPI0 on Teensy 4.1)
+   * - MOSI = Pin 11 (data to shift registers)
+   * - SCK  = Pin 13 (clock to shift registers)
+   * - Keep hardware CS as output per SPI library convention (not used)
+   */
+  pinMode(10, OUTPUT);  // Hardware CS pin (unused but required as output)
+  SPI.begin();          // Initialize SPI with default pins
 
-  // READY outputs
-  pinMode(PIN_A_READY, OUTPUT); digitalWriteFast(PIN_A_READY, LOW);
-  pinMode(PIN_B_READY, OUTPUT); digitalWriteFast(PIN_B_READY, LOW);
-  pinMode(PIN_C_READY, OUTPUT); digitalWriteFast(PIN_C_READY, LOW);
-  pinMode(PIN_D_READY, OUTPUT); digitalWriteFast(PIN_D_READY, LOW);
+  
+  // ---------------------------------------------------------------------------------
+  // READY Signal Pin Configuration
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Configure READY output pins (to DAQ)
+   * These signals indicate when Teensy has preloaded a pattern and is ready
+   * for the DAQ to pulse RCK to commit the pattern to valve outputs.
+   */
+  pinMode(PIN_OLFACTOMETER_LEFT_READY, OUTPUT);
+  pinMode(PIN_OLFACTOMETER_RIGHT_READY, OUTPUT);
+  pinMode(PIN_SWITCHVALVE_LEFT_READY, OUTPUT);
+  pinMode(PIN_SWITCHVALVE_RIGHT_READY, OUTPUT);
+  
+  // Initialize all READY signals to LOW (not ready)
+  digitalWriteFast(PIN_OLFACTOMETER_LEFT_READY, LOW);
+  digitalWriteFast(PIN_OLFACTOMETER_RIGHT_READY, LOW);
+  digitalWriteFast(PIN_SWITCHVALVE_LEFT_READY, LOW);
+  digitalWriteFast(PIN_SWITCHVALVE_RIGHT_READY, LOW);
 
-  // State inputs from DAQ
-  pinMode(PIN_A_S0, INPUT); pinMode(PIN_A_S1, INPUT); pinMode(PIN_A_S2, INPUT);
-  pinMode(PIN_B_S0, INPUT); pinMode(PIN_B_S1, INPUT); pinMode(PIN_B_S2, INPUT);
-  pinMode(PIN_C_S,  INPUT);
-  pinMode(PIN_D_S,  INPUT);
+  
+  // ---------------------------------------------------------------------------------
+  // State Input Pin Configuration
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Configure state input pins (from DAQ)
+   * These pins carry the requested valve state before each LOAD_REQ
+   */
+  
+  // Left olfactometer: 3-bit state (8 possible states)
+  pinMode(PIN_OLFACTOMETER_LEFT_S0, INPUT);
+  pinMode(PIN_OLFACTOMETER_LEFT_S1, INPUT);
+  pinMode(PIN_OLFACTOMETER_LEFT_S2, INPUT);
+  
+  // Right olfactometer: 3-bit state (8 possible states)
+d  pinMode(PIN_OLFACTOMETER_RIGHT_S0, INPUT);
+  pinMode(PIN_OLFACTOMETER_RIGHT_S1, INPUT);
+  pinMode(PIN_OLFACTOMETER_RIGHT_S2, INPUT);
+  
+  // Switchvalves: 1-bit state each (2 possible states)
+  pinMode(PIN_SWITCHVALVE_LEFT_S, INPUT);
+  pinMode(PIN_SWITCHVALVE_RIGHT_S, INPUT);
 
-  // LOAD_REQ inputs
-  pinMode(PIN_A_LOAD, INPUT);
-  pinMode(PIN_B_LOAD, INPUT);
-  pinMode(PIN_C_LOAD, INPUT);
-  pinMode(PIN_D_LOAD, INPUT);
+  
+  // ---------------------------------------------------------------------------------
+  // Load Request Input Pin Configuration
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Configure LOAD_REQ input pins (from DAQ)
+   * Rising edges on these pins trigger the load ISRs
+   */
+  pinMode(PIN_OLFACTOMETER_LEFT_LOAD, INPUT);
+  pinMode(PIN_OLFACTOMETER_RIGHT_LOAD, INPUT);
+  pinMode(PIN_SWITCHVALVE_LEFT_LOAD, INPUT);
+  pinMode(PIN_SWITCHVALVE_RIGHT_LOAD, INPUT);
 
   // RCK sense inputs (from DAQ’s RCK lines)
-  pinMode(PIN_RCK_SENSE_A, INPUT);
-  pinMode(PIN_RCK_SENSE_B, INPUT);
-  pinMode(PIN_RCK_SENSE_C, INPUT);
-  pinMode(PIN_RCK_SENSE_D, INPUT);
+  pinMode(PIN_RCK_SENSE_OLFACTOMETER_LEFT, INPUT);
+  pinMode(PIN_RCK_SENSE_OLFACTOMETER_RIGHT, INPUT);
+  pinMode(PIN_RCK_SENSE_SWITCHVALVE_LEFT, INPUT);
+  pinMode(PIN_RCK_SENSE_SWITCHVALVE_RIGHT, INPUT);
 
-  // Attach interrupts
-  attachInterrupt(digitalPinToInterrupt(PIN_A_LOAD), isr_load_A, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_B_LOAD), isr_load_B, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_C_LOAD), isr_load_C, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_D_LOAD), isr_load_D, RISING);
+  
+  // ---------------------------------------------------------------------------------
+  // Interrupt Service Routine Attachment
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Attach load request interrupts (triggered on rising edge)
+   * These ISRs preload valve patterns and assert READY signals
+   */
+  attachInterrupt(digitalPinToInterrupt(PIN_OLFACTOMETER_LEFT_LOAD), 
+                  isr_load_olfactometer_left, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_OLFACTOMETER_RIGHT_LOAD), 
+                  isr_load_olfactometer_right, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_SWITCHVALVE_LEFT_LOAD), 
+                  isr_load_switchvalve_left, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_SWITCHVALVE_RIGHT_LOAD), 
+                  isr_load_switchvalve_right, RISING);
+  
+  /**
+   * Attach RCK sense interrupts (triggered on rising edge)
+   * These ISRs detect pattern commits and release SPI bus ownership
+   */
+  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_OLFACTOMETER_LEFT), 
+                  isr_rck_olfactometer_left, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_OLFACTOMETER_RIGHT), 
+                  isr_rck_olfactometer_right, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_SWITCHVALVE_LEFT), 
+                  isr_rck_switchvalve_left, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_SWITCHVALVE_RIGHT), 
+                  isr_rck_switchvalve_right, RISING);
 
-  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_A), isr_rck_A, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_B), isr_rck_B, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_C), isr_rck_C, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_RCK_SENSE_D), isr_rck_D, RISING);
-
-  // (Optional) Preload all to OFF so DAQ can latch them once everything is armed.
-  spiShift16(A_STATES[ST_OFF]);
-  spiShift16(B_STATES[ST_OFF]);
-  spiShift8 (C_STATES[0]);
-  spiShift8 (D_STATES[0]);
-
-  // No READY asserted yet (not waiting for a latch). DAQ may make the first LOAD_REQ anytime.
+  
+  // ---------------------------------------------------------------------------------
+  // Initial Valve State Setup
+  // ---------------------------------------------------------------------------------
+  
+  /**
+   * Preload all devices to OFF state
+   * This ensures a known initial state. The DAQ can latch these patterns
+   * once the system is fully armed and operational.
+   * 
+   * Note: These patterns are preloaded but not committed until DAQ pulses RCK
+   */
+  spiShift16(OLFACTOMETER_LEFT_STATES[ST_OFF]);   // Left olfactometer OFF
+  spiShift16(OLFACTOMETER_RIGHT_STATES[ST_OFF]);  // Right olfactometer OFF
+  spiShift8(SWITCHVALVE_LEFT_STATES[0]);          // Left switchvalve CLEAN
+  spiShift8(SWITCHVALVE_RIGHT_STATES[0]);         // Right switchvalve CLEAN
+  
+  /**
+   * Setup complete - system is now ready for DAQ operation
+   * No READY signals are asserted yet (not waiting for any commits)
+   * DAQ may initiate the first LOAD_REQ at any time
+   */
 }
 
+/**
+ * @brief Arduino main loop - runs continuously
+ * 
+ * The main loop is intentionally empty because all real-time valve control
+ * is handled by interrupt service routines. This design ensures:
+ * - Deterministic response times to DAQ commands
+ * - Minimal jitter in valve timing
+ * - No blocking operations in the critical path
+ * 
+ * The system operates entirely in interrupt-driven mode:
+ * 1. LOAD_REQ interrupts preload valve patterns
+ * 2. RCK sense interrupts detect pattern commits
+ * 3. SPI bus arbitration prevents conflicts
+ */
 void loop() {
-  // Idle — all real-time work is interrupt-driven.
+  // Intentionally empty - all work is interrupt-driven for real-time performance
+  // 
+  // Future enhancements could add:
+  // - Serial communication for debugging/status
+  // - Watchdog timer management
+  // - Error detection and reporting
+  // - Performance monitoring
 }
