@@ -38,7 +38,7 @@
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   YAML Protocol │───▶│ Python Compiler │───▶│   NI-DAQ USB    │
-│   Description   │    │   & Runner      │    │    6363         │
+│   Description   │    │   & Runner      │    │    6353         │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                                         │
                                                         ▼
@@ -176,7 +176,7 @@ sequence:
 
 | Component | Description | Quantity |
 |-----------|-------------|----------|
-| **NI USB-6363** | Hardware-clocked DAQ | 1 |
+| **NI USB-6353** | Hardware-clocked DAQ | 1 |
 | **Teensy 4.1** | Microcontroller for valve control | 1 |
 | **TPIC6B595** | High-power shift registers | 4 |
 | **Olfactometer valves** | Pneumatic valves (12V) | 8-16 |

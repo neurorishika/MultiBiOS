@@ -25,7 +25,7 @@ The MultiBiOS system consists of three main components working in perfect synchr
 === "Hardware Layer"
     - **Teensy 4.1** microcontroller for valve preloading
     - **TPIC6B595** shift register chains (10MHz SPI)
-    - **NI USB-6363** for hardware-clocked timing
+    - **NI USB-6353** for hardware-clocked timing
     - **Mass flow controllers** for precise flow control
 
 === "Firmware Layer"  
@@ -50,7 +50,7 @@ This repository provides:
 
 - **Teensy 4.1 firmware** that preloads valve patterns and commits on **NI-DAQ register clocks** (RCK).
 - A **YAML protocol** that describes stimuli, triggers, and MFC setpoints with ms-level timing.
-- A **hardware-clocked NI USB-6363 runner** that generates DO/AO, and logs **MFC analog feedback** (AI).
+- A **hardware-clocked NI USB-6353 runner** that generates DO/AO, and logs **MFC analog feedback** (AI).
 - **Guardrails** that reject overlapping preload→commit windows at compile-time.
 - **Sticky S-bit rails** so digital state lines reflect the system’s current logical state between events.
 - **Interactive Plotly viewer** that overlays compiled DO/AO with captured AI.

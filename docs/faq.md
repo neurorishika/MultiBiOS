@@ -14,10 +14,10 @@
 ## Timing and Performance
 
 ??? question "Can I use 0.1 ms timing resolution?"
-    Yes! Set `sample_rate: 10000` in your protocol configuration and ensure your USB-6363 and host computer can handle the higher sample rate. All system components (guardrails, viewer, logging) automatically scale with the sample rate.
+    Yes! Set `sample_rate: 10000` in your protocol configuration and ensure your USB-6353 and host computer can handle the higher sample rate. All system components (guardrails, viewer, logging) automatically scale with the sample rate.
 
 ??? question "What's the maximum sample rate supported?"
-    The system supports up to 10 kHz (0.1 ms resolution) with the NI USB-6363. Higher rates may be possible but haven't been extensively tested. The limiting factors are typically USB bandwidth and host system performance.
+    The system supports up to 10 kHz (0.1 ms resolution) with the NI USB-6353. Higher rates may be possible but haven't been extensively tested. The limiting factors are typically USB bandwidth and host system performance.
 
 ??? question "How precise is the timing really?"
     Hardware-clocked events have microsecond precision determined by the NI-DAQ clock. Software events (like protocol phase transitions) have millisecond precision. The sticky S-bit approach ensures valve states are always synchronized to the hardware clock.
@@ -25,7 +25,7 @@
 ## Hardware and Setup
 
 ??? question "Can I use a different DAQ device?"
-    The system is designed around the NI USB-6363's capabilities, but could potentially be adapted to other NI-DAQ devices with sufficient digital I/O and analog channels. This would require modifications to the hardware configuration and possibly the runner code.
+    The system is designed around the NI USB-6353's capabilities, but could potentially be adapted to other NI-DAQ devices with sufficient digital I/O and analog channels. This would require modifications to the hardware configuration and possibly the runner code.
 
 ??? question "How many valve assemblies can I control?"
     The current firmware supports 4 shift register chains (olfactometer_left, olfactometer_right, switchvalve_left, switchvalve_right), each controlling 8 valves. This could be extended by modifying the firmware and hardware configuration.
@@ -90,4 +90,4 @@ A: Overlapping “preload→commit” windows (where two assemblies would both b
 A: They make digital rails represent **current state** between events, simplifying verification and downstream analysis.
 
 **Q: Can I use 0.1 ms timing?**  
-A: Yes; set `sample_rate: 10000` and ensure your USB-6363 and host can stream the sample count. Everything (guardrails, viewer) scales.
+A: Yes; set `sample_rate: 10000` and ensure your USB-6353 and host can stream the sample count. Everything (guardrails, viewer) scales.

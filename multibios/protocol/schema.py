@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NI USB-6363 hardware-clocked protocol parser + guardrails + seeded randomization
+NI USB-6353 hardware-clocked protocol parser + guardrails + seeded randomization
 and sticky state-bit rails.
 """
 from __future__ import annotations

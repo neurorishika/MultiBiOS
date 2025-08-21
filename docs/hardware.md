@@ -18,7 +18,7 @@ The system separates **state preparation** from **state commit**:
 - **Big olfactometers**: two 16-bit manifolds (use 12 bits now; 4 spares).
 - **Small switch valves**: two 2-valve assemblies (8-bit register each; only 2 bits used).
 - **MFCs**: Four channels (air L/R, odor L/R). AO setpoint (0–5 V), AI feedback (0–5 V).
-- **Timing**: NI USB-6363 sample clock slaves AO & AI to DO.
+- **Timing**: NI USB-6353 sample clock slaves AO & AI to DO.
 
 ## Signal Naming (logical)
 

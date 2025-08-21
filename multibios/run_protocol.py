@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run hardware-clocked NI USB-6363 protocol and log MFC analog feedback.
+Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback.
 
 - DO (master): drives S bits, LOAD_REQ, RCK, triggers
 - AO (slave): drives MFC setpoints
@@ -392,7 +392,7 @@ def make_interactive_figure(
 # ----------------------------- main -----------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="Run NI 6363 hardware-clocked protocol with AI logging."
+        description="Run NI 6353 hardware-clocked protocol with AI logging."
     )
     ap.add_argument(
         "--yaml", default="config/example_protocol.yaml", help="Protocol YAML"
