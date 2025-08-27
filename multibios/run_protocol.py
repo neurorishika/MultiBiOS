@@ -469,6 +469,7 @@ def main():
 
     # Run folder + inputs
     run_dir = ensure_run_dir(Path(args.out_root))
+    (run_dir / "compile_report.json").write_text(json.dumps(comp.report, indent=2))
     (run_dir / "protocol.yaml").write_text(proto_path.read_text())
     (run_dir / "hardware.yaml").write_text(hw_path.read_text())
     (run_dir / "meta.json").write_text(
