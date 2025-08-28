@@ -135,8 +135,11 @@ def make_interactive_figure(
     # Define enhanced color schemes grouped by device type
     def get_signal_color_and_group(name: str) -> tuple[str, str, str]:
         """Return (color, legend_group, display_name) for a signal"""
+        if name == "GLOBAL_LOAD_REQ":
+            return "#27ae60", "Global", "GLOBAL_LOAD_REQ"
+
         # Group by device type: Olfactometer Left, Olfactometer Right, Switch Valve Left, Switch Valve Right
-        if "OLFACTOMETER_LEFT" in name:
+        elif "OLFACTOMETER_LEFT" in name:
             if "RCK" in name:
                 return "#e74c3c", "Olfactometer Left", "RCK"
             elif "LOAD_REQ" in name:
@@ -195,6 +198,7 @@ def make_interactive_figure(
 
     # Group signals by device for better visual organization
     device_groups = {
+        "Global": [],
         "Olfactometer Left": [],
         "Olfactometer Right": [],
         "Switch Valve Left": [],
@@ -205,10 +209,11 @@ def make_interactive_figure(
 
     for name in do_names:
         _, group, _ = get_signal_color_and_group(name)
-        device_groups[group].append(name)
+        device_groups.setdefault(group, []).append(name)  # robust to new groups
 
     # Plot in device order: Olfactometer L, Olfactometer R, Switch Valve L, Switch Valve R, Triggers, Other
     plot_order = [
+        "Global",
         "Olfactometer Left",
         "Olfactometer Right",
         "Switch Valve Left",
@@ -457,7 +462,7 @@ def main():
         trig_pulse_ms=int(
             args.trig_ms if args.trig_ms is not None else t.get("trig_pulse_ms", 5)
         ),
-        setup_hold_samples=int(t.get("setup_hold_samples", 1)),
+        setup_hold_samples=int(t.get("setup_hold_samples", 5)),
     )
 
     # Compile

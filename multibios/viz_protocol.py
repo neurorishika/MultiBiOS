@@ -47,7 +47,10 @@ def make_fig(
     def get_signal_color_and_group(name: str) -> tuple[str, str, str]:
         """Return (color, legend_group, display_name) for a signal"""
         # Group by device type: Olfactometer Left, Olfactometer Right, Switch Valve Left, Switch Valve Right
-        if "OLFACTOMETER_LEFT" in name:
+        if name == "GLOBAL_LOAD_REQ":
+            return "#27ae60", "Global", "GLOBAL_LOAD_REQ"
+
+        elif "OLFACTOMETER_LEFT" in name:
             if "RCK" in name:
                 return "#e74c3c", "Olfactometer Left", "RCK"
             elif "LOAD_REQ" in name:
