@@ -264,7 +264,9 @@ def main():
             sample_mode=AcquisitionType.FINITE,
             samps_per_chan=N,
         )
-        DigitalMultiChannelWriter(do_task.out_stream).write_many_sample(comp.do)
+        DigitalMultiChannelWriter(do_task.out_stream).write_many_sample_port_uint32(
+            comp.do.astype(np.uint32)
+        )
 
         # AO slave
         if ao_names:
@@ -283,7 +285,9 @@ def main():
             ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 f"/{hw.device}/do/StartTrigger"
             )
-            AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(comp.ao)
+            AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(
+                comp.ao.astype(np.float64)
+            )
 
         # AI slave (MFC feedback)
         ai_buf = None
