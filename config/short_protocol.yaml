@@ -1,0 +1,123 @@
+# Odor Presentation Protocol Configuration
+# Supports up to 1ms precision timing for NIDAQ generation
+
+protocol:
+  name: "Example Odor Protocol"
+  version: "1.0"
+  description: "Example Description"
+  
+  # Global timing settings
+  timing:
+    base_unit: "ms"              # Base time unit (ms for 1ms precision)
+    sample_rate: 1000            # Hz - determines actual precision (10000Hz = 0.1ms)
+    camera_interval: 100         # ms - 1/FPS, interval between pulse rise
+    camera_pulse_duration: 5     # ms, duration of HIGH pulse
+    preload_lead_ms: 2           # lead between LOAD_REQ and RCK
+    load_req_ms: 1               # width of LOAD_REQ pulse
+    rck_pulse_ms: 1              # width of RCK pulse
+    trig_pulse_ms: 5             # width of microscope pulses
+    setup_hold_samples: 100      # samples to hold S-bits before/after LOAD_REQ
+    load_mode: "global"
+
+# Protocol sequence definition
+sequence:
+  # Pre-protocol setup phase
+  - phase: "BOOT SEQUENCE"
+    duration: 1100 # 0.1 s for warmup and 1 s for stabilization
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 2.1 # 0-5V <,0-5sccm
+        timing: 100
+      - device: "mfc.air_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_left_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "olfactometer.left"
+        state: "AIR" # [OFF,AIR,ODOR1,ODOR2,ODOR3,ODOR4,ODOR5,FLUSH]
+        timing: 100
+      - device: "olfactometer.right"
+        state: "AIR"
+        timing: 100
+      - device: "switch_valve.left"
+        state: "CLEAN" # [“CLEAN","ODOR"]
+        timing: 100
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 100
+      - device: "triggers.camera_continuous"
+        state: true
+        timing: 100
+
+  # Odor presentation trials
+  - phase: "3s ODOR REGISTER + 3S RECORDING (100ms lag) + 3S ISI"
+    duration: 9000            # 9 s
+    times: 5                   # repeat total of 5 times
+    randomize: false            # randomizes the index of the repeat
+    actions:
+      - device: "olfactometer.left"
+        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"   # Sequential choice using repeat index
+                                                 # could be something like 
+                                                 # [ODOR1|ODOR2] to randomly select between options
+                                                 # or any combination of index and random
+        timing: 0
+      - device: "olfactometer.right"
+        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"  
+        timing: 5
+      - device: "triggers.microscope"
+        state: true
+        timing: 3000           # starts at 30s
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 3100           # 1s from recording start
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 3100           # 1.1s from recording start
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 3200           # 2s from recording start
+      - device: "switch_valve.right"
+        value: "CLEAN"
+        timing: 3200           # 2.1s from recording start
+      - device: "triggers.microscope"
+        state: true
+        timing: 6000           # record for 30s
+
+  # Post-protocol phase
+  - phase: "SHUTDOWN SEQUENCE"
+    duration: 100              # enough time for all devices to shut down
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.air_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_right_setpoint"
+        timing: 0
+        value: 0.0
+      - device: "olfactometer.left"
+        state: "OFF"
+        timing: 0
+      - device: "olfactometer.right"
+        state: "OFF"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0
+      - device: "triggers.camera_continuous"
+        timing: 0
+        state: false
+
