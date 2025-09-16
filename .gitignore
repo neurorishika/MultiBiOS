@@ -37,3 +37,6 @@ data/*
 
 # mkdocs
 site/*
+
+# test results
+tests/results/*
