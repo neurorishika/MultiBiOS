@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
-Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback.
+Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback + READY DI rails.
 
 - DO (master): drives S bits, LOAD_REQ, RCK, triggers
 - AO (slave): drives MFC setpoints
-- AI (slave): records MFC feedback (0–5 V) locked to DO/AO sample clock
+- AI (slave): records MFC feedback (0–10 V) locked to DO sample clock
+- DI (slave): records READY rails from Teensy, locked to DO sample clock
 
 Artifacts are written to data/runs/YYYY-MM-DD_HH-MM-SS/
 - compiled_do.npz / compiled_ao.npz
 - capture_ai.npz (MFC feedback, optional)
-- do_map.json / ao_map.json
+- capture_di.npz (READY rails, optional)
+- do_map.json / ao_map.json / di_map.json
 - rck_edges.csv (planned commits)
 - digital_edges.csv (rising/falling edges for all DO lines)
-- preview.html (interactive Plotly: all DO + AO + AI)
+- ready_edges.csv (rising/falling edges for READY DI lines, if present)
+- preview.html (interactive Plotly: DO + AO + AI/DI overlays)
 """
 
 from __future__ import annotations
 
-import argparse, json, time
+import argparse, json, time, logging, sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -27,8 +30,9 @@ import yaml
 
 import nidaqmx
 from nidaqmx.constants import AcquisitionType, Edge, LineGrouping
-from nidaqmx.stream_writers import DigitalMultiChannelWriter, AnalogMultiChannelWriter
+from nidaqmx.stream_writers import AnalogMultiChannelWriter
 from nidaqmx.stream_readers import AnalogMultiChannelReader
+from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
 # Plotly
 import plotly.graph_objects as go
@@ -36,6 +40,9 @@ from plotly.subplots import make_subplots
 
 # Compiler
 from multibios.protocol.schema import ProtocolCompiler, TimingConfig, CompileError
+
+# Visualization helpers
+from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
 
 # ----------------------------- hardware adapter -----------------------------
@@ -45,6 +52,7 @@ class HardwareMap:
     digital_outputs: Dict[str, str]
     analog_outputs: Dict[str, str]
     analog_inputs: Dict[str, str]
+    digital_inputs: Dict[str, str]  # READY rails (Teensy -> NI-DAQ)
 
     # adapter fields the compiler expects
     @property
@@ -57,342 +65,102 @@ class HardwareMap:
 
 
 def load_hardware(path: Path) -> HardwareMap:
-    y = yaml.safe_load(path.read_text())
-    return HardwareMap(
-        device=y["device"],
-        digital_outputs=y.get("digital_outputs", {}),
-        analog_outputs=y.get("analog_outputs", {}),
-        analog_inputs=y.get("analog_inputs", {}),
+    """Load hardware configuration from YAML file with detailed logging."""
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Loading hardware YAML from: {path}")
+    
+    try:
+        y = yaml.safe_load(path.read_text())
+        logger.debug(f"YAML keys found: {list(y.keys()) if isinstance(y, dict) else 'Not a dict'}")
+        
+        # Validate required fields
+        if "device" not in y:
+            raise ValueError("Missing required 'device' field in hardware YAML")
+        
+        hw_map = HardwareMap(
+            device=y["device"],
+            digital_outputs=y.get("digital_outputs", {}),
+            analog_outputs=y.get("analog_outputs", {}),
+            analog_inputs=y.get("analog_inputs", {}),
+            digital_inputs=y.get("digital_inputs", {}),
+        )
+        
+        logger.debug(f"Hardware map created successfully:")
+        logger.debug(f"  Device: {hw_map.device}")
+        logger.debug(f"  DO channels: {len(hw_map.digital_outputs)}")
+        logger.debug(f"  AO channels: {len(hw_map.analog_outputs)}")
+        logger.debug(f"  AI channels: {len(hw_map.analog_inputs)}")
+        logger.debug(f"  DI channels: {len(hw_map.digital_inputs)}")
+        
+        return hw_map
+        
+    except Exception as e:
+        logger.error(f"Failed to load hardware configuration: {e}")
+        raise
+
+
+# ----------------------------- logging utils --------------------------------
+def setup_logging(verbose: bool = False, debug: bool = False) -> logging.Logger:
+    """Set up logging configuration with appropriate verbosity level."""
+    logger = logging.getLogger(__name__)
+    
+    # Clear any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Set logging level
+    if debug:
+        level = logging.DEBUG
+    elif verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    
+    logger.setLevel(level)
+    
+    # Create console handler with formatting
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(level)
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
+    handler.setFormatter(formatter)
+    
+    logger.addHandler(handler)
+    return logger
 
 
 # ----------------------------- logging utils --------------------------------
 def ensure_run_dir(root: Path) -> Path:
+    """Create timestamped run directory with logging."""
+    logger = logging.getLogger(__name__)
+    
     ts = time.strftime("%Y-%m-%d_%H-%M-%S")
     d = root / ts
-    d.mkdir(parents=True, exist_ok=False)
+    
+    logger.debug(f"Creating run directory: {d}")
+    logger.debug(f"  Root directory: {root}")
+    logger.debug(f"  Timestamp: {ts}")
+    
+    try:
+        d.mkdir(parents=True, exist_ok=False)
+        logger.debug(f"✓ Run directory created successfully")
+    except FileExistsError:
+        logger.warning(f"Run directory already exists (should be rare): {d}")
+    except Exception as e:
+        logger.error(f"Failed to create run directory: {e}")
+        raise
+        
     return d
-
-
-def write_digital_edges_csv(path: Path, names: List[str], do: np.ndarray, dt_ms: float):
-    """
-    Write a compact change log of all digital lines:
-    line_name,edge_type,sample_idx,time_ms
-    edge_type in {rising, falling}
-    """
-    with path.open("w") as f:
-        f.write("line,edge_type,sample_idx,time_ms\n")
-        for i, name in enumerate(names):
-            v = do[i].astype(np.int8)
-            dv = np.diff(v, prepend=v[0])
-            idxs = np.nonzero(dv)[0]
-            for si in idxs:
-                et = "rising" if dv[si] > 0 else "falling"
-                f.write(f"{name},{et},{si},{si*dt_ms:.3f}\n")
-
-
-# ----------------------------- interactive viz ------------------------------
-def make_interactive_figure(
-    comp: ProtocolCompiler,
-    do_names: List[str],
-    ao_names: List[str],
-    ai_names: Optional[List[str]] = None,
-    ai_data: Optional[np.ndarray] = None,
-    title: str = "Protocol Preview",
-) -> go.Figure:
-    """
-    Build a Plotly figure with:
-      Row 1: ALL digital rails stacked (S bits, LOAD_REQ, RCK, TRIG)
-      Row 2: AO setpoints (step)
-      Row 3: AI feedback (lines), if provided
-    """
-    t_ms = np.arange(comp.N) * comp.dt_ms
-    has_ai = ai_data is not None and ai_names is not None and len(ai_names) > 0
-
-    rows = 3 if has_ai else 2
-    fig = make_subplots(
-        rows=rows,
-        cols=1,
-        shared_xaxes=True,
-        row_heights=(
-            [0.55, 0.45 if not has_ai else 0.25, 0.20] if has_ai else [0.6, 0.4]
-        ),
-        vertical_spacing=0.03,
-        subplot_titles=(
-            (
-                "Digital Outputs (click legend to toggle)",
-                "Analog Outputs (AO setpoints)",
-            )
-            if not has_ai
-            else (
-                "Digital Outputs (click legend to toggle)",
-                "Analog Outputs (AO setpoints)",
-                "Analog Inputs (MFC feedback)",
-            )
-        ),
-    )
-
-    # Define enhanced color schemes grouped by device type
-    def get_signal_color_and_group(name: str) -> tuple[str, str, str]:
-        """Return (color, legend_group, display_name) for a signal"""
-        # Group by device type: Olfactometer Left, Olfactometer Right, Switch Valve Left, Switch Valve Right
-        if "OLFACTOMETER_LEFT" in name:
-            if "RCK" in name:
-                return "#e74c3c", "Olfactometer Left", "RCK"
-            elif "LOAD_REQ" in name:
-                return "#27ae60", "Olfactometer Left", "Load Req"
-            elif name.endswith("_S0"):
-                return "#f39c12", "Olfactometer Left", "State S0"
-            elif name.endswith("_S1"):
-                return "#3498db", "Olfactometer Left", "State S1"
-            elif name.endswith("_S2"):
-                return "#9b59b6", "Olfactometer Left", "State S2"
-            else:
-                return "#95a5a6", "Olfactometer Left", name.split("_")[-1]
-
-        elif "OLFACTOMETER_RIGHT" in name:
-            if "RCK" in name:
-                return "#c0392b", "Olfactometer Right", "RCK"
-            elif "LOAD_REQ" in name:
-                return "#229954", "Olfactometer Right", "Load Req"
-            elif name.endswith("_S0"):
-                return "#e67e22", "Olfactometer Right", "State S0"
-            elif name.endswith("_S1"):
-                return "#2980b9", "Olfactometer Right", "State S1"
-            elif name.endswith("_S2"):
-                return "#8e44ad", "Olfactometer Right", "State S2"
-            else:
-                return "#7f8c8d", "Olfactometer Right", name.split("_")[-1]
-
-        elif "SWITCHVALVE_LEFT" in name:
-            if "RCK" in name:
-                return "#d63031", "Switch Valve Left", "RCK"
-            elif "LOAD_REQ" in name:
-                return "#1e8449", "Switch Valve Left", "Load Req"
-            elif name.endswith("_S"):
-                return "#16a085", "Switch Valve Left", "State"
-            else:
-                return "#5d6d7e", "Switch Valve Left", name.split("_")[-1]
-
-        elif "SWITCHVALVE_RIGHT" in name:
-            if "RCK" in name:
-                return "#a4161a", "Switch Valve Right", "RCK"
-            elif "LOAD_REQ" in name:
-                return "#186a3b", "Switch Valve Right", "Load Req"
-            elif name.endswith("_S"):
-                return "#138d75", "Switch Valve Right", "State"
-            else:
-                return "#566573", "Switch Valve Right", name.split("_")[-1]
-
-        elif "TRIG" in name:
-            return "#8e44ad", "Triggers", name.replace("_", " ")
-        else:
-            return "#95a5a6", "Other", name.replace("_", " ")
-
-    # --- Digital rails organized by device type
-    y_offset = 0.0
-    y_step = 1.2
-
-    # Group signals by device for better visual organization
-    device_groups = {
-        "Olfactometer Left": [],
-        "Olfactometer Right": [],
-        "Switch Valve Left": [],
-        "Switch Valve Right": [],
-        "Triggers": [],
-        "Other": [],
-    }
-
-    for name in do_names:
-        _, group, _ = get_signal_color_and_group(name)
-        device_groups[group].append(name)
-
-    # Plot in device order: Olfactometer L, Olfactometer R, Switch Valve L, Switch Valve R, Triggers, Other
-    plot_order = [
-        "Olfactometer Left",
-        "Olfactometer Right",
-        "Switch Valve Left",
-        "Switch Valve Right",
-        "Triggers",
-        "Other",
-    ]
-
-    for group in plot_order:
-        for name in device_groups[group]:
-            y = comp.do[comp.line_order.index(name)].astype(float) + y_offset
-            color, legend_group, display_name = get_signal_color_and_group(name)
-
-            fig.add_trace(
-                go.Scatter(
-                    x=t_ms,
-                    y=y,
-                    mode="lines",
-                    name=display_name,
-                    legendgroup=legend_group,
-                    legendgrouptitle_text=legend_group,
-                    line=dict(shape="hv", color=color, width=2),
-                    hovertemplate=f"<b>{legend_group} - {display_name}</b><br>Time: %{{x:.2f}} ms<br>Level: %{{customdata}}<br><extra></extra>",
-                    customdata=comp.do[comp.line_order.index(name)].astype(int),
-                ),
-                row=1,
-                col=1,
-            )
-
-            # Add subtle baseline with signal name
-            fig.add_trace(
-                go.Scatter(
-                    x=[t_ms[0], t_ms[-1]],
-                    y=[y_offset, y_offset],
-                    mode="lines+text",
-                    text=["", display_name],  # Show signal name at end
-                    textposition="middle right",
-                    textfont=dict(size=9, color="rgba(100,100,100,0.7)"),
-                    showlegend=False,
-                    line=dict(color="rgba(150,150,150,0.2)", dash="dot", width=0.5),
-                    hoverinfo="skip",
-                ),
-                row=1,
-                col=1,
-            )
-            y_offset += y_step
-
-    # Add RCK commit indicators
-    for i, (sig, si, tms) in enumerate(comp.rck_log):
-        fig.add_vline(
-            x=tms,
-            line_color="#e74c3c",
-            line_width=2,
-            opacity=0.3,
-            row=1,
-            col=1,
-            annotation_text=f"RCK {i+1}",
-            annotation_position="top",
-            annotation_font_size=8,
-        )
-
-    # --- AO setpoints with distinct colors
-    ao_colors = [
-        "#3498db",
-        "#e74c3c",
-        "#2ecc71",
-        "#f39c12",
-        "#9b59b6",
-        "#1abc9c",
-        "#e67e22",
-        "#34495e",
-    ]
-    for i, name in enumerate(ao_names):
-        color = ao_colors[i % len(ao_colors)]
-        fig.add_trace(
-            go.Scatter(
-                x=t_ms,
-                y=comp.ao[i],
-                mode="lines",
-                name=name.replace("_", " "),
-                legendgroup="Analog Outputs",
-                legendgrouptitle_text="Analog Outputs",
-                line=dict(shape="hv", width=3, color=color),
-                hovertemplate=f"<b>{name}</b><br>Time: %{{x:.2f}} ms<br>Voltage: %{{y:.3f}} V<br><extra></extra>",
-            ),
-            row=2,
-            col=1,
-        )
-
-    # --- AI feedback with distinct styling
-    if has_ai:
-        ai_colors = [
-            "#2c3e50",
-            "#8e44ad",
-            "#16a085",
-            "#d35400",
-            "#c0392b",
-            "#27ae60",
-            "#8e44ad",
-            "#7f8c8d",
-        ]
-        for i, name in enumerate(ai_names):
-            color = ai_colors[i % len(ai_colors)]
-            fig.add_trace(
-                go.Scatter(
-                    x=t_ms,
-                    y=ai_data[i],
-                    mode="lines",
-                    name=name.replace("_", " "),
-                    legendgroup="Analog Inputs",
-                    legendgrouptitle_text="Analog Inputs",
-                    line=dict(width=2, color=color),
-                    hovertemplate=f"<b>{name}</b><br>Time: %{{x:.2f}} ms<br>Voltage: %{{y:.3f}} V<br><extra></extra>",
-                ),
-                row=3,
-                col=1,
-            )
-
-    # Enhanced layout with better organization and interactivity
-    fig.update_layout(
-        title=dict(text=title, x=0.5, font=dict(size=16, color="#2c3e50")),
-        height=800 if has_ai else 650,
-        template="plotly_white",
-        hovermode="x unified",
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=0.98,
-            xanchor="left",
-            x=1.02,
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="rgba(0,0,0,0.2)",
-            borderwidth=1,
-            font=dict(size=10),
-            groupclick="toggleitem",  # Allow clicking group titles to toggle all items
-            tracegroupgap=8,
-        ),
-        margin=dict(l=60, r=220, t=80, b=40),  # More right margin for legend
-    )
-
-    # Clean axes styling without emojis
-    fig.update_xaxes(
-        title_text="Time (ms)",
-        row=rows,
-        col=1,
-        showgrid=True,
-        gridcolor="rgba(128,128,128,0.2)",
-        zeroline=True,
-        zerolinecolor="rgba(128,128,128,0.3)",
-    )
-    fig.update_yaxes(
-        title_text="Digital Signals", row=1, col=1, showgrid=False, zeroline=False
-    )
-    fig.update_yaxes(
-        title_text="Voltage (V)",
-        row=2,
-        col=1,
-        showgrid=True,
-        gridcolor="rgba(128,128,128,0.2)",
-    )
-    if has_ai:
-        fig.update_yaxes(
-            title_text="Voltage (V)",
-            row=3,
-            col=1,
-            showgrid=True,
-            gridcolor="rgba(128,128,128,0.2)",
-        )
-
-    # Start with some device groups collapsed for cleaner initial view
-    fig.update_traces(
-        visible="legendonly", selector=dict(legendgroup="Switch Valve Left")
-    )
-    fig.update_traces(
-        visible="legendonly", selector=dict(legendgroup="Switch Valve Right")
-    )
-
-    return fig
 
 
 # ----------------------------- main -----------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="Run NI 6353 hardware-clocked protocol with AI logging."
+        description="Run NI 6353 hardware-clocked protocol with AI/DI logging."
     )
     ap.add_argument(
         "--yaml", default="config/example_protocol.yaml", help="Protocol YAML"
@@ -408,6 +176,16 @@ def main():
         help="Always save interactive HTML preview",
     )
     ap.add_argument("--out-root", default="data/runs", help="Run folder root")
+    ap.add_argument(
+        "--verbose", "-v", 
+        action="store_true", 
+        help="Enable verbose logging and detailed progress output"
+    )
+    ap.add_argument(
+        "--debug", 
+        action="store_true", 
+        help="Enable debug logging (even more verbose than --verbose)"
+    )
     # Optional pulse tuning overrides (otherwise read from YAML)
     ap.add_argument("--preload-lead-ms", type=int)
     ap.add_argument("--load-req-ms", type=int)
@@ -420,22 +198,71 @@ def main():
     )
     args = ap.parse_args()
 
+    # Set up logging based on verbosity level
+    logger = setup_logging(verbose=args.verbose, debug=args.debug)
+    
+    logger.info("=== MultiBiOS Protocol Runner Starting ===")
+    logger.info(f"Command line arguments: {vars(args)}")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Working directory: {Path.cwd()}")
+    
+    # Validate input files
     proto_path = Path(args.yaml)
     hw_path = Path(args.hardware)
+    
+    logger.info(f"Protocol file path: {proto_path.absolute()}")
+    logger.info(f"Hardware file path: {hw_path.absolute()}")
+    
     if not proto_path.exists():
+        logger.error(f"Protocol file not found: {proto_path}")
         raise SystemExit(f"Protocol file not found: {proto_path}")
     if not hw_path.exists():
+        logger.error(f"Hardware file not found: {hw_path}")
         raise SystemExit(f"Hardware file not found: {hw_path}")
+        
+    logger.info("✓ Input files validated successfully")
 
+    # Load hardware configuration with detailed logging
+    logger.info("Loading hardware configuration...")
+    logger.debug(f"Reading hardware YAML from: {hw_path}")
+    
     hw = load_hardware(hw_path)
+    logger.info(f"✓ Hardware configuration loaded successfully")
+    logger.info(f"  Device: {hw.device}")
+    logger.info(f"  Digital outputs: {len(hw.digital_outputs)} channels")
+    for name, channel in hw.digital_outputs.items():
+        logger.debug(f"    {name} -> {channel}")
+    logger.info(f"  Analog outputs: {len(hw.analog_outputs)} channels")  
+    for name, channel in hw.analog_outputs.items():
+        logger.debug(f"    {name} -> {channel}")
+    logger.info(f"  Analog inputs: {len(hw.analog_inputs)} channels")
+    for name, channel in hw.analog_inputs.items():
+        logger.debug(f"    {name} -> {channel}")
+    logger.info(f"  Digital inputs: {len(hw.digital_inputs)} channels")
+    for name, channel in hw.digital_inputs.items():
+        logger.debug(f"    {name} -> {channel}")
+    
     if args.device:
+        logger.info(f"Overriding device name: {hw.device} -> {args.device}")
         hw.device = args.device
 
-    # Timing config
+    # Load and process protocol YAML
+    logger.info("Loading protocol configuration...")
+    logger.debug(f"Reading protocol YAML from: {proto_path}")
+    
     y = yaml.safe_load(proto_path.read_text())
+    logger.info("✓ Protocol YAML loaded successfully")
+    logger.debug(f"Protocol keys: {list(y.keys()) if isinstance(y, dict) else 'Not a dict'}")
+    
     if args.seed is not None:
+        logger.info(f"Overriding protocol seed: {args.seed}")
         y.setdefault("protocol", {}).setdefault("timing", {})["seed"] = int(args.seed)
+        
+    # Process timing configuration with detailed logging
+    logger.info("Processing timing configuration...")
     t = y.get("protocol", {}).get("timing", {})
+    logger.debug(f"Raw timing config: {t}")
+    
     tcfg = TimingConfig(
         base_unit=t.get("base_unit", "ms"),
         sample_rate=int(t.get("sample_rate", 1000)),
@@ -457,84 +284,216 @@ def main():
         trig_pulse_ms=int(
             args.trig_ms if args.trig_ms is not None else t.get("trig_pulse_ms", 5)
         ),
-        setup_hold_samples=int(t.get("setup_hold_samples", 1)),
+        setup_hold_samples=int(t.get("setup_hold_samples", 5)),
     )
+    
+    logger.info("✓ Timing configuration processed")
+    logger.info(f"  Sample rate: {tcfg.sample_rate} Hz")
+    logger.info(f"  Base unit: {tcfg.base_unit}")
+    logger.info(f"  Camera interval: {tcfg.camera_interval_ms} ms")
+    logger.info(f"  Camera pulse: {tcfg.camera_pulse_ms} ms")
+    logger.info(f"  Preload lead: {tcfg.preload_lead_ms} ms")
+    logger.info(f"  Load request: {tcfg.load_req_ms} ms")
+    logger.info(f"  RCK pulse: {tcfg.rck_pulse_ms} ms")
+    logger.info(f"  Trigger pulse: {tcfg.trig_pulse_ms} ms")
+    logger.info(f"  Setup/hold samples: {tcfg.setup_hold_samples}")
 
-    # Compile
+    # Compile protocol with detailed progress logging
+    logger.info("=== Starting Protocol Compilation ===")
     comp = ProtocolCompiler(hw, tcfg)
+    logger.info("✓ Protocol compiler initialized")
+    
     try:
+        logger.info("Compiling protocol from YAML...")
+        start_time = time.time()
         comp.compile_from_yaml(y)
+        compile_time = time.time() - start_time
+        
+        logger.info(f"✓ Protocol compilation completed in {compile_time:.2f} seconds")
+        logger.info(f"  Total samples: {comp.N}")
+        logger.info(f"  Duration: {comp.N * comp.dt_ms:.1f} ms ({comp.N * comp.dt_ms / 1000:.2f} seconds)")
+        logger.info(f"  Sample time step: {comp.dt_ms:.3f} ms")
+        logger.info(f"  Digital output lines: {len(comp.line_order)}")
+        logger.info(f"  Analog output channels: {len(comp.ao_order)}")
+        logger.info(f"  RNG seed used: {getattr(comp, 'rng_seed', 'N/A')}")
+        
+        if hasattr(comp, 'rck_log') and comp.rck_log:
+            logger.info(f"  RCK commit events: {len(comp.rck_log)}")
+            logger.debug("  RCK event details:")
+            for i, (sig, si, tms) in enumerate(comp.rck_log[:5]):  # Show first 5
+                logger.debug(f"    {i+1}: {sig} at sample {si} ({tms:.3f} ms)")
+            if len(comp.rck_log) > 5:
+                logger.debug(f"    ... and {len(comp.rck_log) - 5} more")
+                
     except CompileError as e:
+        logger.error(f"Protocol compilation failed: {e}")
         raise SystemExit(f"[compile error] {e}")
 
-    # Run folder + inputs
+    # Create run directory and save artifacts with detailed logging
+    logger.info("=== Creating Run Directory and Artifacts ===")
     run_dir = ensure_run_dir(Path(args.out_root))
-    (run_dir / "compile_report.json").write_text(json.dumps(comp.report, indent=2))
-    (run_dir / "protocol.yaml").write_text(proto_path.read_text())
-    (run_dir / "hardware.yaml").write_text(hw_path.read_text())
-    (run_dir / "meta.json").write_text(
-        json.dumps(
-            {
-                "device": hw.device,
-                "sample_rate": comp.tcfg.sample_rate,
-                "duration_ms": comp.N * comp.dt_ms,
-                "rng_seed": comp.rng_seed,
-                "args": vars(args),
-            },
-            indent=2,
-        )
-    )
-    # Planned RCK edges
-    with (run_dir / "rck_edges.csv").open("w") as f:
+    logger.info(f"✓ Run directory created: {run_dir}")
+    logger.info(f"  Run timestamp: {run_dir.name}")
+    
+    # Save compilation report
+    logger.info("Saving compilation report...")
+    report_file = run_dir / "compile_report.json"
+    report_file.write_text(json.dumps(comp.report, indent=2))
+    logger.info(f"  ✓ Compilation report: {report_file}")
+    logger.debug(f"    Report keys: {list(comp.report.keys()) if hasattr(comp, 'report') and comp.report else 'No report'}")
+    
+    # Save input files for reproducibility
+    logger.info("Saving input files for reproducibility...")
+    proto_copy = run_dir / "protocol.yaml"
+    hw_copy = run_dir / "hardware.yaml"
+    proto_copy.write_text(proto_path.read_text())
+    hw_copy.write_text(hw_path.read_text())
+    logger.info(f"  ✓ Protocol YAML copy: {proto_copy}")
+    logger.info(f"  ✓ Hardware YAML copy: {hw_copy}")
+    
+    # Save metadata
+    logger.info("Saving run metadata...")
+    meta_data = {
+        "device": hw.device,
+        "sample_rate": comp.tcfg.sample_rate,
+        "duration_ms": comp.N * comp.dt_ms,
+        "rng_seed": getattr(comp, 'rng_seed', None),
+        "args": vars(args),
+    }
+    meta_file = run_dir / "meta.json"
+    meta_file.write_text(json.dumps(meta_data, indent=2))
+    logger.info(f"  ✓ Metadata: {meta_file}")
+    logger.debug(f"    Metadata: {meta_data}")
+    
+    # Save RCK edges log
+    logger.info("Saving RCK edges log...")
+    rck_file = run_dir / "rck_edges.csv"
+    with rck_file.open("w") as f:
         f.write("signal,sample_idx,time_ms\n")
         for sig, si, tms in comp.rck_log:
             f.write(f"{sig},{si},{tms:.3f}\n")
+    logger.info(f"  ✓ RCK edges: {rck_file} ({len(comp.rck_log)} events)")
 
-    # Save compiled arrays + maps
+    # Save channel mapping files
+    logger.info("Saving channel mapping files...")
     do_names = comp.line_order
     ao_names = comp.ao_order
-    (run_dir / "do_map.json").write_text(
-        json.dumps(
-            {"names": do_names, "phys": [hw.digital_outputs[n] for n in do_names]},
-            indent=2,
-        )
-    )
-    (run_dir / "ao_map.json").write_text(
-        json.dumps(
-            {"names": ao_names, "phys": [hw.analog_outputs[n] for n in ao_names]},
-            indent=2,
-        )
-    )
-    np.savez_compressed(run_dir / "compiled_do.npz", data=comp.do.astype(np.bool_))
-    np.savez_compressed(run_dir / "compiled_ao.npz", data=comp.ao.astype(np.float32))
+    
+    do_map = {"names": do_names, "phys": [hw.digital_outputs[n] for n in do_names]}
+    do_map_file = run_dir / "do_map.json"
+    do_map_file.write_text(json.dumps(do_map, indent=2))
+    logger.info(f"  ✓ DO mapping: {do_map_file} ({len(do_names)} lines)")
+    
+    ao_map = {"names": ao_names, "phys": [hw.analog_outputs[n] for n in ao_names]}
+    ao_map_file = run_dir / "ao_map.json"
+    ao_map_file.write_text(json.dumps(ao_map, indent=2))
+    logger.info(f"  ✓ AO mapping: {ao_map_file} ({len(ao_names)} channels)")
+    
+    # DI map (READY inputs) — write even if empty for consistency
+    di_names_cfg = list(hw.digital_inputs.keys())
+    di_map = {"names": di_names_cfg, "phys": [hw.digital_inputs[n] for n in di_names_cfg]}
+    di_map_file = run_dir / "di_map.json"
+    di_map_file.write_text(json.dumps(di_map, indent=2))
+    logger.info(f"  ✓ DI mapping: {di_map_file} ({len(di_names_cfg)} lines)")
+
+    # Save compiled arrays
+    logger.info("Saving compiled waveform arrays...")
+    do_file = run_dir / "compiled_do.npz"
+    ao_file = run_dir / "compiled_ao.npz"
+    
+    logger.debug(f"  DO array shape: {comp.do.shape}, dtype: {comp.do.dtype}")
+    np.savez_compressed(do_file, data=comp.do.astype(np.bool_))
+    logger.info(f"  ✓ Digital outputs: {do_file}")
+    
+    logger.debug(f"  AO array shape: {comp.ao.shape}, dtype: {comp.ao.dtype}")
+    np.savez_compressed(ao_file, data=comp.ao.astype(np.float32))
+    logger.info(f"  ✓ Analog outputs: {ao_file}")
 
     # Digital edge log (super helpful to diff runs)
-    write_digital_edges_csv(
-        run_dir / "digital_edges.csv", do_names, comp.do, comp.dt_ms
-    )
+    logger.info("Computing and saving digital edge transitions...")
+    edge_file = run_dir / "digital_edges.csv"
+    write_edge_csv(edge_file, do_names, comp.do.astype(bool), comp.dt_ms)
+    logger.info(f"  ✓ Digital edges: {edge_file}")
+    
+    # Count edges for summary
+    do_bool = comp.do.astype(bool)
+    total_edges = 0
+    for i in range(len(do_names)):
+        edges = np.sum(np.diff(do_bool[i, :].astype(int)) != 0)
+        total_edges += edges
+        logger.debug(f"    {do_names[i]}: {edges} transitions")
+    logger.info(f"  Total edge transitions: {total_edges}")
 
-    # Always write an interactive preview (even on dry-run)
-    fig = make_interactive_figure(comp, do_names, ao_names, title="Preview (no DAQ)")
-    fig.write_html(run_dir / "preview.html", include_plotlyjs="cdn")
+    # Generate preview visualization
+    logger.info("Generating preview visualization...")
+    t_ms = np.arange(comp.N) * comp.dt_ms
+    fig = make_protocol_figure(
+        t_ms,
+        comp.do.astype(bool),
+        do_names,
+        comp.ao,
+        ao_names,
+        title="Preview (no DAQ)",
+        rck_log=comp.rck_log,
+    )
+    preview_file = run_dir / "preview.html"
+    fig.write_html(preview_file, include_plotlyjs="cdn")
+    logger.info(f"  ✓ Preview visualization: {preview_file}")
 
     if args.dry_run:
+        logger.info("=== DRY RUN COMPLETE ===")
+        logger.info(f"All artifacts saved to: {run_dir}")
+        logger.info(f"Preview available at: {preview_file}")
         print(f"Dry-run complete. Preview: {run_dir/'preview.html'}")
         return
 
-    # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback)
+    # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback), DI slave (READY)
+    logger.info("=== Starting DAQ Hardware Execution ===")
     N = comp.N
     rate = comp.tcfg.sample_rate
+    
+    logger.info(f"DAQ Configuration:")
+    logger.info(f"  Device: {hw.device}")
+    logger.info(f"  Sample rate: {rate} Hz")
+    logger.info(f"  Total samples: {N}")
+    logger.info(f"  Estimated duration: {N/rate:.2f} seconds")
+
+    # Prepare channel lists
     ai_names = list(hw.analog_inputs.keys())
     ai_phys = [hw.analog_inputs[n] for n in ai_names]
+    di_names = list(hw.digital_inputs.keys())
+    di_phys = [hw.digital_inputs[n] for n in di_names]
+    
+    logger.info(f"Channel Summary:")
+    logger.info(f"  Digital outputs (DO): {len(do_names)} channels")
+    for i, (name, phys) in enumerate(zip(do_names, [hw.digital_outputs[n] for n in do_names])):
+        logger.debug(f"    DO[{i}]: {name} -> {phys}")
+        
+    logger.info(f"  Analog outputs (AO): {len(ao_names)} channels")
+    for i, (name, phys) in enumerate(zip(ao_names, [hw.analog_outputs[n] for n in ao_names])):
+        logger.debug(f"    AO[{i}]: {name} -> {phys}")
+        
+    logger.info(f"  Analog inputs (AI): {len(ai_names)} channels")
+    for i, (name, phys) in enumerate(zip(ai_names, ai_phys)):
+        logger.debug(f"    AI[{i}]: {name} -> {phys}")
+        
+    logger.info(f"  Digital inputs (DI): {len(di_names)} channels")
+    for i, (name, phys) in enumerate(zip(di_names, di_phys)):
+        logger.debug(f"    DI[{i}]: {name} -> {phys}")
 
+    logger.info("Creating DAQ tasks...")
     with (
         nidaqmx.Task("DO_MASTER") as do_task,
         nidaqmx.Task("AO_SLAVE") as ao_task,
         nidaqmx.Task("AI_SLAVE") as ai_task,
+        nidaqmx.Task("DI_READY") as di_task,
     ):
+        logger.info("✓ DAQ tasks created successfully")
 
         # DO master lines
-        for ch in [hw.digital_outputs[n] for n in do_names]:
+        logger.info("Configuring DO master task...")
+        for i, ch in enumerate([hw.digital_outputs[n] for n in do_names]):
+            logger.debug(f"  Adding DO channel {i}: {ch}")
             do_task.do_channels.add_do_chan(
                 ch, line_grouping=LineGrouping.CHAN_PER_LINE
             )
@@ -544,12 +503,17 @@ def main():
             sample_mode=AcquisitionType.FINITE,
             samps_per_chan=N,
         )
-        DigitalMultiChannelWriter(do_task.out_stream).write_many_sample(comp.do)
+        logger.debug(f"  Writing DO data array shape: {comp.do.shape}")
+        do_task.write(comp.do.astype(np.bool_))
+        logger.info("✓ DO master task configured and data loaded")
 
         # AO slave
         if ao_names:
+            logger.info("Configuring AO slave task...")
+            ao_channel_str = ",".join([hw.analog_outputs[n] for n in ao_names])
+            logger.debug(f"  AO channels: {ao_channel_str}")
             ao_task.ao_channels.add_ao_voltage_chan(
-                ",".join([hw.analog_outputs[n] for n in ao_names]),
+                ao_channel_str,
                 min_val=0.0,
                 max_val=5.0,
             )
@@ -563,13 +527,22 @@ def main():
             ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 f"/{hw.device}/do/StartTrigger"
             )
-            AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(comp.ao)
+            logger.debug(f"  Writing AO data array shape: {comp.ao.shape}")
+            AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(
+                comp.ao.astype(np.float64)
+            )
+            logger.info("✓ AO slave task configured and data loaded")
+        else:
+            logger.info("No AO channels configured, skipping AO task")
 
         # AI slave (MFC feedback)
         ai_buf = None
         if ai_phys:
+            logger.info("Configuring AI slave task...")
+            ai_channel_str = ",".join(ai_phys)
+            logger.debug(f"  AI channels: {ai_channel_str}")
             ai_task.ai_channels.add_ai_voltage_chan(
-                ",".join(ai_phys), min_val=0.0, max_val=10.0
+                ai_channel_str, min_val=0.0, max_val=10.0
             )
             ai_task.timing.cfg_samp_clk_timing(
                 rate=rate,
@@ -583,44 +556,218 @@ def main():
             )
             ai_reader = AnalogMultiChannelReader(ai_task.in_stream)
             ai_buf = np.zeros((len(ai_phys), N), dtype=np.float64)
+            logger.debug(f"  AI buffer shape: {ai_buf.shape}")
+            logger.info("✓ AI slave task configured and buffer allocated")
+        else:
+            logger.info("No AI channels configured, skipping AI task")
 
-        # Start slaves then DO
+        # DI slave (READY inputs from Teensy)
+        if di_phys:
+            logger.info("Configuring DI slave task...")
+            for i, ch in enumerate(di_phys):
+                logger.debug(f"  Adding DI channel {i}: {ch}")
+                di_task.di_channels.add_di_chan(
+                    ch, line_grouping=LineGrouping.CHAN_PER_LINE
+                )
+            di_task.timing.cfg_samp_clk_timing(
+                rate=rate,
+                source=f"/{hw.device}/do/SampleClock",
+                active_edge=Edge.RISING,
+                sample_mode=AcquisitionType.FINITE,
+                samps_per_chan=N,
+            )
+            di_task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                f"/{hw.device}/do/StartTrigger"
+            )
+            logger.info("✓ DI slave task configured successfully")
+        else:
+            logger.info("No DI channels configured, skipping DI task")
+
+        # Start tasks in proper sequence
+        logger.info("Starting DAQ tasks...")
         if ao_names:
+            logger.debug("  Starting AO slave task...")
             ao_task.start()
         if ai_phys:
+            logger.debug("  Starting AI slave task...")
             ai_task.start()
+        if di_phys:
+            logger.debug("  Starting DI slave task...")
+            di_task.start()
+            
+        logger.debug("  Starting DO master task...")
+        start_time = time.time()
         do_task.start()
+        logger.info("✓ All DAQ tasks started, protocol execution in progress...")
 
-        do_task.wait_until_done(timeout=max(10.0, N / rate + 5.0))
+        # Wait for completion with timeout
+        timeout = max(10.0, N / rate + 5.0)
+        logger.info(f"Waiting for protocol completion (timeout: {timeout:.1f}s)...")
+        
+        try:
+            do_task.wait_until_done(timeout=timeout)
+            execution_time = time.time() - start_time
+            logger.info(f"✓ Protocol execution completed in {execution_time:.2f} seconds")
+        except Exception as e:
+            logger.error(f"Protocol execution failed: {e}")
+            raise
+            
+        # Stop tasks and read data
+        logger.info("Stopping tasks and reading data...")
         do_task.stop()
+        logger.debug("  DO master task stopped")
+        
         if ao_names:
             ao_task.stop()
+            logger.debug("  AO slave task stopped")
 
         if ai_phys:
-            ai_reader.read_many_sample(
-                ai_buf,
-                number_of_samples_per_channel=N,
-                timeout=max(10.0, N / rate + 5.0),
-            )
-            ai_task.stop()
-            np.savez_compressed(
-                run_dir / "capture_ai.npz",
-                names=np.array(ai_names, dtype=object),
-                data=ai_buf.astype(np.float32),
-            )
+            logger.info("Reading AI data...")
+            try:
+                ai_reader.read_many_sample(
+                    ai_buf,
+                    number_of_samples_per_channel=N,
+                    timeout=max(10.0, N / rate + 5.0),
+                )
+                ai_task.stop()
+                
+                # Save AI data and provide statistics
+                ai_file = run_dir / "capture_ai.npz"
+                np.savez_compressed(
+                    ai_file,
+                    names=np.array(ai_names, dtype=object),
+                    data=ai_buf.astype(np.float32),
+                )
+                logger.info(f"✓ AI data saved: {ai_file}")
+                logger.info(f"  AI data shape: {ai_buf.shape}")
+                for i, name in enumerate(ai_names):
+                    min_val, max_val = ai_buf[i].min(), ai_buf[i].max()
+                    mean_val = ai_buf[i].mean()
+                    logger.debug(f"    {name}: min={min_val:.3f}V, max={max_val:.3f}V, mean={mean_val:.3f}V")
+            except Exception as e:
+                logger.error(f"Failed to read AI data: {e}")
+                raise
 
-    # Post-run interactive viz with AI overlay (if recorded)
-    if (run_dir / "capture_ai.npz").exists():
-        npz = np.load(run_dir / "capture_ai.npz", allow_pickle=True)
-        fig = make_interactive_figure(
-            comp,
-            do_names,
-            ao_names,
-            ai_names=list(npz["names"]),
-            ai_data=npz["data"],
-            title="Protocol (DO/AO) + MFC Feedback (AI)",
-        )
-        fig.write_html(run_dir / "preview.html", include_plotlyjs="cdn")
+        if di_phys:
+            logger.info("Reading DI data...")
+            try:
+                di_data = di_task.read(
+                    number_of_samples_per_channel=N, 
+                    timeout=max(10.0, N / rate + 5.0)
+                )
+                di_task.stop()
+                
+                # Save the returned DI data and provide statistics
+                di_file = run_dir / "capture_di.npz"
+                np.savez_compressed(
+                    di_file,
+                    names=np.array(di_names, dtype=object),
+                    # The returned data is already boolean, but we cast to be safe
+                    data=np.array(di_data).astype(np.bool_), 
+                )
+                logger.info(f"✓ DI data saved: {di_file}")
+                
+                # Use the new di_data variable for analysis
+                di_bool = np.array(di_data).astype(bool)
+                logger.info(f"  DI data shape: {di_bool.shape}")
+                for i, name in enumerate(di_names):
+                    high_count = np.sum(di_bool[i])
+                    high_pct = high_count / N * 100
+                    logger.debug(f"    {name}: {high_count}/{N} samples high ({high_pct:.1f}%)")
+            except Exception as e:
+                logger.error(f"Failed to read DI data: {e}")
+                raise
+
+    logger.info("✓ All DAQ tasks completed and data acquired")
+
+    logger.info("✓ All DAQ tasks completed and data acquired")
+
+    # Post-run interactive viz with AI/DI overlays (if recorded)
+    logger.info("=== Generating Post-Run Visualization ===")
+    
+    di_names_overlay = di_data_overlay = None
+    ai_names_overlay = ai_data_overlay = None
+    
+    # Load DI data if available
+    di_file = run_dir / "capture_di.npz"
+    if di_file.exists():
+        logger.info("Loading DI data for visualization overlay...")
+        npz_di = np.load(di_file, allow_pickle=True)
+        di_names_overlay = list(npz_di["names"])
+        di_data_overlay = npz_di["data"].astype(bool)
+        logger.info(f"  ✓ DI overlay data loaded: {len(di_names_overlay)} channels")
+        logger.debug(f"    DI overlay shape: {di_data_overlay.shape}")
+
+    # Load AI data if available  
+    ai_file = run_dir / "capture_ai.npz"
+    if ai_file.exists():
+        logger.info("Loading AI data for visualization overlay...")
+        npz_ai = np.load(ai_file, allow_pickle=True)
+        ai_names_overlay = list(npz_ai["names"])
+        ai_data_overlay = npz_ai["data"]
+        logger.info(f"  ✓ AI overlay data loaded: {len(ai_names_overlay)} channels")
+        logger.debug(f"    AI overlay shape: {ai_data_overlay.shape}")
+
+    # Generate comprehensive visualization
+    logger.info("Generating comprehensive interactive figure...")
+    fig = make_protocol_figure(
+        t_ms,
+        comp.do.astype(bool),
+        do_names,
+        comp.ao,
+        ao_names,
+        ai=ai_data_overlay,
+        ai_names=ai_names_overlay,
+        di=di_data_overlay,
+        di_names=di_names_overlay,
+        rck_log=comp.rck_log,
+        title="Protocol (DO/AO) + READY (DI) + MFC Feedback (AI)",
+    )
+    
+    final_preview = run_dir / "preview.html"
+    logger.info("Writing final interactive HTML...")
+    fig.write_html(final_preview, include_plotlyjs="cdn")
+    logger.info(f"✓ Final visualization saved: {final_preview}")
+
+    # Generate READY edge log if present
+    if di_file.exists():
+        logger.info("Computing READY line edge transitions...")
+        ready_edge_file = run_dir / "ready_edges.csv"
+        write_edge_csv(ready_edge_file, di_names_overlay, di_data_overlay, comp.dt_ms)
+        
+        # Count READY edges for summary
+        ready_edges_total = 0
+        for i in range(len(di_names_overlay)):
+            edges = np.sum(np.diff(di_data_overlay[i, :].astype(int)) != 0)
+            ready_edges_total += edges
+            logger.debug(f"    {di_names_overlay[i]}: {edges} READY transitions")
+        logger.info(f"✓ READY edges saved: {ready_edge_file} ({ready_edges_total} total transitions)")
+
+    # Final summary
+    logger.info("=== RUN COMPLETION SUMMARY ===")
+    logger.info(f"✓ Run directory: {run_dir}")
+    logger.info(f"✓ Protocol duration: {comp.N * comp.dt_ms:.1f} ms ({comp.N * comp.dt_ms / 1000:.2f} seconds)")
+    logger.info(f"✓ Total samples: {comp.N:,}")
+    logger.info(f"✓ Sample rate: {comp.tcfg.sample_rate} Hz")
+    logger.info(f"✓ Digital outputs: {len(do_names)} channels")
+    logger.info(f"✓ Analog outputs: {len(ao_names)} channels")
+    if ai_names_overlay:
+        logger.info(f"✓ Analog inputs captured: {len(ai_names_overlay)} channels")
+    if di_names_overlay:
+        logger.info(f"✓ Digital inputs captured: {len(di_names_overlay)} channels")
+    logger.info(f"✓ Interactive preview: {final_preview}")
+    
+    # List all generated files
+    logger.info("Generated artifacts:")
+    for file_path in sorted(run_dir.glob("*")):
+        size_bytes = file_path.stat().st_size
+        size_str = f"{size_bytes:,} bytes"
+        if size_bytes > 1024:
+            size_str = f"{size_bytes/1024:.1f} KB"
+        if size_bytes > 1024*1024:
+            size_str = f"{size_bytes/(1024*1024):.1f} MB"
+        logger.info(f"  {file_path.name}: {size_str}")
+
     print(f"Run complete. See interactive preview: {run_dir/'preview.html'}")
 
 

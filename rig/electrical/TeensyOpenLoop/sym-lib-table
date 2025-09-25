@@ -1,0 +1,11 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "SN74LVC245AN")(type "KiCad")(uri "${KIPRJMOD}/parts/ul_SN74LVC245AN/KiCADv6/2025-09-18_19-35-56.kicad_sym")(options "")(descr ""))
+  (lib (name "SN74AHCT125N")(type "KiCad")(uri "${KIPRJMOD}/parts/ul_SN74AHCT125N/KiCADv6/2025-09-18_19-37-44.kicad_sym")(options "")(descr ""))
+  (lib (name "Teensy")(type "Legacy")(uri "${KIPRJMOD}/parts/Teensy/KiCADv6/teensy_library/teensy.lib")(options "")(descr ""))
+  (lib (name "TST-102-01-G-D")(type "KiCad")(uri "${KIPRJMOD}/parts/connectors/TST/TST-102-01-G-D/TST-102-01-G-D.kicad_sym")(options "")(descr ""))
+  (lib (name "TST-104-01-G-D")(type "KiCad")(uri "${KIPRJMOD}/parts/connectors/TST/TST-104-01-G-D/TST-104-01-G-D.kicad_sym")(options "")(descr ""))
+  (lib (name "TST-103-01-G-D")(type "KiCad")(uri "${KIPRJMOD}/parts/connectors/TST/TST-103-03-T-D/TST-103-03-T-D.kicad_sym")(options "")(descr ""))
+  (lib (name "PJ-002B")(type "KiCad")(uri "${KIPRJMOD}/parts/connectors/PJ_002B/PJ-002B.kicad_sym")(options "")(descr ""))
+  (lib (name "TST-105-01-G-D")(type "KiCad")(uri "${KIPRJMOD}/parts/connectors/TST/TST_105_01_G_D/TST-105-01-X-D.kicad_sym")(options "")(descr ""))
+)

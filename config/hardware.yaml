@@ -1,24 +1,32 @@
 device: "Dev1"
 
 digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
-  OLFACTOMETER_LEFT_S0:        "Dev1/port0/line0"
-  OLFACTOMETER_LEFT_S1:        "Dev1/port0/line1"
-  OLFACTOMETER_LEFT_S2:        "Dev1/port0/line2"
-  OLFACTOMETER_LEFT_LOAD_REQ:  "Dev1/port0/line3"
-  RCK_OLFACTOMETER_LEFT:       "Dev1/port0/line4"
-  OLFACTOMETER_RIGHT_S0:       "Dev1/port0/line5"
-  OLFACTOMETER_RIGHT_S1:       "Dev1/port0/line6"
-  OLFACTOMETER_RIGHT_S2:       "Dev1/port0/line7"
-  OLFACTOMETER_RIGHT_LOAD_REQ: "Dev1/port0/line8"
-  RCK_OLFACTOMETER_RIGHT:      "Dev1/port0/line9"
-  SWITCHVALVE_LEFT_S:          "Dev1/port0/line10"
-  SWITCHVALVE_LEFT_LOAD_REQ:   "Dev1/port0/line11"
-  RCK_SWITCHVALVE_LEFT:        "Dev1/port0/line12"
-  SWITCHVALVE_RIGHT_S:         "Dev1/port0/line13"
-  SWITCHVALVE_RIGHT_LOAD_REQ:  "Dev1/port0/line14"
-  RCK_SWITCHVALVE_RIGHT:       "Dev1/port0/line15"
-  TRIG_MICRO:                  "Dev1/port0/line16"
-  TRIG_CAMERA:                 "Dev1/port0/line17"
+  OLFACTOMETER_LEFT_S0:        "Dev1/port0/line0" # Pin 65
+  OLFACTOMETER_LEFT_S1:        "Dev1/port0/line1" # Pin 66
+  OLFACTOMETER_LEFT_S2:        "Dev1/port0/line2" # Pin 67
+  SWITCHVALVE_LEFT_S:          "Dev1/port0/line3" # Pin 68
+  OLFACTOMETER_RIGHT_S0:       "Dev1/port0/line4" # Pin 69
+  OLFACTOMETER_RIGHT_S1:       "Dev1/port0/line5" # Pin 70
+  OLFACTOMETER_RIGHT_S2:       "Dev1/port0/line6" # Pin 71
+  SWITCHVALVE_RIGHT_S:         "Dev1/port0/line7" # Pin 72
+  RCK_OLFACTOMETER_LEFT:       "Dev1/port0/line8" # Pin 97
+  RCK_SWITCHVALVE_LEFT:        "Dev1/port0/line9" # Pin 98
+  RCK_OLFACTOMETER_RIGHT:      "Dev1/port0/line10" # Pin 99
+  RCK_SWITCHVALVE_RIGHT:       "Dev1/port0/line11" # Pin 100
+  GLOBAL_LOAD_REQ:             "Dev1/port0/line12" # Pin 101
+  TRIG_MICRO:                  "Dev1/port0/line13" # Pin 102
+  TRIG_CAMERA:                 "Dev1/port0/line14" # Pin 103
+  # The following lines are deprecated; use GLOBAL_LOAD_REQ instead
+  # OLFACTOMETER_LEFT_LOAD_REQ:  "Dev1/port0/line19"
+  # OLFACTOMETER_RIGHT_LOAD_REQ: "Dev1/port0/line20"
+  # SWITCHVALVE_LEFT_LOAD_REQ:   "Dev1/port0/line21"    
+  # SWITCHVALVE_RIGHT_LOAD_REQ:  "Dev1/port0/line22" 
+
+digital_inputs:
+  READY_OLFACTOMETER_LEFT:       "Dev1/port0/line15" # Pin 104
+  READY_SWITCHVALVE_LEFT:        "Dev1/port0/line16" # Pin 105
+  READY_OLFACTOMETER_RIGHT:      "Dev1/port0/line17" # Pin 106
+  READY_SWITCHVALVE_RIGHT:       "Dev1/port0/line18" # Pin 107
 
 analog_outputs:     # MFC Control
   mfc.air_left_setpoint:   "Dev1/ao0"
