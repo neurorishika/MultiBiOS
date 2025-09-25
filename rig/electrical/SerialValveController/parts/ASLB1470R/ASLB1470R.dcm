@@ -1,0 +1,9 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP ASLB1470R
+D Slide Switch SP4T Through Hole, Right Angle
+K
+F https://www.apem.com/idec-apem/en_US/medias/APEM-Miniature-slide-switches-ASLB.pdf?context=bWFzdGVyfGRvY3VtZW50c3w3NTg1MTl8YXBwbGljYXRpb24vcGRmfGhlOS9oMzcvOTI0ODEwNzc1NzU5OC9BUEVNX01pbmlhdHVyZV9zbGlkZV9zd2l0Y2hlc19BU0xCLnBkZnxjNTg2OTBhOTE1NWYyMDA4MDQxNzBk
+$ENDCMP
+#
+#End Doc Library
