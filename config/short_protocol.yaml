@@ -9,7 +9,7 @@ protocol:
   # Global timing settings
   timing:
     base_unit: "ms"              # Base time unit (ms for 1ms precision)
-    sample_rate: 1000            # Hz - determines actual precision (10000Hz = 0.1ms)
+    sample_rate: 2000            # Hz - determines actual precision (10000Hz = 0.1ms)
     camera_interval: 100         # ms - 1/FPS, interval between pulse rise
     camera_pulse_duration: 5     # ms, duration of HIGH pulse
     preload_lead_ms: 2           # lead between LOAD_REQ and RCK

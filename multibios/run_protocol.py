@@ -30,8 +30,8 @@ import yaml
 
 import nidaqmx
 from nidaqmx.constants import AcquisitionType, Edge, LineGrouping
-from nidaqmx.stream_writers import DigitalMultiChannelWriter, AnalogMultiChannelWriter
-from nidaqmx.stream_readers import AnalogMultiChannelReader, DigitalMultiChannelReader
+from nidaqmx.stream_writers import AnalogMultiChannelWriter
+from nidaqmx.stream_readers import AnalogMultiChannelReader
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
 # Plotly
@@ -504,9 +504,7 @@ def main():
             samps_per_chan=N,
         )
         logger.debug(f"  Writing DO data array shape: {comp.do.shape}")
-        DigitalMultiChannelWriter(do_task.out_stream).write_many_sample_port_uint32(
-            comp.do.astype(np.uint32)
-        )
+        do_task.write(comp.do.astype(np.bool_))
         logger.info("✓ DO master task configured and data loaded")
 
         # AO slave
@@ -564,7 +562,6 @@ def main():
             logger.info("No AI channels configured, skipping AI task")
 
         # DI slave (READY inputs from Teensy)
-        di_buf = None
         if di_phys:
             logger.info("Configuring DI slave task...")
             for i, ch in enumerate(di_phys):
@@ -582,10 +579,7 @@ def main():
             di_task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 f"/{hw.device}/do/StartTrigger"
             )
-            di_reader = DigitalMultiChannelReader(di_task.in_stream)
-            di_buf = np.zeros((len(di_phys), N), dtype=np.uint32)
-            logger.debug(f"  DI buffer shape: {di_buf.shape}")
-            logger.info("✓ DI slave task configured and buffer allocated")
+            logger.info("✓ DI slave task configured successfully")
         else:
             logger.info("No DI channels configured, skipping DI task")
 
@@ -657,23 +651,25 @@ def main():
         if di_phys:
             logger.info("Reading DI data...")
             try:
-                di_reader.read_many_sample_port_uint32(
-                    di_buf,
-                    number_of_samples_per_channel=N,
-                    timeout=max(10.0, N / rate + 5.0),
+                di_data = di_task.read(
+                    number_of_samples_per_channel=N, 
+                    timeout=max(10.0, N / rate + 5.0)
                 )
                 di_task.stop()
                 
-                # Save DI data and provide statistics
+                # Save the returned DI data and provide statistics
                 di_file = run_dir / "capture_di.npz"
                 np.savez_compressed(
                     di_file,
                     names=np.array(di_names, dtype=object),
-                    data=di_buf.astype(np.bool_),
+                    # The returned data is already boolean, but we cast to be safe
+                    data=np.array(di_data).astype(np.bool_), 
                 )
                 logger.info(f"✓ DI data saved: {di_file}")
-                logger.info(f"  DI data shape: {di_buf.shape}")
-                di_bool = di_buf.astype(bool)
+                
+                # Use the new di_data variable for analysis
+                di_bool = np.array(di_data).astype(bool)
+                logger.info(f"  DI data shape: {di_bool.shape}")
                 for i, name in enumerate(di_names):
                     high_count = np.sum(di_bool[i])
                     high_pct = high_count / N * 100
