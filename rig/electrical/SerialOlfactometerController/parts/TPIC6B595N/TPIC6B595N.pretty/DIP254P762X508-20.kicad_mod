@@ -1193,7 +1193,7 @@
 		(uuid "4d68ec17-8425-4f56-a94b-8f8558c15545")
 	)
 	(embedded_fonts no)
-	(model "${KIPRJMOD}/parts/TPIC6B595N /TPIC6B595N.step"
+	(model "${KIPRJMOD}/parts/TPIC6B595N/TPIC6B595N.step"
 		(offset
 			(xyz -3.75 11.45 0)
 		)
