@@ -1311,23 +1311,27 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Mechanical:MountingHole"
+		(symbol "Mechanical:MountingHole_Pad"
+			(pin_numbers
+				(hide yes)
+			)
 			(pin_names
 				(offset 1.016)
+				(hide yes)
 			)
 			(exclude_from_sim no)
 			(in_bom no)
 			(on_board yes)
 			(property "Reference" "H"
-				(at 0 5.08 0)
+				(at 0 6.35 0)
 				(effects
 					(font
 						(size 1.27 1.27)
 					)
 				)
 			)
-			(property "Value" "MountingHole"
-				(at 0 3.175 0)
+			(property "Value" "MountingHole_Pad"
+				(at 0 4.445 0)
 				(effects
 					(font
 						(size 1.27 1.27)
@@ -1352,7 +1356,7 @@
 					(hide yes)
 				)
 			)
-			(property "Description" "Mounting Hole without connection"
+			(property "Description" "Mounting Hole with connection"
 				(at 0 0 0)
 				(effects
 					(font
@@ -1370,7 +1374,7 @@
 					(hide yes)
 				)
 			)
-			(property "ki_fp_filters" "MountingHole*"
+			(property "ki_fp_filters" "MountingHole*Pad*"
 				(at 0 0 0)
 				(effects
 					(font
@@ -1379,9 +1383,9 @@
 					(hide yes)
 				)
 			)
-			(symbol "MountingHole_0_1"
+			(symbol "MountingHole_Pad_0_1"
 				(circle
-					(center 0 0)
+					(center 0 1.27)
 					(radius 1.27)
 					(stroke
 						(width 1.27)
@@ -1389,6 +1393,26 @@
 					)
 					(fill
 						(type none)
+					)
+				)
+			)
+			(symbol "MountingHole_Pad_1_1"
+				(pin input line
+					(at 0 -2.54 90)
+					(length 2.54)
+					(name "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
 					)
 				)
 			)
@@ -2121,6 +2145,12 @@
 		(uuid "975770d5-3a38-40e2-a3ae-54d9e0e59cd9")
 	)
 	(junction
+		(at 170.18 157.48)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "9c62e37a-c160-4baa-b0c0-2769b73710bb")
+	)
+	(junction
 		(at 130.81 153.67)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -2281,6 +2311,16 @@
 			(type default)
 		)
 		(uuid "16c39987-7748-4fe6-855e-e01dc436ae94")
+	)
+	(wire
+		(pts
+			(xy 163.83 157.48) (xy 163.83 158.75)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "17ef8732-b692-471d-b24f-af72dab15675")
 	)
 	(wire
 		(pts
@@ -2461,6 +2501,16 @@
 			(type default)
 		)
 		(uuid "458d5791-5932-424b-a176-82a6b381dfa0")
+	)
+	(wire
+		(pts
+			(xy 170.18 157.48) (xy 163.83 157.48)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4b88960d-9630-4374-ae5d-eaacf28586c4")
 	)
 	(wire
 		(pts
@@ -2721,6 +2771,16 @@
 			(type default)
 		)
 		(uuid "7dfac1c8-9a25-4d23-86cf-3a0049acc4a5")
+	)
+	(wire
+		(pts
+			(xy 173.99 166.37) (xy 170.18 166.37)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "80a417f4-f178-435d-a51d-f6de0f371e6b")
 	)
 	(wire
 		(pts
@@ -3164,6 +3224,16 @@
 	)
 	(wire
 		(pts
+			(xy 173.99 157.48) (xy 170.18 157.48)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "dc3775aa-3c12-4d39-888b-83d6b724849a")
+	)
+	(wire
+		(pts
 			(xy 91.44 172.72) (xy 91.44 186.69)
 		)
 		(stroke
@@ -3171,6 +3241,16 @@
 			(type default)
 		)
 		(uuid "e24ba736-af54-4559-8333-d654f487619b")
+	)
+	(wire
+		(pts
+			(xy 170.18 157.48) (xy 170.18 166.37)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e2c0a980-cbfb-4f2c-afda-e08ec79d3fda")
 	)
 	(wire
 		(pts
@@ -4577,6 +4657,72 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 163.83 158.75 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "4fe0c2ad-3103-4851-b1d1-51abc8a9bfaa")
+		(property "Reference" "#PWR035"
+			(at 163.83 165.1 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 163.83 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 163.83 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 163.83 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 163.83 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "f0b5cb37-a3b8-4a0c-89dd-38e7fdb0acd3")
+		)
+		(instances
+			(project "SerialOlfactometerController"
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "#PWR035")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Connector:Screw_Terminal_01x02")
 		(at 118.11 77.47 90)
 		(unit 1)
@@ -4774,7 +4920,7 @@
 			)
 		)
 		(pin "1"
-			(uuid "b5907229-0a07-4117-9b46-681560276511")
+			(uuid "b5907229-0a07-4117-9b46-681560276512")
 		)
 		(instances
 			(project ""
@@ -5520,70 +5666,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 151.13 161.29 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "73c32aa9-4819-428d-b668-f8a44d63f6c4")
-		(property "Reference" "H2"
-			(at 153.67 160.0199 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "MountingHole"
-			(at 153.67 162.5599 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad"
-			(at 151.13 161.29 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 151.13 161.29 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Mounting Hole without connection"
-			(at 151.13 161.29 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(instances
-			(project ""
-				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
-					(reference "H2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Connector:TestPoint")
 		(at 130.81 153.67 0)
 		(unit 1)
@@ -6053,70 +6135,6 @@
 			(project "SerialOlfactometerController"
 				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
 					(reference "C4")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Mechanical:MountingHole")
-		(at 151.13 153.67 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "92c1e76a-301c-4e6b-b126-40ec1053b4a6")
-		(property "Reference" "H1"
-			(at 153.67 152.3999 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "MountingHole"
-			(at 153.67 154.9399 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "MountingHole:MountingHole_3.2mm_M3_DIN965_Pad"
-			(at 151.13 153.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 151.13 153.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Mounting Hole without connection"
-			(at 151.13 153.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(instances
-			(project ""
-				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
-					(reference "H1")
 					(unit 1)
 				)
 			)
@@ -7214,12 +7232,79 @@
 			)
 		)
 		(pin "1"
-			(uuid "b5907229-0a07-4117-9b46-681560276511")
+			(uuid "b5907229-0a07-4117-9b46-681560276513")
 		)
 		(instances
 			(project "SerialOlfactometerController"
 				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
 					(reference "TP3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:MountingHole_Pad")
+		(at 173.99 154.94 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "bbf22c3c-72e8-4c8c-8c1f-23e234cd00c9")
+		(property "Reference" "H3"
+			(at 176.53 152.3999 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "MountingHole_Pad"
+			(at 176.53 154.9399 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 173.99 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 173.99 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Mounting Hole with connection"
+			(at 173.99 154.94 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "fa0d417c-4ce6-4919-bbad-359c0d908bc0")
+		)
+		(instances
+			(project ""
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "H3")
 					(unit 1)
 				)
 			)
@@ -7425,6 +7510,73 @@
 			(project "SerialOlfactometerController"
 				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
 					(reference "#PWR015")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Mechanical:MountingHole_Pad")
+		(at 173.99 163.83 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "ce7177aa-2a9e-42c1-9c4e-6483d900d086")
+		(property "Reference" "H4"
+			(at 176.53 161.2899 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "MountingHole_Pad"
+			(at 176.53 163.8299 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 173.99 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 173.99 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Mounting Hole with connection"
+			(at 173.99 163.83 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "fa0d417c-4ce6-4919-bbad-359c0d908bc0")
+		)
+		(instances
+			(project ""
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "H4")
 					(unit 1)
 				)
 			)
@@ -7754,7 +7906,7 @@
 			)
 		)
 		(pin "1"
-			(uuid "b5907229-0a07-4117-9b46-681560276511")
+			(uuid "b5907229-0a07-4117-9b46-681560276514")
 		)
 		(instances
 			(project ""
