@@ -2078,6 +2078,16 @@
 			(embedded_fonts no)
 		)
 	)
+	(text "Only populate R8 & R9 for final board to reduce reflections.\nFor all other boards DNP"
+		(exclude_from_sim no)
+		(at 162.052 177.038 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+		(uuid "efd921df-60d9-4357-b8ea-34d31d3241fb")
+	)
 	(junction
 		(at 83.82 170.18)
 		(diameter 0)
@@ -2143,6 +2153,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "975770d5-3a38-40e2-a3ae-54d9e0e59cd9")
+	)
+	(junction
+		(at 109.22 156.21)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "99678c7b-3999-48e0-867f-e255f899a429")
 	)
 	(junction
 		(at 170.18 157.48)
@@ -2261,6 +2277,16 @@
 			(type default)
 		)
 		(uuid "0b8df3d0-afa1-49a8-945a-a8f83b8f4a28")
+	)
+	(wire
+		(pts
+			(xy 130.81 163.83) (xy 130.81 166.37)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0bd475af-e8a5-4e52-91b8-a5bfba82a5e4")
 	)
 	(wire
 		(pts
@@ -2491,6 +2517,16 @@
 			(type default)
 		)
 		(uuid "3dc39e8f-d41e-4ffa-b823-127884c2043a")
+	)
+	(wire
+		(pts
+			(xy 116.84 163.83) (xy 116.84 166.37)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4003b1d9-4d6f-445b-a609-cf494b9daf9f")
 	)
 	(wire
 		(pts
@@ -3054,6 +3090,16 @@
 	)
 	(wire
 		(pts
+			(xy 130.81 153.67) (xy 130.81 156.21)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "b935e251-468d-4e56-92eb-f58a905e5ef0")
+	)
+	(wire
+		(pts
 			(xy 88.9 147.32) (xy 93.98 147.32)
 		)
 		(stroke
@@ -3221,6 +3267,16 @@
 			(type default)
 		)
 		(uuid "d78ed471-21b6-4b8c-987e-1f28a216dbf0")
+	)
+	(wire
+		(pts
+			(xy 109.22 156.21) (xy 116.84 156.21)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "dbd4c4af-19a4-42dd-a233-441d029b2e97")
 	)
 	(wire
 		(pts
@@ -4589,6 +4645,73 @@
 	)
 	(symbol
 		(lib_id "Device:R")
+		(at 130.81 160.02 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "44411ab2-2669-44fc-8235-df2439781761")
+		(property "Reference" "R9"
+			(at 134.112 158.75 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "Term_Imp"
+			(at 136.652 161.798 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 132.588 160.02 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 130.81 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 130.81 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "63bc6ccd-ef90-4bbd-9979-7ddab63fafc6")
+		)
+		(pin "2"
+			(uuid "684208ea-b3c3-41eb-89e6-3837cc1d338d")
+		)
+		(instances
+			(project "SerialOlfactometerController"
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "R9")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
 		(at 78.74 160.02 180)
 		(unit 1)
 		(exclude_from_sim no)
@@ -4788,6 +4911,73 @@
 			(project "SerialOlfactometerController"
 				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
 					(reference "J2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 116.84 160.02 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "5adf83f5-fd2b-4f3e-8646-57f869f2fa22")
+		(property "Reference" "R8"
+			(at 120.142 158.496 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "Term_Imp"
+			(at 122.428 161.544 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 115.062 160.02 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 116.84 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 116.84 160.02 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "ccceca63-d38d-4cc3-b108-f64f581e5634")
+		)
+		(pin "2"
+			(uuid "a0b0f878-83a5-47e0-9540-5f202a237799")
+		)
+		(instances
+			(project "SerialOlfactometerController"
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "R8")
 					(unit 1)
 				)
 			)
@@ -6355,6 +6545,138 @@
 	)
 	(symbol
 		(lib_id "power:GND")
+		(at 130.81 166.37 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "9a6e429a-0544-4ec7-82c7-ef6710afbd5e")
+		(property "Reference" "#PWR037"
+			(at 130.81 172.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 130.81 171.45 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 130.81 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 130.81 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 130.81 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "e2221d4c-d078-4960-bf58-af7ac83f3e95")
+		)
+		(instances
+			(project "SerialOlfactometerController"
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "#PWR037")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 116.84 166.37 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "9bf1de47-57a8-4df1-adf2-bd369a367cc3")
+		(property "Reference" "#PWR036"
+			(at 116.84 172.72 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 116.84 171.45 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 116.84 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 116.84 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 116.84 166.37 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "ef607036-95a4-4ea9-bc26-7898cf6a1e38")
+		)
+		(instances
+			(project "SerialOlfactometerController"
+				(path "/50fb9429-008b-4a20-9c95-cf3891060a53"
+					(reference "#PWR036")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
 		(at 114.3 137.16 0)
 		(unit 1)
 		(exclude_from_sim no)
@@ -7029,10 +7351,9 @@
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "b6b57383-3ed6-4975-9167-a184f409d9b0")
 		(property "Reference" "J19"
-			(at 113.03 167.6399 90)
+			(at 111.252 177.546 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7041,7 +7362,7 @@
 			)
 		)
 		(property "Value" "TST-105-01-X-D"
-			(at 113.03 170.1799 90)
+			(at 111.252 180.086 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -7571,7 +7892,7 @@
 			)
 		)
 		(pin "1"
-			(uuid "fa0d417c-4ce6-4919-bbad-359c0d908bc0")
+			(uuid "fa0d417c-4ce6-4919-bbad-359c0d908bc1")
 		)
 		(instances
 			(project ""
