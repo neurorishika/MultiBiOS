@@ -12732,7 +12732,7 @@
 			)
 		)
 	)
-	(gr_text "SN74LVC245A"
+	(gr_text "SN54AHCT125"
 		(at 196.342 103.378 0)
 		(layer "F.SilkS")
 		(uuid "7a5526c8-140d-4034-b55d-7132eb49c7e9")
@@ -13742,7 +13742,7 @@
 			)
 		)
 	)
-	(gr_text "SN74LVC245A"
+	(gr_text "SN54AHCT125"
 		(at 148.336 105.918 0)
 		(layer "F.SilkS")
 		(uuid "dd9d7994-9f6d-494d-aec8-865a6e6be852")
