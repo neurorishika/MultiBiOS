@@ -87,7 +87,7 @@
 // CONFIGURATION PARAMETERS
 //=================================================================================================
 // --- SPI Communication ---
-constexpr uint32_t SPI_HZ = 10000000;   // 10 MHz. Safe for TPIC6B595 shift registers.
+constexpr uint32_t SPI_HZ = 1000000;   // 10 MHz. Safe for TPIC6B595 shift registers.
 
 // --- Pin Definitions: Control & Status ---
 constexpr int PIN_GLOBAL_LOAD = 22;     // INPUT:  Triggers reading S-lines and shifting data.

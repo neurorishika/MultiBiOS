@@ -49,6 +49,69 @@ python -m multibios.run_protocol \
 
 ### Visualization
 
+- `--interactive`: Always save interactive HTML preview (even without `--dry-run`)
+
+### Logging & Progress
+
+- `--verbose` / `-v`: Enable verbose logging with detailed progress information
+- `--debug`: Enable debug logging (extremely detailed, for troubleshooting)
+- `--progress`: Enable real-time progress monitor during protocol execution
+- `--progress-interval <ms>`: Set progress update interval in milliseconds (default: 100)
+
+## Real-Time Progress Monitoring
+
+The protocol runner now supports **real-time progress monitoring** during hardware execution. This displays the expected protocol state while the DAQ is running, helping you track what should be happening at each moment.
+
+### Enabling Progress Monitor
+
+```bash
+python -m multibios.run_protocol \
+  --yaml config/example_protocol.yaml \
+  --hardware config/hardware.yaml \
+  --verbose \
+  --progress \
+  --progress-interval 100
+```
+
+### What It Shows
+
+During execution, you'll see periodic updates like:
+
+```
+[  5.0%] [t=250.0ms] DO: RCK=LOW, LOAD_REQ=HIGH, S0=LOW | AO: MFC1=2.500V, MFC2=1.200V
+[ 10.0%] [t=500.0ms] DO: RCK=HIGH, LOAD_REQ=LOW, S0=HIGH | AO: MFC1=3.000V, MFC2=1.500V
+[ 15.0%] [t=750.0ms] DO: RCK=LOW, LOAD_REQ=LOW, S0=LOW | AO: MFC1=2.500V, MFC2=1.200V
+```
+
+Each update includes:
+- **Progress percentage**: How far through the protocol
+- **Timestamp**: Current protocol time in milliseconds
+- **Digital outputs (DO)**: State of key digital lines (HIGH/LOW)
+- **Analog outputs (AO)**: Voltage levels of analog channels
+
+### Customizing Updates
+
+- **Update frequency**: Use `--progress-interval <ms>` to control how often updates appear
+  - Lower values (e.g., 50ms) = more frequent updates, more detailed tracking
+  - Higher values (e.g., 500ms) = less frequent updates, cleaner output
+- **Which channels to show**: The monitor automatically shows the first 3 DO lines and first 2 AO channels. Full data is still recorded; this is just for display.
+
+### When to Use
+
+- **Long protocols**: Essential for protocols lasting several seconds or minutes
+- **Debugging**: Verify that the protocol is executing as expected
+- **User feedback**: Provide reassurance during execution (especially important when no visual indicators are available)
+- **Troubleshooting**: Identify at what point in the protocol issues occur
+
+### Performance Impact
+
+The progress monitor runs in a **background thread** and has minimal performance impact:
+- Does not interfere with hardware timing
+- Updates are calculated from elapsed time, not polling the DAQ
+- Very low CPU overhead (~0.1% on typical systems)
+
+### Visualization
+
 - `--interactive`: Always save interactive HTML preview (enabled by default)
 
 ## DAQ Clocking Architecture

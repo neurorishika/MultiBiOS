@@ -27,16 +27,16 @@ sequence:
     repeat: 0
     actions:
       - device: "mfc.air_left_setpoint"
-        value: 2.1 # 0-5V <,0-5sccm
+        value: 5.0 # 0-5V <,0-5sccm
         timing: 100
       - device: "mfc.air_right_setpoint"
-        value: 2.1
+        value: 5.0
         timing: 100
       - device: "mfc.odor_left_setpoint"
-        value: 2.1
+        value: 0.0
         timing: 100
       - device: "mfc.odor_right_setpoint"
-        value: 2.1
+        value: 0.0
         timing: 100
       - device: "olfactometer.left"
         state: "AIR" # [OFF,AIR,ODOR1,ODOR2,ODOR3,ODOR4,ODOR5,FLUSH]
@@ -50,43 +50,25 @@ sequence:
       - device: "switch_valve.right"
         state: "CLEAN"
         timing: 100
-      - device: "triggers.camera_continuous"
-        state: true
-        timing: 100
 
   # Odor presentation trials
-  - phase: "3s ODOR REGISTER + 3S RECORDING (100ms lag) + 3S ISI"
-    duration: 900            # 9 s
-    times: 5                   # repeat total of 5 times
+  - phase: "SWITCHER"
+    duration: 6000            # 5 s
+    times: 10                   # repeat total of 5 times
     randomize: false            # randomizes the index of the repeat
     actions:
-      - device: "olfactometer.left"
-        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"   # Sequential choice using repeat index
-                                                 # could be something like 
-                                                 # [ODOR1|ODOR2] to randomly select between options
-                                                 # or any combination of index and random
-        timing: 0
-      - device: "olfactometer.right"
-        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"  
-        timing: 0
-      - device: "triggers.microscope"
-        state: true
-        timing: 500           # starts at 5s
       - device: "switch_valve.left"
         state: "ODOR"
-        timing: 600           # 1s from recording start
-      - device: "switch_valve.right"
-        state: "ODOR"
-        timing: 610           # 1.1s from recording start
+        timing: 1000          
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 700           # 2s from recording start
+        timing: 2000
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 4000 
       - device: "switch_valve.right"
         value: "CLEAN"
-        timing: 710           # 2.1s from recording start
-      - device: "triggers.microscope"
-        state: true
-        timing: 800          # record for 30s
+        timing: 5000 
 
   # Post-protocol phase
   - phase: "SHUTDOWN SEQUENCE"
@@ -117,7 +99,4 @@ sequence:
       - device: "switch_valve.right"
         state: "CLEAN"
         timing: 0
-      - device: "triggers.camera_continuous"
-        timing: 0
-        state: false
 

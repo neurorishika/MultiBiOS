@@ -30,6 +30,7 @@
 - 🛡️ **Built-in safety guardrails** prevent timing conflicts at compile-time
 - 🎲 **Reproducible randomization** via configurable random seeds
 - 📈 **Interactive visualization** with real-time and post-hoc analysis
+- ⏱️ **Real-time progress monitoring** shows expected protocol state during execution
 - 🔌 **Teensy 4.1 firmware** for microsecond-precise valve preloading
 - 📝 **YAML protocols** for human-readable experimental descriptions
 
@@ -99,7 +100,24 @@ poetry shell
        --hardware config/hardware.yaml
    ```
 
-3. **Analyze results**:
+3. **Run with real-time progress monitoring**:
+   ```bash
+   poetry run python -m multibios.run_protocol \
+       --yaml config/example_protocol.yaml \
+       --hardware config/hardware.yaml \
+       --verbose --progress
+   ```
+   
+   This displays the expected protocol state during execution:
+   ```
+   DO Legend: [0:RCK] [1:LOAD_REQ] [2:S0] [3:S1] [4:S2]
+   AO Legend: [0:MFC1] [1:MFC2]
+   [  5%] 250.0ms | DO:░█░░█ | AO:0:2.50,1:1.20
+   [ 10%] 500.0ms | DO:█░█░░ | AO:0:3.00,1:1.50
+   ```
+   (█=HIGH, ░=LOW, shows all channels at once!)
+
+4. **Analyze results**:
    ```bash
    poetry run python -m multibios.viz_protocol data/runs/latest
    ```

@@ -1,0 +1,40 @@
+# Odor Presentation Protocol Configuration
+# Supports up to 1ms precision timing for NIDAQ generation
+
+protocol:
+  name: "Example Odor Protocol"
+  version: "1.0"
+  description: "Example Description"
+  
+  # Global timing settings
+  timing:
+    base_unit: "ms"              # Base time unit (ms for 1ms precision)
+    sample_rate: 2000            # Hz - determines actual precision (10000Hz = 0.1ms)
+    camera_interval: 100         # ms - 1/FPS, interval between pulse rise
+    camera_pulse_duration: 5     # ms, duration of HIGH pulse
+    preload_lead_ms: 2           # lead between LOAD_REQ and RCK
+    load_req_ms: 1               # width of LOAD_REQ pulse
+    rck_pulse_ms: 1              # width of RCK pulse
+    trig_pulse_ms: 5             # width of microscope pulses
+    setup_hold_samples: 100      # samples to hold S-bits before/after LOAD_REQ
+    load_mode: "global"
+
+# Protocol sequence definition
+sequence:
+  # Pre-protocol setup phase
+  - phase: "LATCHER"
+    duration: 100 # 1 s for warmup and 1 s for stabilization
+    repeat: 1000
+    actions:
+      - device: "olfactometer.left"
+        state: "OFF"
+        timing: 50
+      - device: "olfactometer.right"
+        state: "OFF"
+        timing: 50
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 50
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 50

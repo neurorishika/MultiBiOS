@@ -20,7 +20,7 @@ Artifacts are written to data/runs/YYYY-MM-DD_HH-MM-SS/
 
 from __future__ import annotations
 
-import argparse, json, time, logging, sys
+import argparse, json, time, logging, sys, threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -43,6 +43,134 @@ from multibios.protocol.schema import ProtocolCompiler, TimingConfig, CompileErr
 
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
+
+
+# ----------------------------- progress monitor -----------------------------
+class ProtocolProgressMonitor:
+    """Monitor and display protocol execution progress in real-time."""
+    
+    def __init__(
+        self, 
+        do_data: np.ndarray, 
+        do_names: List[str],
+        ao_data: np.ndarray,
+        ao_names: List[str],
+        dt_ms: float,
+        sample_rate: int,
+        logger: logging.Logger,
+        update_interval_ms: int = 100
+    ):
+        """
+        Initialize the progress monitor.
+        
+        Args:
+            do_data: Digital output array (n_lines x n_samples)
+            do_names: Names of digital output lines
+            ao_data: Analog output array (n_channels x n_samples)
+            ao_names: Names of analog output channels
+            dt_ms: Time step per sample in milliseconds
+            sample_rate: DAQ sample rate in Hz
+            logger: Logger instance for output
+            update_interval_ms: How often to update the display (milliseconds)
+        """
+        self.do_data = do_data.astype(bool)
+        self.do_names = do_names
+        self.ao_data = ao_data
+        self.ao_names = ao_names
+        self.dt_ms = dt_ms
+        self.sample_rate = sample_rate
+        self.logger = logger
+        self.update_interval_ms = update_interval_ms
+        
+        self.n_samples = do_data.shape[1]
+        self.duration_s = self.n_samples / sample_rate
+        
+        self.start_time = None
+        self.stop_flag = threading.Event()
+        self.monitor_thread = None
+        
+    def _format_state(self, sample_idx: int) -> str:
+        """Format the current expected state as a compact readable string."""
+        # Get current sample (or last if we're past the end)
+        idx = min(sample_idx, self.n_samples - 1)
+        elapsed_ms = sample_idx * self.dt_ms
+        
+        # Build compact state string
+        parts = [f"{elapsed_ms:7.1f}ms"]
+        
+        # Digital outputs - show as indexed pattern
+        if self.do_names:
+            do_pattern = "".join("█" if self.do_data[i, idx] else "░" 
+                                for i in range(len(self.do_names)))
+            parts.append(f"DO:{do_pattern}")
+        
+        # Analog outputs - show significant non-zero values with indices
+        if self.ao_names:
+            active_ao = []
+            for i in range(len(self.ao_names)):
+                v = self.ao_data[i, idx]
+                if abs(v) > 0.01:  # Only show non-zero channels
+                    active_ao.append(f"{i}:{v:.2f}")
+            
+            if active_ao:
+                parts.append(f"AO:{','.join(active_ao)}")
+            else:
+                parts.append("AO:---")
+        
+        return " | ".join(parts)
+    
+    def _monitor_loop(self):
+        """Background thread that periodically displays expected state."""
+        last_update_time = time.time()
+        
+        while not self.stop_flag.is_set():
+            current_time = time.time()
+            
+            # Calculate expected sample based on elapsed time
+            elapsed_s = current_time - self.start_time
+            expected_sample = int(elapsed_s * self.sample_rate)
+            
+            # Check if it's time to update
+            if (current_time - last_update_time) >= (self.update_interval_ms / 1000.0):
+                if expected_sample < self.n_samples:
+                    # Protocol still running
+                    progress_pct = (expected_sample / self.n_samples) * 100
+                    state_str = self._format_state(expected_sample)
+                    # Compact format: [  5%] instead of [  5.0%]
+                    self.logger.info(f"[{progress_pct:3.0f}%] {state_str}")
+                    last_update_time = current_time
+                elif expected_sample >= self.n_samples and elapsed_s <= self.duration_s + 1.0:
+                    # Just finished
+                    self.logger.info(f"[100%] Protocol execution complete")
+                    break
+            
+            # Sleep briefly to avoid busy-waiting
+            time.sleep(0.01)
+    
+    def start(self):
+        """Start monitoring in a background thread."""
+        self.start_time = time.time()
+        self.stop_flag.clear()
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread.start()
+        
+        # Print compact startup info
+        self.logger.info(f"Progress monitor: {self.n_samples} samples @ {self.sample_rate}Hz, updates every {self.update_interval_ms}ms")
+        
+        # Print legend for channel indices
+        if self.do_names:
+            do_legend = " ".join(f"[{i}:{name}]" for i, name in enumerate(self.do_names))
+            self.logger.info(f"DO Legend: {do_legend}")
+        
+        if self.ao_names:
+            ao_legend = " ".join(f"[{i}:{name}]" for i, name in enumerate(self.ao_names))
+            self.logger.info(f"AO Legend: {ao_legend}")
+        
+    def stop(self):
+        """Stop monitoring."""
+        self.stop_flag.set()
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=2.0)
 
 
 # ----------------------------- hardware adapter -----------------------------
@@ -185,6 +313,17 @@ def main():
         "--debug", 
         action="store_true", 
         help="Enable debug logging (even more verbose than --verbose)"
+    )
+    ap.add_argument(
+        "--progress",
+        action="store_true",
+        help="Enable real-time progress monitor during protocol execution"
+    )
+    ap.add_argument(
+        "--progress-interval",
+        type=int,
+        default=100,
+        help="Progress update interval in milliseconds (default: 100)"
     )
     # Optional pulse tuning overrides (otherwise read from YAML)
     ap.add_argument("--preload-lead-ms", type=int)
@@ -425,20 +564,21 @@ def main():
     logger.info(f"  Total edge transitions: {total_edges}")
 
     # Generate preview visualization
-    logger.info("Generating preview visualization...")
-    t_ms = np.arange(comp.N) * comp.dt_ms
-    fig = make_protocol_figure(
-        t_ms,
-        comp.do.astype(bool),
-        do_names,
-        comp.ao,
-        ao_names,
-        title="Preview (no DAQ)",
-        rck_log=comp.rck_log,
-    )
-    preview_file = run_dir / "preview.html"
-    fig.write_html(preview_file, include_plotlyjs="cdn")
-    logger.info(f"  ✓ Preview visualization: {preview_file}")
+    if args.interactive:
+        logger.info("Generating preview visualization...")
+        t_ms = np.arange(comp.N) * comp.dt_ms
+        fig = make_protocol_figure(
+            t_ms,
+            comp.do.astype(bool),
+            do_names,
+            comp.ao,
+            ao_names,
+            title="Preview (no DAQ)",
+            rck_log=comp.rck_log,
+        )
+        preview_file = run_dir / "preview.html"
+        fig.write_html(preview_file, include_plotlyjs="cdn")
+        logger.info(f"  ✓ Preview visualization: {preview_file}")
 
     if args.dry_run:
         logger.info("=== DRY RUN COMPLETE ===")
@@ -457,6 +597,10 @@ def main():
     logger.info(f"  Sample rate: {rate} Hz")
     logger.info(f"  Total samples: {N}")
     logger.info(f"  Estimated duration: {N/rate:.2f} seconds")
+    if args.progress:
+        logger.info(f"  Real-time progress monitoring: ENABLED (interval: {args.progress_interval}ms)")
+    else:
+        logger.info(f"  Real-time progress monitoring: DISABLED (use --progress to enable)")
 
     # Prepare channel lists
     ai_names = list(hw.analog_inputs.keys())
@@ -597,6 +741,22 @@ def main():
             
         logger.debug("  Starting DO master task...")
         start_time = time.time()
+        
+        # Initialize progress monitor if requested
+        progress_monitor = None
+        if args.progress:
+            progress_monitor = ProtocolProgressMonitor(
+                do_data=comp.do,
+                do_names=do_names,
+                ao_data=comp.ao,
+                ao_names=ao_names,
+                dt_ms=comp.dt_ms,
+                sample_rate=comp.tcfg.sample_rate,
+                logger=logger,
+                update_interval_ms=args.progress_interval
+            )
+            progress_monitor.start()
+        
         do_task.start()
         logger.info("✓ All DAQ tasks started, protocol execution in progress...")
 
@@ -611,6 +771,10 @@ def main():
         except Exception as e:
             logger.error(f"Protocol execution failed: {e}")
             raise
+        finally:
+            # Stop progress monitor if it was running
+            if progress_monitor:
+                progress_monitor.stop()
             
         # Stop tasks and read data
         logger.info("Stopping tasks and reading data...")
@@ -709,25 +873,26 @@ def main():
         logger.debug(f"    AI overlay shape: {ai_data_overlay.shape}")
 
     # Generate comprehensive visualization
-    logger.info("Generating comprehensive interactive figure...")
-    fig = make_protocol_figure(
-        t_ms,
-        comp.do.astype(bool),
-        do_names,
-        comp.ao,
-        ao_names,
-        ai=ai_data_overlay,
-        ai_names=ai_names_overlay,
-        di=di_data_overlay,
-        di_names=di_names_overlay,
-        rck_log=comp.rck_log,
-        title="Protocol (DO/AO) + READY (DI) + MFC Feedback (AI)",
-    )
-    
-    final_preview = run_dir / "preview.html"
-    logger.info("Writing final interactive HTML...")
-    fig.write_html(final_preview, include_plotlyjs="cdn")
-    logger.info(f"✓ Final visualization saved: {final_preview}")
+    if args.interactive:
+        logger.info("Generating comprehensive interactive figure...")
+        fig = make_protocol_figure(
+            t_ms,
+            comp.do.astype(bool),
+            do_names,
+            comp.ao,
+            ao_names,
+            ai=ai_data_overlay,
+            ai_names=ai_names_overlay,
+            di=di_data_overlay,
+            di_names=di_names_overlay,
+            rck_log=comp.rck_log,
+            title="Protocol (DO/AO) + READY (DI) + MFC Feedback (AI)",
+        )
+        
+        final_preview = run_dir / "preview.html"
+        logger.info("Writing final interactive HTML...")
+        fig.write_html(final_preview, include_plotlyjs="cdn")
+        logger.info(f"✓ Final visualization saved: {final_preview}")
 
     # Generate READY edge log if present
     if di_file.exists():
@@ -755,7 +920,6 @@ def main():
         logger.info(f"✓ Analog inputs captured: {len(ai_names_overlay)} channels")
     if di_names_overlay:
         logger.info(f"✓ Digital inputs captured: {len(di_names_overlay)} channels")
-    logger.info(f"✓ Interactive preview: {final_preview}")
     
     # List all generated files
     logger.info("Generated artifacts:")

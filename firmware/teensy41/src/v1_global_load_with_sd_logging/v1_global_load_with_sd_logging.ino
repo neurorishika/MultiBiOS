@@ -59,7 +59,7 @@ volatile int logHead = 0; // Index to write to
 volatile int logTail = 0; // Index to read from
 
 // -------------------- SPI config --------------------
-constexpr uint32_t SPI_HZ = 10000000;
+constexpr uint32_t SPI_HZ = 1'000'000;
 
 // -------------------- State tables --------------------
 enum : uint8_t { ST_OFF=0, ST_AIR, ST_ODOR1, ST_ODOR2, ST_ODOR3, ST_ODOR4, ST_ODOR5, ST_FLUSH };
@@ -230,6 +230,8 @@ void setup() {
   pinMode(PIN_RCK_SENSE_OLFA_R, INPUT);
   pinMode(PIN_RCK_SENSE_SW_L,   INPUT);
   pinMode(PIN_RCK_SENSE_SW_R,   INPUT);
+
+  pinMode(PIN_MOSI, OUTPUT);
 
   // Interrupts
   attachInterrupt(digitalPinToInterrupt(PIN_GLOBAL_LOAD), isr_global_load, RISING);
