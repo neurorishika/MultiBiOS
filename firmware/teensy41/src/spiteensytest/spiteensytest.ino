@@ -25,7 +25,7 @@ void setup() {
 }
 
 void loop() {
-  if (tick >= 100) {                    // new pattern every 1s
+  if (tick >= 1000) {                    // new pattern every 1s
     tick = 0;
     patternIndex++;
 
