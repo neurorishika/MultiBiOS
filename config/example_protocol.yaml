@@ -27,16 +27,16 @@ sequence:
     repeat: 0
     actions:
       - device: "mfc.air_left_setpoint"
-        value: 2.1 # 0-5V <,0-5sccm
+        value: 0.03
         timing: 1000
       - device: "mfc.air_right_setpoint"
-        value: 2.1
+        value: 0.03
         timing: 1000
       - device: "mfc.odor_left_setpoint"
-        value: 2.1
+        value: 0.03
         timing: 1000
       - device: "mfc.odor_right_setpoint"
-        value: 2.1
+        value: 0.03
         timing: 1000
       - device: "olfactometer.left"
         state: "AIR" # [OFF,AIR,ODOR1,ODOR2,ODOR3,ODOR4,ODOR5,FLUSH]

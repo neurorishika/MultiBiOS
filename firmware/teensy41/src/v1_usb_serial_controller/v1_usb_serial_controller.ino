@@ -56,9 +56,12 @@
     TEST STOP                  -> stop walking immediately
     Valid bits walked: 0–11 (OLF1), 16–27 (OLF2), 32,33 (SV2_0..1), 40,41 (SV1_0..1)
 
-  Periodic printing:
-    - Every 1s:  "000000000000 000000000000 00 00"
-                   ^ OLF1(12)    ^ OLF2(12)   ^SV1 ^SV2   (MSB..LSB per group)
+  Heartbeat (periodic state print, default OFF):
+    HB ON                    -> enable periodic printing
+    HB OFF                   -> disable periodic printing
+    HB <ms>                  -> set interval (e.g. HB 2000 for 2 s); also enables
+    Format: "000000000000 000000000000 00 00"
+              ^ OLF1(12)    ^ OLF2(12)   ^SV1 ^SV2   (MSB..LSB per group)
 
   Notes:
     - SPI is 1 MHz, MODE0, MSB first. No SD logging here (serial-centric tool).
@@ -122,9 +125,10 @@ struct TestRunner {
   elapsedMillis phaseTimer;
 } testRun;
 
-// ---------------- Periodic printing ----------------
+// ---------------- Periodic heartbeat (default OFF) -
+bool          heartbeatOn = false;
+uint32_t      heartbeatInterval = 1000;   // ms, configurable
 elapsedMillis statusTimer;
-constexpr uint32_t STATUS_MS = 1000;
 
 // ===================================================
 // ================ BASE LAYER =======================
@@ -404,13 +408,18 @@ static inline void handle_command_line(String line) {
       "  TEST START               (500 ms ON / 500 ms OFF)\n"
       "  TEST START <on_ms> <off_ms>\n"
       "  TEST STOP\n"
-      "Periodic print: 000000000000 000000000000 00 00\n"
+      "\n"
+      "Heartbeat (periodic state print, default OFF):\n"
+      "  HB ON                    enable\n"
+      "  HB OFF                   disable\n"
+      "  HB <ms>                  set interval & enable\n"
+      "Format: 000000000000 000000000000 00 00\n"
     ));
     return;
   }
 
   // ---- PRINT / CLEAR / RESET / SEND ----
-  if (cmd == "PRINT") { print_states(); return; }
+  if (cmd == "PRINT") { Serial.print("STATE: "); print_states(); return; }
   if (cmd == "CLEAR") { clear_states(); Serial.println("CLEARED"); return; }
   if (cmd == "RESET") { clear_states(); do_send(); Serial.println("RESET OK"); return; }
   if (cmd == "SEND")  { do_send(); return; }
@@ -423,8 +432,9 @@ static inline void handle_command_line(String line) {
     if (!apply_switch_macro(cmd, tok[1], ms)) {
       Serial.println("ERR: Bad CLN/ODR args");
     } else {
-      if (ms > 0) { Serial.print("ALIAS OK (timed "); Serial.print(ms); Serial.println(" ms)"); }
-      else        { Serial.println("ALIAS OK"); }
+      Serial.print(cmd); Serial.print(" "); Serial.print(tok[1]);
+      if (ms > 0) { Serial.print(" OK (timed "); Serial.print(ms); Serial.println(" ms)"); }
+      else        { Serial.println(" OK"); }
     }
     return;
   }
@@ -435,7 +445,26 @@ static inline void handle_command_line(String line) {
     if (!apply_olf_macro_and_send(cmd, tok[1])) {
       Serial.println("ERR: Bad CTRL/ODx target or level");
     } else {
-      Serial.println("ALIAS OK");
+      Serial.print(cmd); Serial.print(" "); Serial.print(tok[1]); Serial.println(" OK");
+    }
+    return;
+  }
+
+  // ---- Heartbeat control ----
+  if (cmd == "HB") {
+    if (ntok < 2) { Serial.println("ERR: HB requires ON, OFF, or <ms>"); return; }
+    String arg = tok[1]; arg.toUpperCase();
+    if (arg == "ON")       { heartbeatOn = true;  Serial.println("HB ON"); }
+    else if (arg == "OFF") { heartbeatOn = false; Serial.println("HB OFF"); }
+    else {
+      long v;
+      if (parse_int_if_numeric(tok[1], v) && v > 0) {
+        heartbeatInterval = (uint32_t)v;
+        heartbeatOn = true;
+        Serial.print("HB interval="); Serial.print(v); Serial.println(" ms (enabled)");
+      } else {
+        Serial.println("ERR: HB expects ON, OFF, or positive <ms>");
+      }
     }
     return;
   }
@@ -475,7 +504,10 @@ static inline void handle_command_line(String line) {
     }
     else if (sub == "STOP") {
       testRun.active = false;
-      Serial.println("TEST STOP — transmissions re-enabled for SEND/macros/timers.");
+      // Restore staged state to hardware (TEST doesn't modify staged state,
+      // so this clears any residual one-hot frame left by the walker).
+      do_send();
+      Serial.println("TEST STOP — staged state restored; transmissions re-enabled.");
       return;
     }
     else {
@@ -566,8 +598,8 @@ void loop() {
     }
   }
 
-  // --------- periodic state print ---------
-  if (statusTimer >= STATUS_MS) {
+  // --------- periodic heartbeat (if enabled) ---------
+  if (heartbeatOn && statusTimer >= heartbeatInterval) {
     statusTimer = 0;
     print_states();
   }

@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Experiment Configuration — Computer-Timebase + Serial Approach
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This file configures the experiment runner (multibios.experiment) which
+# executes protocols using:
+#   - Teensy v2 serial for odor valve control
+#   - AlicatManager serial for MFC setpoints
+#   - NIDAQ finite DO task for camera/microscope triggers & latch pulses
+#   - pybmt / FicTrac for continuous ball tracking
+#
+# The protocol itself (phases, timing, odor sequences) is still defined in
+# the protocol YAML (e.g. config/example_protocol.yaml).
+
+# ─── Teensy v2 Serial Controller ──────────────────────────────────────────
+# The COM port where the Teensy 4.1 running v2_usb_serial_controller is
+# connected.  Use 'Device Manager' or `Get-WMIObject Win32_SerialPort` to
+# find the correct port.
+teensy_port: "COM4"
+teensy_baud: 115200
+
+# ─── FicTrac / Ball Tracking ──────────────────────────────────────────────
+# Path to the FicTrac configuration file (camera calibration, ROI, etc.)
+fictrac_config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+
+# Path to the FicTrac binary.  Leave empty to search PATH.
+fictrac_bin: "C:/Rishika/fictrac_pybmt/fictrac-pgr.exe"
+
+# Console output file for FicTrac (stdout redirect)
+fictrac_console_out: "fictrac_output.txt"
+
+# Maximum allowed time without a new FicTrac frame before the experiment
+# aborts. This catches cases where FicTrac exits or stalls mid-run.
+fictrac_timeout_s: 5.0
+
+# ─── Mass Flow Controllers ────────────────────────────────────────────────
+# MFC control mode:
+#   "alicat_serial" — use AlicatManager (serial protocol) to set flow rates
+#   "none"          — skip MFC control entirely (manual setup)
+mfc_mode: "alicat_serial"
+
+# Mapping from protocol YAML device names to Alicat unit IDs.
+# These are the single-character addresses assigned to each Alicat device.
+# Run `flow_monitor.py --scan` to discover your device addresses.
+mfc_device_map:
+  mfc.air_left_setpoint: "A"
+  mfc.air_right_setpoint: "B"
+  mfc.odor_left_setpoint: "C"
+  mfc.odor_right_setpoint: "D"
+
+# COM ports to scan for Alicat devices (leave empty to use cached discovery)
+alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
+
+# Baud rates to try during Alicat scan
+alicat_baud: [115200]
+
+# ─── NIDAQ Trigger / Latch Settings ──────────────────────────────────────
+# How often (ms) to fire GLOBAL_LOAD_REQ + RCK latch pulses.
+# This determines how quickly Teensy-staged valve changes appear on the
+# shift register outputs.  10 ms = 100 Hz, well under 1 camera frame (60 Hz) and typical FicTrac latency (~50 ms).  
+# Adjust as needed to balance valve response time vs. DAQ load (shorter intervals = more responsive but more CPU/DAQ overhead).
+# Lower values = faster valve response but more DAQ samples.
+latch_interval_ms: 10.0
+
+# ─── Data Output ──────────────────────────────────────────────────────────
+# Base directory for experiment runs.  A timestamped subdirectory is created
+# for each run containing: event_log.json, fictrac_data.csv, timeline.csv,
+# trigger_waveform.npz, protocol.yaml, hardware.yaml, meta.json.
+data_dir: "data/runs"

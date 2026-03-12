@@ -1,0 +1,302 @@
+# ==============================================================
+#  ODOR LATERALIZATION PROTOCOL
+#  Tests 5 conditions: bilateral, left-only, right-only,
+#  left->right (20 s overlap), right->left (20 s overlap).
+#
+#  ┌─────────────────────────────────────────────────────┐
+#  │  CHANGE THE ODOR HERE (one place, applies to all)   │
+#  │  Options: ODOR1  ODOR2  ODOR3  ODOR4  ODOR5  FLUSH  │
+#  └─────────────────────────────────────────────────────┘
+_active_odor: &odor "ODOR1"
+_mfc_odor_flow_slpm: &mfc_flow 0.03
+# ==============================================================
+
+protocol:
+  name: "Odor Lateralization"
+  version: "1.0"
+  description: >
+    Olfactometer switches to odor and saturates for 60 s.
+    Each trial delivers a 30 s odor pulse via switch valves;
+    sequential trials have a 20 s overlap window.
+    Total ~7 min including boot and shutdown.
+
+  timing:
+    base_unit: "ms"
+    sample_rate: 1000            # Hz  (1 ms precision)
+    camera_interval: 100         # ms  (10 Hz camera trigger)
+    camera_pulse_duration: 5     # ms
+    preload_lead_ms: 2
+    load_req_ms: 1
+    rck_pulse_ms: 1
+    trig_pulse_ms: 5
+    setup_hold_samples: 100
+    load_mode: "global"
+
+sequence:
+
+  # ────────────────────────────────────────────────────────────
+  #  BOOT  —  start flows, camera, olfactometers to AIR
+  # ────────────────────────────────────────────────────────────
+  - phase: "BOOT SEQUENCE"
+    duration: 11000              # 1 s warmup + 10 s stabilization
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: *mfc_flow
+        timing: 1000
+      - device: "mfc.air_right_setpoint"
+        value: *mfc_flow
+        timing: 1000
+      - device: "mfc.odor_left_setpoint"
+        value: *mfc_flow
+        timing: 1000
+      - device: "mfc.odor_right_setpoint"
+        value: *mfc_flow
+        timing: 1000
+      - device: "triggers.camera_continuous"
+        state: true
+        timing: 1000
+      - device: "olfactometer.left"
+        state: "AIR"
+        timing: 1000
+      - device: "olfactometer.right"
+        state: "AIR"
+        timing: 1005
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 1010
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 1015
+
+  # ────────────────────────────────────────────────────────────
+  #  OLFACTOMETER SATURATION  —  60 s to fill odor tube
+  #  Switch valves stay CLEAN; odor never reaches animal yet.
+  #  Microscope pulse at 60 s marks "ready to start trials".
+  # ────────────────────────────────────────────────────────────
+  - phase: "OLFACTOMETER SATURATION"
+    duration: 65000              # 60 s saturation + 5 s buffer
+    repeat: 0
+    actions:
+      - device: "olfactometer.left"
+        state: *odor             # <-- resolves to _active_odor above
+        timing: 0
+      - device: "olfactometer.right"
+        state: *odor
+        timing: 5
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0
+      - device: "triggers.microscope"
+        state: true
+        timing: 60000            # "saturation done, trials starting" marker
+
+  # ────────────────────────────────────────────────────────────
+  #  TRIAL 1 — BILATERAL
+  #  Both switch valves: CLEAN -> ODOR -> CLEAN (30 s pulse)
+  #
+  #  Timeline:
+  #    t=0 s    SV left + right -> ODOR  |  micro trigger (start)
+  #    t=30 s   SV left + right -> CLEAN |  micro trigger (end)
+  #    t=30–70  ISI (40 s)
+  # ────────────────────────────────────────────────────────────
+  - phase: "TRIAL 1 - BILATERAL"
+    duration: 70000              # 30 s odor + 40 s ISI
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0                # trial start
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 30000
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 30000
+      - device: "triggers.microscope"
+        state: true
+        timing: 30000            # trial end
+
+  # ────────────────────────────────────────────────────────────
+  #  TRIAL 2 — LEFT ONLY
+  #  Only left switch valve opens. Right stays CLEAN.
+  #
+  #  Timeline:
+  #    t=0 s    SV left -> ODOR, SV right -> CLEAN (explicit)
+  #    t=30 s   SV left -> CLEAN
+  #    t=30–70  ISI (40 s)
+  # ────────────────────────────────────────────────────────────
+  - phase: "TRIAL 2 - LEFT ONLY"
+    duration: 70000
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0                # explicit: right stays on air
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 30000
+      - device: "triggers.microscope"
+        state: true
+        timing: 30000
+
+  # ────────────────────────────────────────────────────────────
+  #  TRIAL 3 — RIGHT ONLY
+  #  Only right switch valve opens. Left stays CLEAN.
+  #
+  #  Timeline:
+  #    t=0 s    SV right -> ODOR, SV left -> CLEAN (explicit)
+  #    t=30 s   SV right -> CLEAN
+  #    t=30–70  ISI (40 s)
+  # ────────────────────────────────────────────────────────────
+  - phase: "TRIAL 3 - RIGHT ONLY"
+    duration: 70000
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0                # explicit: left stays on air
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 30000
+      - device: "triggers.microscope"
+        state: true
+        timing: 30000
+
+  # ────────────────────────────────────────────────────────────
+  #  TRIAL 4 — LEFT THEN RIGHT  (20 s overlap)
+  #
+  #  Timeline:
+  #    t=0 s    SV left  -> ODOR           micro trigger (left start)
+  #    t=10 s   SV right -> ODOR           micro trigger (right start / overlap begin)
+  #    t=30 s   SV left  -> CLEAN          (left closes; right still open)
+  #    t=40 s   SV right -> CLEAN          micro trigger (all done)
+  #    t=40–70  ISI (30 s)
+  #
+  #  Overlap window: 10 s – 30 s = 20 s
+  # ────────────────────────────────────────────────────────────
+  - phase: "TRIAL 4 - LEFT THEN RIGHT"
+    duration: 70000              # 40 s active + 30 s ISI
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0                # left valve open
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0                # explicit: right starts on air
+      - device: "triggers.microscope"
+        state: true
+        timing: 10000            # right valve opens / overlap begins
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 10000
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 30000            # left closes (overlap ends)
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 40000            # right closes
+      - device: "triggers.microscope"
+        state: true
+        timing: 40000            # all valves closed
+
+  # ────────────────────────────────────────────────────────────
+  #  TRIAL 5 — RIGHT THEN LEFT  (20 s overlap)
+  #
+  #  Timeline:
+  #    t=0 s    SV right -> ODOR           micro trigger (right start)
+  #    t=10 s   SV left  -> ODOR           micro trigger (left start / overlap begin)
+  #    t=30 s   SV right -> CLEAN          (right closes; left still open)
+  #    t=40 s   SV left  -> CLEAN          micro trigger (all done)
+  #    t=40–70  ISI (30 s)
+  #
+  #  Overlap window: 10 s – 30 s = 20 s
+  # ────────────────────────────────────────────────────────────
+  - phase: "TRIAL 5 - RIGHT THEN LEFT"
+    duration: 70000
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0                # right valve open
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0                # explicit: left starts on air
+      - device: "triggers.microscope"
+        state: true
+        timing: 10000            # left valve opens / overlap begins
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 10000
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 30000            # right closes (overlap ends)
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 40000            # left closes
+      - device: "triggers.microscope"
+        state: true
+        timing: 40000            # all valves closed
+
+  # ────────────────────────────────────────────────────────────
+  #  SHUTDOWN  —  zero flows, stop camera, olfactometers OFF
+  # ────────────────────────────────────────────────────────────
+  - phase: "SHUTDOWN SEQUENCE"
+    duration: 2000
+    repeat: 0
+    actions:
+      - device: "triggers.camera_continuous"
+        state: false
+        timing: 0
+      - device: "olfactometer.left"
+        state: "OFF"
+        timing: 0
+      - device: "olfactometer.right"
+        state: "OFF"
+        timing: 5
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 10
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 15
+      - device: "mfc.air_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.air_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_right_setpoint"
+        value: 0.0
+        timing: 0

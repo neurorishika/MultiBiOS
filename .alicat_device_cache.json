@@ -1,0 +1,61 @@
+{
+  "C@COM7": {
+    "port": "COM7",
+    "baudrate": 115200,
+    "unit": "C",
+    "type": "controller",
+    "last_state": {
+      "pressure": 14.66,
+      "temperature": 23.48,
+      "volumetric_flow": 0.0,
+      "mass_flow": 0.0,
+      "setpoint": 0.0,
+      "gas": "Air",
+      "control_point": "mass flow"
+    }
+  },
+  "A@COM8": {
+    "port": "COM8",
+    "baudrate": 115200,
+    "unit": "A",
+    "type": "controller",
+    "last_state": {
+      "pressure": 14.58,
+      "temperature": 23.39,
+      "volumetric_flow": 0.0,
+      "mass_flow": 0.0,
+      "setpoint": 0.0,
+      "gas": "Air"
+    }
+  },
+  "B@COM9": {
+    "port": "COM9",
+    "baudrate": 115200,
+    "unit": "B",
+    "type": "controller",
+    "last_state": {
+      "pressure": 14.55,
+      "temperature": 23.86,
+      "volumetric_flow": 0.0,
+      "mass_flow": 0.0,
+      "setpoint": 0.0,
+      "gas": "Air",
+      "control_point": "mass flow"
+    }
+  },
+  "D@COM10": {
+    "port": "COM10",
+    "baudrate": 115200,
+    "unit": "D",
+    "type": "controller",
+    "last_state": {
+      "pressure": 14.6,
+      "temperature": 25.26,
+      "volumetric_flow": 0.0,
+      "mass_flow": 0.0,
+      "setpoint": 0.0,
+      "gas": "Air",
+      "control_point": "mass flow"
+    }
+  }
+}
