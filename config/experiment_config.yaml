@@ -67,3 +67,13 @@ latch_interval_ms: 10.0
 # for each run containing: event_log.json, fictrac_data.csv, timeline.csv,
 # trigger_waveform.npz, protocol.yaml, hardware.yaml, meta.json.
 data_dir: "data/runs"
+
+# ─── Live MFC Readout ─────────────────────────────────────────────────────
+# Interval (seconds) at which actual flow readings from all Alicat devices
+# are polled and printed during the experiment.  Output appears inline with
+# the normal event log, e.g.:
+#
+#   [   12.0s] MFC: A@COM7 flow=10.001 setpt=10.0 gas=Air  |  B@COM7 flow=5.002 setpt=5.0 gas=Air
+#
+# Set to 0 to disable live readout (MFC setpoint commands still work normally).
+mfc_live_interval_s: 1.0

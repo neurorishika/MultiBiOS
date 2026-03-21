@@ -81,3 +81,6 @@ fp-info-cache
 
 # Local project settings
 *.kicad_prl
+
+# spinnaker
+spinnaker_python-4.3.0.189-cp310-cp310-win_amd64/*

@@ -90,6 +90,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Overview: index.md
+      - Running Experiments: running_experiments.md
       - Safety Notes: safety.md
   - Hardware:
       - System Architecture: hardware.md

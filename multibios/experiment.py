@@ -122,6 +122,12 @@ class ExperimentConfig:
     # Port the explorer server listens on
     explorer_port: int = 8050
 
+    # Live MFC readout interval (seconds) during the experiment run.
+    # A compact status line is printed every N seconds showing actual flow,
+    # setpoint, and gas for every Alicat device.
+    # Set to 0 to disable live readout (setpoint commands still work normally).
+    mfc_live_interval_s: float = 1.0
+
 
 @dataclass
 class FicTracFrame:
@@ -407,34 +413,21 @@ def _resolve_choice(tok: str, rng: np.random.Generator) -> str:
 # MFC helper (Alicat serial)
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _set_mfc_setpoints(
+async def _apply_mfc_setpoints(
+    mgr: Any,
     mfc_commands: Dict[str, float],
     mfc_device_map: Dict[str, str],
     alicat_ports: List[str],
     alicat_baud: List[int],
-    alicat_expected_ids: List[str] | None = None,
+    alicat_expected_ids: Optional[List[str]] = None,
 ) -> None:
-    """Apply MFC setpoints via AlicatManager.
+    """Apply MFC setpoints using an existing AlicatManager instance.
 
     ``mfc_commands`` maps protocol device names (e.g. ``mfc.air_left_setpoint``)
     to target flow rates. ``mfc_device_map`` may map those to either full
     Alicat manager device names (for example ``A@COM8``) or bare unit IDs
     (for example ``A``).
     """
-    from multibios.alicat_manager import AlicatManager
-
-    mgr = AlicatManager()
-    # AlicatManager.__init__ already loads the cache; only scan if cache is empty.
-    if not mgr.device_map:
-        scan_kw: Dict[str, Any] = {}
-        if alicat_ports:
-            scan_kw["ports"] = alicat_ports
-        if alicat_baud:
-            scan_kw["baudrates"] = alicat_baud
-        if alicat_expected_ids:
-            scan_kw["expected_ids"] = alicat_expected_ids
-        await mgr.scan(**scan_kw)
-
     def _resolve_target_name(configured_name: str) -> Optional[str]:
         """Resolve a configured Alicat target to a cached device name."""
         raw = str(configured_name).strip()
@@ -489,6 +482,195 @@ async def _set_mfc_setpoints(
         print("  WARNING: No MFC targets resolved; no Alicat setpoints were sent.")
 
 
+async def _set_mfc_setpoints(
+    mfc_commands: Dict[str, float],
+    mfc_device_map: Dict[str, str],
+    alicat_ports: List[str],
+    alicat_baud: List[int],
+    alicat_expected_ids: List[str] | None = None,
+) -> None:
+    """Apply MFC setpoints (creates its own AlicatManager).
+
+    Kept for backward compatibility.  New code should use
+    ``_MFCMonitor.set_setpoints()`` so all MFC I/O shares a single
+    persistent event loop and AlicatManager instance.
+    """
+    from multibios.alicat_manager import AlicatManager
+
+    mgr = AlicatManager()
+    if not mgr.device_map:
+        scan_kw: Dict[str, Any] = {}
+        if alicat_ports:
+            scan_kw["ports"] = alicat_ports
+        if alicat_baud:
+            scan_kw["baudrates"] = alicat_baud
+        if alicat_expected_ids:
+            scan_kw["expected_ids"] = alicat_expected_ids
+        await mgr.scan(**scan_kw)
+
+    await _apply_mfc_setpoints(
+        mgr, mfc_commands, mfc_device_map, alicat_ports, alicat_baud, alicat_expected_ids
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MFC monitor — persistent background asyncio loop
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _MFCMonitor:
+    """Background asyncio event loop for all Alicat MFC I/O during an experiment.
+
+    Runs a single persistent asyncio event loop on a daemon thread so that
+    all serial operations share one ``AlicatManager`` instance — avoiding the
+    ``FlowMeter.open_ports`` class-cache collisions that arise when multiple
+    ``asyncio.run()`` calls each create a fresh event loop.
+
+    When *live_interval_s* > 0 a periodic poll task wakes every
+    *live_interval_s* seconds, reads every MFC device, and prints a compact
+    status line to stdout, interleaved naturally with the experiment output::
+
+        [   12.0s] MFC: A@COM7 flow=10.001 setpt=10.0 gas=Air  |  B@COM7 flow=5.002 setpt=5.0 gas=Air
+
+    Set *live_interval_s* = 0 to disable live readout (setpoint commands still
+    use this monitor's shared loop).
+    """
+
+    def __init__(
+        self,
+        *,
+        device_map: Dict[str, str],
+        alicat_ports: List[str],
+        alicat_baud: List[int],
+        alicat_expected_ids: List[str],
+        live_interval_s: float = 1.0,
+    ) -> None:
+        self._device_map = device_map
+        self._alicat_ports = alicat_ports
+        self._alicat_baud = alicat_baud
+        self._alicat_expected_ids = alicat_expected_ids
+        self._live_interval = live_interval_s
+
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._loop.run_forever, daemon=True, name="MFCMonitor"
+        )
+        self._mgr: Optional[Any] = None          # AlicatManager, set in start()
+        self._poll_task: Optional[asyncio.Task] = None  # lives inside the loop
+        self._t0: float = 0.0
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def start(self, t0: float = 0.0) -> None:
+        """Start the background event loop and initialise AlicatManager."""
+        from multibios.alicat_manager import AlicatManager
+
+        self._t0 = t0
+        self._thread.start()
+
+        async def _init() -> None:
+            self._mgr = AlicatManager()
+            if not self._mgr.device_map:
+                kw: Dict[str, Any] = {}
+                if self._alicat_ports:
+                    kw["ports"] = self._alicat_ports
+                if self._alicat_baud:
+                    kw["baudrates"] = self._alicat_baud
+                if self._alicat_expected_ids:
+                    kw["expected_ids"] = self._alicat_expected_ids
+                await self._mgr.scan(**kw)
+            if self._live_interval > 0:
+                self._poll_task = asyncio.create_task(self._poll_loop())
+
+        asyncio.run_coroutine_threadsafe(_init(), self._loop).result(timeout=30.0)
+
+    def set_t0(self, t0: float) -> None:
+        """Update the experiment start reference time."""
+        self._t0 = t0
+
+    def stop(self) -> None:
+        """Cancel the poll task and shut down the background event loop."""
+        async def _cancel() -> None:
+            if self._poll_task is not None:
+                self._poll_task.cancel()
+                try:
+                    await self._poll_task
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run_coroutine_threadsafe(_cancel(), self._loop).result(timeout=5.0)
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5.0)
+
+    # ── Setpoints ─────────────────────────────────────────────────────────────
+
+    def set_setpoints(self, mfc_commands: Dict[str, float]) -> None:
+        """Send MFC setpoints (blocks the calling thread until complete)."""
+        if self._mgr is None:
+            raise RuntimeError("_MFCMonitor not started")
+        future = asyncio.run_coroutine_threadsafe(
+            _apply_mfc_setpoints(
+                self._mgr, mfc_commands, self._device_map,
+                self._alicat_ports, self._alicat_baud,
+                self._alicat_expected_ids or None,
+            ),
+            self._loop,
+        )
+        try:
+            future.result(timeout=30.0)
+        except Exception as e:
+            print(f"  WARNING: MFC set failed: {e}")
+
+    def zero_all(self) -> None:
+        """Zero all MFC controllers (blocks). Called during shutdown."""
+        if self._mgr is None:
+            return
+        zero_cmds = {dev: 0.0 for dev in self._device_map}
+        future = asyncio.run_coroutine_threadsafe(
+            _apply_mfc_setpoints(
+                self._mgr, zero_cmds, self._device_map,
+                self._alicat_ports, self._alicat_baud,
+                self._alicat_expected_ids or None,
+            ),
+            self._loop,
+        )
+        try:
+            future.result(timeout=30.0)
+        except Exception as e:
+            print(f"    WARNING: MFC zeroing failed: {e}")
+
+    # ── Live display ──────────────────────────────────────────────────────────
+
+    async def _poll_loop(self) -> None:
+        """Poll all MFC devices and print a status line every live_interval_s."""
+        while True:
+            await asyncio.sleep(self._live_interval)
+            try:
+                results = await self._mgr.get_all()
+                elapsed = time.perf_counter() - self._t0
+                self._display(results, elapsed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
+    def _display(self, results: Dict[str, Any], elapsed_s: float) -> None:
+        if not results:
+            return
+        parts: List[str] = []
+        for name in sorted(results):
+            s = results[name]
+            if isinstance(s, dict) and "error" not in s:
+                flow = s.get("mass_flow", "?")
+                setpt = s.get("setpoint", "?")
+                gas = s.get("gas", "?")
+                flow_str = f"{flow:.3f}" if isinstance(flow, (int, float)) else str(flow)
+                parts.append(f"{name} flow={flow_str} setpt={setpt} gas={gas}")
+            else:
+                err = s.get("error", "?") if isinstance(s, dict) else str(s)
+                parts.append(f"{name} ERR={err}")
+        print(f"  [{elapsed_s:7.1f}s] MFC: " + "  |  ".join(parts))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Experiment runner
 # ═══════════════════════════════════════════════════════════════════════════
@@ -537,6 +719,7 @@ class ExperimentRunner:
         self._fictrac_driver: Optional[FicTracDriver] = None
         self._fictrac_thread: Optional[threading.Thread] = None
         self._fictrac_error: Optional[Exception] = None   # set if thread crashes
+        self._mfc_monitor: Optional[_MFCMonitor] = None
         self._event_log: List[Dict[str, Any]] = []
         self._run_dir: Optional[Path] = None
         self._t0: float = 0.0  # experiment start (perf_counter)
@@ -664,8 +847,21 @@ class ExperimentRunner:
         resp = self._teensy.reset()
         print(f"  Teensy RESET: {resp}")
 
-        # 2. Set initial MFC setpoints (async)
-        if self.cfg.mfc_mode == "alicat_serial":
+        # 2. Start MFC monitor (owns the background asyncio loop for all Alicat I/O)
+        if self.cfg.mfc_mode == "alicat_serial" and self.cfg.mfc_device_map:
+            live = self.cfg.mfc_live_interval_s
+            print(
+                f"  Starting MFC monitor "
+                f"({'live readout every ' + str(live) + ' s' if live > 0 else 'live readout disabled'})..."
+            )
+            self._mfc_monitor = _MFCMonitor(
+                device_map=self.cfg.mfc_device_map,
+                alicat_ports=self.cfg.alicat_ports,
+                alicat_baud=self.cfg.alicat_baud,
+                alicat_expected_ids=self.cfg.alicat_expected_ids,
+                live_interval_s=live,
+            )
+            self._mfc_monitor.start()
             self._apply_initial_mfcs()
 
         # 3. Start FicTrac
@@ -766,13 +962,16 @@ class ExperimentRunner:
         if initial_mfcs and self.cfg.mfc_device_map:
             print(f"  Setting initial MFC setpoints: {initial_mfcs}")
             try:
-                asyncio.run(_set_mfc_setpoints(
-                    initial_mfcs,
-                    self.cfg.mfc_device_map,
-                    self.cfg.alicat_ports,
-                    self.cfg.alicat_baud,
-                    self.cfg.alicat_expected_ids or None,
-                ))
+                if self._mfc_monitor is not None:
+                    self._mfc_monitor.set_setpoints(initial_mfcs)
+                else:
+                    asyncio.run(_set_mfc_setpoints(
+                        initial_mfcs,
+                        self.cfg.mfc_device_map,
+                        self.cfg.alicat_ports,
+                        self.cfg.alicat_baud,
+                        self.cfg.alicat_expected_ids or None,
+                    ))
             except Exception as e:
                 print(f"  WARNING: Failed to set MFC setpoints: {e}")
 
@@ -784,6 +983,8 @@ class ExperimentRunner:
 
         self._t0 = time.perf_counter()
         self._log_event("START", f"t0={self._t0:.6f}")
+        if self._mfc_monitor is not None:
+            self._mfc_monitor.set_t0(self._t0)
 
         # Group MFC commands that share the same time for batch sending
         pending_mfcs: Dict[str, float] = {}
@@ -914,13 +1115,16 @@ class ExperimentRunner:
         if self.cfg.mfc_mode != "alicat_serial" or not self.cfg.mfc_device_map:
             return
         try:
-            asyncio.run(_set_mfc_setpoints(
-                mfc_commands,
-                self.cfg.mfc_device_map,
-                self.cfg.alicat_ports,
-                self.cfg.alicat_baud,
-                self.cfg.alicat_expected_ids or None,
-            ))
+            if self._mfc_monitor is not None:
+                self._mfc_monitor.set_setpoints(mfc_commands)
+            else:
+                asyncio.run(_set_mfc_setpoints(
+                    mfc_commands,
+                    self.cfg.mfc_device_map,
+                    self.cfg.alicat_ports,
+                    self.cfg.alicat_baud,
+                    self.cfg.alicat_expected_ids or None,
+                ))
         except Exception as e:
             print(f"  WARNING: MFC set failed: {e}")
 
@@ -973,8 +1177,14 @@ class ExperimentRunner:
             if self._fictrac_thread.is_alive():
                 print("    WARNING: FicTrac thread did not exit cleanly")
 
-        # 4. Zero MFCs
-        if self.cfg.mfc_mode == "alicat_serial" and self.cfg.mfc_device_map:
+        # 4. Zero MFCs then stop the monitor
+        if self._mfc_monitor is not None:
+            print("  Zeroing MFCs...")
+            self._mfc_monitor.zero_all()
+            self._mfc_monitor.stop()
+            self._mfc_monitor = None
+        elif self.cfg.mfc_mode == "alicat_serial" and self.cfg.mfc_device_map:
+            # Fallback: monitor was never created (e.g. no device map at launch)
             print("  Zeroing MFCs...")
             zero_cmds = {dev: 0.0 for dev in self.cfg.mfc_device_map}
             try:
@@ -1336,6 +1546,7 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     cfg.data_dir = raw.get("data_dir", cfg.data_dir)
     cfg.open_explorer = bool(raw.get("open_explorer", cfg.open_explorer))
     cfg.explorer_port = int(raw.get("explorer_port", cfg.explorer_port))
+    cfg.mfc_live_interval_s = float(raw.get("mfc_live_interval_s", cfg.mfc_live_interval_s))
     return cfg
 
 
