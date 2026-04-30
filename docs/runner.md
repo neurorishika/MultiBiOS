@@ -6,7 +6,7 @@ The protocol runner compiles YAML protocol files, generates **hardware-clocked d
 
 - **NI-DAQmx** driver and Python API (`pip install nidaqmx`)
 - **Core libraries**: numpy, pyyaml, plotly (for visualization)
-- **Poetry environment** (recommended): `poetry install`
+- **Validated environment on this rig**: `multibios-blackfly` created from `environment.yml`
 
 ## Command Line Interface
 
@@ -14,7 +14,7 @@ The protocol runner compiles YAML protocol files, generates **hardware-clocked d
 
 ```bash
 # Generate preview without hardware execution
-python -m multibios.run_protocol \
+conda run -n multibios-blackfly python -m multibios.run_protocol \
   --yaml config/example_protocol.yaml \
   --hardware config/hardware.yaml \
   --dry-run --seed 42
@@ -24,10 +24,12 @@ python -m multibios.run_protocol \
 
 ```bash
 # Execute protocol on DAQ hardware
-python -m multibios.run_protocol \
+conda run -n multibios-blackfly python -m multibios.run_protocol \
   --yaml config/example_protocol.yaml \
   --hardware config/hardware.yaml
 ```
+
+If `hardware.yaml` contains a `fictrac:` block, the runner will also launch FicTrac, wait for the first UDP frame, and save FicTrac artifacts into the same run directory.
 
 ## Command Line Options
 
@@ -35,6 +37,7 @@ python -m multibios.run_protocol \
 
 - `--yaml <file>`: Protocol YAML file (default: `config/example_protocol.yaml`)
 - `--hardware <file>`: Hardware mapping YAML (default: `config/hardware.yaml`)
+- `--experiment <file>`: Optional runtime override file for backward-compatible experiment/camera/FicTrac settings
 - `--device <name>`: Override DAQ device name from hardware.yaml
 - `--dry-run`: Compile and preview only, no hardware execution
 - `--out-root <dir>`: Output directory root (default: `data/runs`)
@@ -65,7 +68,7 @@ The protocol runner now supports **real-time progress monitoring** during hardwa
 ### Enabling Progress Monitor
 
 ```bash
-python -m multibios.run_protocol \
+conda run -n multibios-blackfly python -m multibios.run_protocol \
   --yaml config/example_protocol.yaml \
   --hardware config/hardware.yaml \
   --verbose \
@@ -77,13 +80,14 @@ python -m multibios.run_protocol \
 
 During execution, you'll see periodic updates like:
 
-```
+```text
 [  5.0%] [t=250.0ms] DO: RCK=LOW, LOAD_REQ=HIGH, S0=LOW | AO: MFC1=2.500V, MFC2=1.200V
 [ 10.0%] [t=500.0ms] DO: RCK=HIGH, LOAD_REQ=LOW, S0=HIGH | AO: MFC1=3.000V, MFC2=1.500V
 [ 15.0%] [t=750.0ms] DO: RCK=LOW, LOAD_REQ=LOW, S0=LOW | AO: MFC1=2.500V, MFC2=1.200V
 ```
 
 Each update includes:
+
 - **Progress percentage**: How far through the protocol
 - **Timestamp**: Current protocol time in milliseconds
 - **Digital outputs (DO)**: State of key digital lines (HIGH/LOW)
@@ -106,11 +110,10 @@ Each update includes:
 ### Performance Impact
 
 The progress monitor runs in a **background thread** and has minimal performance impact:
+
 - Does not interfere with hardware timing
 - Updates are calculated from elapsed time, not polling the DAQ
 - Very low CPU overhead (~0.1% on typical systems)
-
-### Visualization
 
 - `--interactive`: Always save interactive HTML preview (enabled by default)
 
@@ -128,11 +131,26 @@ Each run creates a timestamped directory in `data/runs/YYYY-MM-DD_HH-MM-SS/`:
 - `compiled_do.npz`: Digital output arrays
 - `compiled_ao.npz`: Analog output arrays  
 - `capture_ai.npz`: Analog input data (if hardware run)
+- `capture_di.npz`: Digital input captures from READY, camera, and other return lines (if hardware run)
+- `control_plan.csv`: Shared compiled logical event schedule used by both runner paths
 - `do_map.json`, `ao_map.json`: Channel mapping information
+- `di_map.json`: Digital input channel mapping information
 - `rck_edges.csv`: Register clock commit timestamps
 - `digital_edges.csv`: All digital signal edge transitions
 - `protocol.yaml`, `hardware.yaml`: Input file copies
 - `meta.json`: Run metadata and parameters
+
+If `hardware.yaml -> teensy.capture_serial: true` is enabled, the run directory also includes:
+
+- `teensy_serial_transcript.jsonl`: Raw line-oriented USB serial transcript captured from the open-loop Teensy during the run
+
+When FicTrac is enabled, the same directory also includes:
+
+- `fictrac_runtime_config.txt`: exact runtime config passed to FicTrac
+- `fictrac_runtime.json`: summary of runtime config edits
+- `fictrac_driver_diagnostics.json`: launch and first-packet diagnostics
+- `fictrac_frames.npz`: internal MultiBiOS FicTrac frame store
+- `fictrac-*.dat`: native FicTrac output
 
 ## Post-Run Visualization
 
@@ -140,7 +158,7 @@ Use the visualization tool to re-analyze saved runs:
 
 ```bash
 # Re-visualize a completed run
-python -m multibios.viz_protocol data/runs/2025-08-21_16-25-26
+conda run -n multibios-blackfly python -m multibios.viz_protocol data/runs/2025-08-21_16-25-26
 ```
 
 This generates an updated `preview.html` with the same device-grouped visualization as the runner.

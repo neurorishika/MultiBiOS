@@ -2,6 +2,8 @@
 
 **Model**: Preload-and-commit with RCK-sense, single-owner SPI bus.
 
+Current primary open-loop firmware source: `firmware/teensy41/src/open_loop_controller/open_loop_controller.ino`
+
 - DAQ asserts `*_LOAD_REQ` → Teensy ISR:
   1. Samples `S` bits for that assembly.
   2. Shifts the corresponding 16-bit (big) or 8-bit (small) pattern via SPI to the daisy chain (no latch).
@@ -26,4 +28,15 @@ Small switch (8-bit, using v0..v1):
 - `CLEAN`: both 0  
 - `ODOR`:  both 1
 
-Edit arrays in `firmware/teensy41/src/v0.ino` if your plumbing differs.
+The current `open_loop_controller` firmware also emits structured USB serial telemetry for host-side audit logging, including `MODE`, `READY`, `VALVE`, `COMMIT`, and `FAULT` lines.
+
+Enable host-side transcript capture in `config/hardware.yaml` with:
+
+```yaml
+teensy:
+  port: "COM4"
+  baud: 115200
+  capture_serial: true
+```
+
+Edit pin mappings and state tables in `firmware/teensy41/src/open_loop_controller/open_loop_controller.ino` if your plumbing differs.

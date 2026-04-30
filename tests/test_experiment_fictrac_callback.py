@@ -9,6 +9,7 @@ import numpy as np
 from multibios.blackfly.triggered_camera_record import \
     postprocess_triggered_camera_recording
 from multibios.fictrac_client import FicTracState
+from multibios.protocol.control_plan import compile_control_plan
 from multibios.run_protocol import (ExperimentCallback, _count_rising_edges,
                                     _prepare_fictrac_runtime_config,
                                     load_run_protocol_config)
@@ -83,6 +84,7 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "teensy:\n"
         "  port: COM9\n"
         "  baud: 230400\n"
+        "  capture_serial: true\n"
         "camera_recording:\n"
         "  save_fictrac_camera_video: true\n"
         "  save_second_camera_video: true\n"
@@ -114,6 +116,9 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
     )
 
     cfg = load_run_protocol_config(None, hardware_path=hw_path)
+    assert cfg.teensy_port == "COM9"
+    assert cfg.teensy_baud == 230400
+    assert cfg.capture_teensy_serial is True
     assert cfg.save_fictrac_camera_video is True
     assert cfg.save_second_camera_video is True
     assert cfg.second_camera_index == 1
@@ -179,12 +184,44 @@ def test_load_run_protocol_config_warns_for_deprecated_hardware_keys(tmp_path: P
     assert cfg.fictrac_timeout_s == 5.0
     assert cfg.save_fictrac_camera_video is True
     assert cfg.second_camera_timeout_ms == 99
-    assert len(caught) == 8
+    assert len(caught) == 9
 
 
 def test_count_rising_edges_matches_camera_pulses() -> None:
     waveform = np.array([False, True, True, False, True, False, False, True], dtype=np.bool_)
     assert _count_rising_edges(waveform) == 3
+
+
+def test_compile_control_plan_expands_states_and_windows() -> None:
+    protocol = {
+        "protocol": {
+            "timing": {
+                "seed": 7,
+            }
+        },
+        "sequence": [
+            {
+                "phase": "test",
+                "duration": 100,
+                "times": 2,
+                "actions": [
+                    {"device": "olfactometer.left", "state": "ODOR1,ODOR2", "timing": 10},
+                    {"device": "switch_valve.left", "state": "ODOR", "timing": 20},
+                    {"device": "triggers.camera_continuous", "state": True, "timing": 0},
+                    {"device": "triggers.camera_continuous", "state": False, "timing": 80},
+                    {"device": "triggers.microscope", "state": True, "timing": 30},
+                ],
+            }
+        ],
+    }
+
+    plan = compile_control_plan(protocol)
+
+    assert plan.seed == 7
+    assert plan.total_duration_ms == 200.0
+    assert plan.camera_windows_ms == [(0.0, 80.0)]
+    assert plan.microscope_times_ms == [30.0, 130.0]
+    assert [event.state for event in plan.timeline if event.action == "olfactometer"] == ["ODOR1", "ODOR2"]
 
 
 def test_postprocess_triggered_camera_recording_marks_no_drop_and_conversion(tmp_path: Path) -> None:

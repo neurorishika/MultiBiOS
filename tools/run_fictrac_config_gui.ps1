@@ -51,7 +51,7 @@ try {
         )
         Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs $setupArgs
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to apply Blackfly rig defaults via setup_daq_mode (exit $LASTEXITCODE). Continuing with the camera's current geometry."
+            throw "Failed to apply Blackfly rig defaults via setup_daq_mode (exit $LASTEXITCODE). Aborting instead of continuing with partial camera geometry."
         } else {
             $rigDefaultsApplied = $true
         }
@@ -70,12 +70,10 @@ try {
 
     Write-Host "Launching FicTrac config UI..." -ForegroundColor Yellow
     Write-Host "  Config: $ConfigPath" -ForegroundColor Gray
+    Write-Host "  configGui is interactive. Prompts such as 'keep existing sphere ROI configuration' are expected." -ForegroundColor Gray
     if (-not $NoTriggerTrain) {
         Write-Host "  Trigger train PID: $($triggerProcess.Id)" -ForegroundColor Gray
         Write-Host "  Hardware defaults: $HardwarePath" -ForegroundColor Gray
-        if (-not $rigDefaultsApplied) {
-            Write-Warning "Rig defaults were not applied successfully. configGui will open using the camera's current sensor geometry."
-        }
     }
 
     Push-Location $repoRoot

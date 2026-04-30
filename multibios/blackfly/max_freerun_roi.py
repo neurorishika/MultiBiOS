@@ -49,7 +49,7 @@ except ImportError:
     )
 
 from .live_view import (_bool_set, _enum_set, _int_node_max, _int_node_set,
-                        _maximize_link_throughput, connect_cameras,
+                        _load_default_userset, _maximize_link_throughput, connect_cameras,
                         release_cameras)
 
 DEFAULT_ROI_WIDTH = 400
@@ -260,6 +260,9 @@ def _configure_camera_for_max_freerun(
     exposure_us: float | None,
 ) -> dict:
     nm = cam.GetNodeMap()
+
+    if _load_default_userset(cam):
+        nm = cam.GetNodeMap()
 
     _enum_set(nm, "TriggerMode", "Off")
     _enum_set(nm, "PixelFormat", "Mono8")

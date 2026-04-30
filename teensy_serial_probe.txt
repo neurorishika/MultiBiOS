@@ -1,0 +1,13 @@
+OPEN COM4
+MODE name=open_loop_controller version=1 transport=usb_serial
+MODE sd_card=ready
+MODE log_file=log_046.txt
+VALVE t_us=2824357 olf1_state=0 olf2_state=0 sv1_state=0 sv2_state=0 reason=BOOT_INIT
+<timeout>
+<timeout>
+<timeout>
+<timeout>
+<timeout>
+<timeout>
+<timeout>
+<timeout>

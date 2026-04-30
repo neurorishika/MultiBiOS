@@ -3,6 +3,7 @@ device: "Dev1"
 teensy:
   port: "COM4"
   baud: 115200
+  capture_serial: true
 
 fictrac:
   config: "C:/Rishika/fictrac_pybmt/config_camera.txt"

@@ -83,11 +83,19 @@ function Start-RigPythonProcess {
         [string[]]$PythonArgs
     )
 
+    $pythonExe = Resolve-RigPythonExe -CondaEnv $CondaEnv -CondaExe $CondaExe
+    if ((Test-UseActiveRigPython -CondaEnv $CondaEnv) -and $pythonExe) {
+        return Start-Process -FilePath $pythonExe -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
+    }
+
     if (Test-UseActiveRigPython -CondaEnv $CondaEnv) {
+        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($pythonCommand -and $pythonCommand.Source) {
+            return Start-Process -FilePath $pythonCommand.Source -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
+        }
         return Start-Process -FilePath "python" -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
     }
 
-    $pythonExe = Resolve-RigPythonExe -CondaEnv $CondaEnv -CondaExe $CondaExe
     if ($pythonExe) {
         return Start-Process -FilePath $pythonExe -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
     }

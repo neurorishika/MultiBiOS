@@ -17,12 +17,13 @@ Key design points
 """
 from __future__ import annotations
 
+import queue
 import re
 import threading
 import time
 from typing import Optional
 
-import serial
+from multibios.serial_line_monitor import SerialLineMonitor
 
 
 # ── State / command mappings ────────────────────────────────────────────────
@@ -47,6 +48,7 @@ _SMALL_STATE_CMD = {
 
 _SIDE_TO_OLF = {"left": "OLF1", "right": "OLF2"}
 _SIDE_TO_SV  = {"left": "SV1",  "right": "SV2"}
+_TAGGED_LINE_RE = re.compile(r"^@(?P<tag>\d+)\s+(?P<body>.*)$")
 
 
 class TeensyController:
@@ -68,45 +70,41 @@ class TeensyController:
         port: str,
         baudrate: int = 115_200,
         timeout: float = 1.0,
+        *,
+        serial_monitor: SerialLineMonitor | None = None,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
 
-        self._ser: Optional[serial.Serial] = None
         self._lock = threading.Lock()
         self._tag = 0  # auto-incrementing command tag
+        self._response_queues: dict[int, queue.Queue[str]] = {}
+        self._serial_monitor = serial_monitor or SerialLineMonitor(
+            port=port,
+            baudrate=baudrate,
+            timeout=timeout,
+            boot_delay_s=0.5,
+            reset_input_buffer_on_open=True,
+        )
 
     # ── Connection lifecycle ────────────────────────────────────────────────
 
     def open(self) -> None:
         """Open the serial port."""
-        with self._lock:
-            if self._ser is not None and self._ser.is_open:
-                return
-            self._ser = serial.Serial(
-                self.port,
-                self.baudrate,
-                timeout=self.timeout,
-                write_timeout=self.timeout,
-            )
-            # Teensy resets on serial open — give it time to boot
-            time.sleep(0.5)
-            self._ser.reset_input_buffer()
+        self._serial_monitor.open()
+        self._serial_monitor.add_listener(self._handle_line)
 
     def close(self) -> None:
         """Close the serial port."""
+        self._serial_monitor.remove_listener(self._handle_line)
         with self._lock:
-            if self._ser is not None:
-                try:
-                    self._ser.close()
-                except Exception:
-                    pass
-                self._ser = None
+            self._response_queues.clear()
+        self._serial_monitor.close()
 
     @property
     def is_open(self) -> bool:
-        return self._ser is not None and self._ser.is_open
+        return self._serial_monitor.is_open
 
     def __enter__(self):
         self.open()
@@ -116,6 +114,43 @@ class TeensyController:
         self.close()
 
     # ── Low-level I/O ───────────────────────────────────────────────────────
+
+    def _handle_line(self, line: str, wall_time: float) -> None:
+        del wall_time
+        match = _TAGGED_LINE_RE.match(line)
+        if match is None:
+            return
+        tag = int(match.group("tag"))
+        body = match.group("body")
+
+        with self._lock:
+            response_queue = self._response_queues.get(tag)
+        if response_queue is not None:
+            response_queue.put(body)
+
+    def _write_tagged_command(
+        self,
+        command: str,
+        *,
+        expect_response: bool,
+    ) -> tuple[int, queue.Queue[str] | None]:
+        with self._lock:
+            if not self._serial_monitor.is_open:
+                raise RuntimeError("Serial port not open")
+
+            self._tag += 1
+            tag = self._tag
+            tagged = f"@{tag} {command}"
+            response_queue: queue.Queue[str] | None = None
+            if expect_response:
+                response_queue = queue.Queue()
+                self._response_queues[tag] = response_queue
+            self._serial_monitor.write_line(tagged)
+            return tag, response_queue
+
+    def _clear_response_queue(self, tag: int) -> None:
+        with self._lock:
+            self._response_queues.pop(tag, None)
 
     def send(self, command: str, *, timeout: float | None = None) -> str:
         """Send a tagged command and return the first tagged response line.
@@ -127,42 +162,21 @@ class TeensyController:
         response : str
             The response line with the tag prefix stripped.
         """
-        with self._lock:
-            if self._ser is None or not self._ser.is_open:
-                raise RuntimeError("Serial port not open")
-
-            self._tag += 1
-            tag = self._tag
-            tagged = f"@{tag} {command}\n"
-
-            self._ser.reset_input_buffer()
-            self._ser.write(tagged.encode("ascii"))
-            self._ser.flush()
-
-            # Read lines until we find our tagged response
-            deadline = time.monotonic() + (timeout or self.timeout)
-            prefix = f"@{tag} "
-            while time.monotonic() < deadline:
-                raw = self._ser.readline()
-                if not raw:
-                    continue
-                line = raw.decode("ascii", errors="replace").strip()
-                if line.startswith(prefix):
-                    return line[len(prefix):]
-            raise TimeoutError(f"No response for tag @{tag}: {command!r}")
+        tag, response_queue = self._write_tagged_command(command, expect_response=True)
+        assert response_queue is not None
+        try:
+            return response_queue.get(timeout=timeout or self.timeout)
+        except queue.Empty as exc:
+            raise TimeoutError(f"No response for tag @{tag}: {command!r}") from exc
+        finally:
+            self._clear_response_queue(tag)
 
     def send_nowait(self, command: str) -> None:
         """Send a command without waiting for a response (fire-and-forget).
 
         Useful for time-critical paths where you don't need confirmation.
         """
-        with self._lock:
-            if self._ser is None or not self._ser.is_open:
-                raise RuntimeError("Serial port not open")
-            self._tag += 1
-            tagged = f"@{self._tag} {command}\n"
-            self._ser.write(tagged.encode("ascii"))
-            self._ser.flush()
+        self._write_tagged_command(command, expect_response=False)
 
     # ── High-level odor commands ────────────────────────────────────────────
 
@@ -265,30 +279,22 @@ class TeensyController:
 
     def status(self) -> str:
         """Return the full STATUS dump from the Teensy."""
-        # STATUS produces multiple lines; collect them all
-        with self._lock:
-            if self._ser is None or not self._ser.is_open:
-                raise RuntimeError("Serial port not open")
-            self._tag += 1
-            tag = self._tag
-            tagged = f"@{tag} STATUS\n"
-            self._ser.reset_input_buffer()
-            self._ser.write(tagged.encode("ascii"))
-            self._ser.flush()
-
-            lines = []
-            deadline = time.monotonic() + 2.0
-            prefix = f"@{tag} "
+        tag, response_queue = self._write_tagged_command("STATUS", expect_response=True)
+        assert response_queue is not None
+        lines: list[str] = []
+        deadline = time.monotonic() + 2.0
+        try:
             while time.monotonic() < deadline:
-                raw = self._ser.readline()
-                if not raw:
+                remaining = deadline - time.monotonic()
+                wait_timeout = remaining if not lines else min(0.1, remaining)
+                try:
+                    lines.append(response_queue.get(timeout=wait_timeout))
+                except queue.Empty:
                     if lines:
                         break
-                    continue
-                line = raw.decode("ascii", errors="replace").strip()
-                if line.startswith(prefix):
-                    lines.append(line[len(prefix):])
             return "\n".join(lines)
+        finally:
+            self._clear_response_queue(tag)
 
     def print_state(self) -> str:
         """PRINT — return the current staged bitstring."""

@@ -34,7 +34,7 @@ try {
             "--hardware", $HardwarePath
         )
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to apply rig Blackfly defaults (exit $LASTEXITCODE). Continuing with current camera state."
+            throw "Failed to apply rig Blackfly defaults via setup_daq_mode (exit $LASTEXITCODE). Aborting instead of continuing with partial camera setup."
         }
 
         Write-Host "Starting camera trigger train at $Fps fps..." -ForegroundColor Yellow

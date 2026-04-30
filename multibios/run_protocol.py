@@ -47,15 +47,21 @@ from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
                                       FicTracFrameStore)
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.fictrac_runtime import prepare_fictrac_runtime
+from multibios.protocol.control_plan import (compile_control_plan,
+                                             write_control_plan_csv)
 # Compiler
 from multibios.protocol.schema import (CompileError, ProtocolCompiler,
                                        TimingConfig)
+from multibios.serial_line_monitor import SerialLineMonitor
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
 
 @dataclass
 class RunProtocolConfig:
+    teensy_port: str = ""
+    teensy_baud: int = 115_200
+    capture_teensy_serial: bool = False
     fictrac_config: str = ""
     fictrac_bin: str = ""
     fictrac_console_out: str = "fictrac_output.txt"
@@ -226,12 +232,28 @@ def load_run_protocol_config(
 ) -> RunProtocolConfig:
     raw = _load_yaml_file(path)
     hardware = _load_yaml_file(hardware_path)
+    hardware_teensy = _yaml_section(hardware, "teensy")
     hardware_fictrac = _yaml_section(hardware, "fictrac")
     hardware_blackfly = _yaml_section(hardware, "blackfly_defaults")
     hardware_camera_recording = _yaml_section(hardware, "camera_recording")
     hardware_data_output = _yaml_section(hardware, "data_output")
 
     cfg = RunProtocolConfig()
+
+    cfg.teensy_port = str(hardware_teensy.get("port", cfg.teensy_port))
+    if "teensy_port" in raw:
+        _warn_deprecated_experiment_key("teensy_port", hardware_path, "teensy")
+        cfg.teensy_port = str(raw["teensy_port"])
+
+    cfg.teensy_baud = int(hardware_teensy.get("baud", cfg.teensy_baud))
+    if "teensy_baud" in raw:
+        _warn_deprecated_experiment_key("teensy_baud", hardware_path, "teensy")
+        cfg.teensy_baud = int(raw["teensy_baud"])
+
+    cfg.capture_teensy_serial = bool(hardware_teensy.get("capture_serial", cfg.capture_teensy_serial))
+    if "capture_teensy_serial" in raw:
+        _warn_deprecated_experiment_key("capture_teensy_serial", hardware_path, "teensy")
+        cfg.capture_teensy_serial = bool(raw["capture_teensy_serial"])
 
     cfg.fictrac_config = str(hardware_fictrac.get("config", cfg.fictrac_config))
     if "fictrac_config" in raw:
@@ -935,6 +957,8 @@ def main():
         logger.error(f"Protocol compilation failed: {e}")
         raise SystemExit(f"[compile error] {e}")
 
+    control_plan = compile_control_plan(y, seed=getattr(comp, "rng_seed", None))
+
     # Create run directory and save artifacts with detailed logging
     logger.info("=== Creating Run Directory and Artifacts ===")
     run_dir = ensure_run_dir(run_root)
@@ -1026,6 +1050,10 @@ def main():
     np.savez_compressed(ao_file, data=comp.ao.astype(np.float32))
     logger.info(f"  ✓ Analog outputs: {ao_file}")
 
+    control_plan_file = run_dir / "control_plan.csv"
+    write_control_plan_csv(control_plan_file, control_plan.timeline)
+    logger.info(f"  ✓ Shared control plan: {control_plan_file} ({len(control_plan.timeline)} events)")
+
     # Digital edge log (super helpful to diff runs)
     logger.info("Computing and saving digital edge transitions...")
     edge_file = run_dir / "digital_edges.csv"
@@ -1116,8 +1144,24 @@ def main():
     fictrac_runtime_info: dict[str, Any] = {}
     other_camera_recorder: Any = None
     other_camera_recording: dict[str, Any] = {}
+    teensy_serial_monitor: SerialLineMonitor | None = None
+    teensy_serial_transcript: list[dict[str, Any]] = []
     expected_camera_frames: int | None = None
     nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
+
+    if runtime_cfg.capture_teensy_serial:
+        if not runtime_cfg.teensy_port:
+            raise RuntimeError("capture_teensy_serial is enabled but no teensy.port is configured in hardware.yaml")
+        logger.info("Starting Teensy serial monitor on %s...", runtime_cfg.teensy_port)
+        teensy_serial_monitor = SerialLineMonitor(
+            port=runtime_cfg.teensy_port,
+            baudrate=runtime_cfg.teensy_baud,
+            timeout=1.0,
+            boot_delay_s=0.5,
+            reset_input_buffer_on_open=True,
+        )
+        teensy_serial_monitor.open()
+        logger.info("✓ Teensy serial monitor active")
 
     try:
         with (
@@ -1461,6 +1505,16 @@ def main():
         if other_camera_recorder is not None:
             logger.info("Stopping second Blackfly recorder...")
             other_camera_recording = other_camera_recorder.stop()
+        if teensy_serial_monitor is not None:
+            teensy_serial_transcript = teensy_serial_monitor.get_transcript()
+            teensy_serial_monitor.close()
+            if teensy_serial_transcript:
+                teensy_transcript_file = run_dir / "teensy_serial_transcript.jsonl"
+                with open(teensy_transcript_file, "w", encoding="utf-8") as handle:
+                    for entry in teensy_serial_transcript:
+                        json.dump(entry, handle, default=str)
+                        handle.write("\n")
+                logger.info(f"✓ Teensy serial transcript saved: {teensy_transcript_file}")
 
     logger.info("✓ All DAQ tasks completed and data acquired")
 

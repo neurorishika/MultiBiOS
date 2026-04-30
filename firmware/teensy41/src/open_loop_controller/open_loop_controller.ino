@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
+#include <stdarg.h>
 
 #ifndef BIT
 #define BIT(n) (1u << (n))
@@ -39,8 +40,22 @@ constexpr int PIN_READY_OLF2 = 27;
 // -------- SD logging --------
 File logFile;
 const int LOG_BUFFER_SIZE = 64;
-volatile char logBuffer[LOG_BUFFER_SIZE][128];
+constexpr size_t LOG_LINE_MAX = 192;
+volatile char logBuffer[LOG_BUFFER_SIZE][LOG_LINE_MAX];
 volatile int logHead = 0, logTail = 0;
+
+static inline void enqueue_logf(const char* fmt, ...) {
+  int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
+  if (nextHead == logTail) {
+    return;
+  }
+
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf((char*)logBuffer[logHead], LOG_LINE_MAX, fmt, args);
+  va_end(args);
+  logHead = nextHead;
+}
 
 // -------- States / lookup --------
 enum : uint8_t { ST_OFF=0, ST_AIR, ST_ODOR1, ST_ODOR2, ST_ODOR3, ST_ODOR4, ST_ODOR5, ST_FLUSH };
@@ -106,15 +121,11 @@ static inline void build_frame(uint8_t out[6]) {
   // Map to output buffer according to daisy-chain order (far → near)
   for (int i = 0; i < 6; ++i) out[i] = slots[FRAME_SEND_ORDER[i]];
 
-  // Log LOAD
-  int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
-  if (nextHead != logTail) {
-    unsigned long t = micros();
-    snprintf((char*)logBuffer[logHead], 128,
-      "%lu,LOAD,OLF1:%u,OLF2:%u,SV1:%u,SV2:%u,OLF1:%04X,OLF2:%04X,SV1:%02X,SV2:%02X",
-      t, olf1_idx, olf2_idx, sv1_idx, sv2_idx, olf1_val, olf2_val, sv1_val, sv2_val);
-    logHead = nextHead;
-  }
+  unsigned long t = micros();
+  enqueue_logf(
+    "VALVE t_us=%lu olf1_state=%u olf2_state=%u sv1_state=%u sv2_state=%u olf1_bits=0x%04X olf2_bits=0x%04X sv1_bits=0x%02X sv2_bits=0x%02X",
+    t, olf1_idx, olf2_idx, sv1_idx, sv2_idx, olf1_val, olf2_val, sv1_val, sv2_val
+  );
 }
 
 static inline void spi_send_48(const uint8_t out[6]) {
@@ -135,38 +146,43 @@ void isr_global_load() {
   digitalWriteFast(PIN_READY_OLF2, HIGH);
   digitalWriteFast(PIN_READY_SV1,  HIGH);
   digitalWriteFast(PIN_READY_SV2,  HIGH);
+  enqueue_logf("READY t_us=%lu target=ALL olf1=1 olf2=1 sv1=1 sv2=1 reason=LOAD", micros());
 }
 
 void isr_rck_olf1() {
   if (ready_olf1) {
     ready_olf1 = false;
     digitalWriteFast(PIN_READY_OLF1, LOW);
-    int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
-    if (nextHead != logTail) { snprintf((char*)logBuffer[logHead], 128, "%lu,RCK,OLF1", micros()); logHead = nextHead; }
+    unsigned long t = micros();
+    enqueue_logf("COMMIT t_us=%lu target=OLF1", t);
+    enqueue_logf("READY t_us=%lu target=OLF1 value=0 reason=RCK", t);
   }
 }
 void isr_rck_olf2() {
   if (ready_olf2) {
     ready_olf2 = false;
     digitalWriteFast(PIN_READY_OLF2, LOW);
-    int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
-    if (nextHead != logTail) { snprintf((char*)logBuffer[logHead], 128, "%lu,RCK,OLF2", micros()); logHead = nextHead; }
+    unsigned long t = micros();
+    enqueue_logf("COMMIT t_us=%lu target=OLF2", t);
+    enqueue_logf("READY t_us=%lu target=OLF2 value=0 reason=RCK", t);
   }
 }
 void isr_rck_sv2() {
   if (ready_sv2) {
     ready_sv2 = false;
     digitalWriteFast(PIN_READY_SV2, LOW);
-    int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
-    if (nextHead != logTail) { snprintf((char*)logBuffer[logHead], 128, "%lu,RCK,SV2", micros()); logHead = nextHead; }
+    unsigned long t = micros();
+    enqueue_logf("COMMIT t_us=%lu target=SV2", t);
+    enqueue_logf("READY t_us=%lu target=SV2 value=0 reason=RCK", t);
   }
 }
 void isr_rck_sv1() {
   if (ready_sv1) {
     ready_sv1 = false;
     digitalWriteFast(PIN_READY_SV1, LOW);
-    int nextHead = (logHead + 1) % LOG_BUFFER_SIZE;
-    if (nextHead != logTail) { snprintf((char*)logBuffer[logHead], 128, "%lu,RCK,SV1", micros()); logHead = nextHead; }
+    unsigned long t = micros();
+    enqueue_logf("COMMIT t_us=%lu target=SV1", t);
+    enqueue_logf("READY t_us=%lu target=SV1 value=0 reason=RCK", t);
   }
 }
 
@@ -174,14 +190,14 @@ void isr_rck_sv1() {
 void setup() {
   Serial.begin(115200);
   delay(500);
+  Serial.println("MODE name=open_loop_controller version=1 transport=usb_serial");
 
   // SD card
-  Serial.print("Initializing SD card...");
   if (!SD.begin(BUILTIN_SDCARD)) {
-    Serial.println(" init failed!");
+    Serial.println("FAULT code=SD_INIT_FAILED action=HALT");
     while (1) {}
   }
-  Serial.println(" done.");
+  Serial.println("MODE sd_card=ready");
 
   // Unique filename
   char logFileName[] = "log_000.txt";
@@ -193,12 +209,11 @@ void setup() {
   }
   logFile = SD.open(logFileName, FILE_WRITE);
   if (logFile) {
-    Serial.print("Logging to "); Serial.println(logFileName);
-    logFile.println("--- MultiBiOS Log Start ---");
-    logFile.println("Timestamp (us),Event,Details");
+    Serial.print("MODE log_file="); Serial.println(logFileName);
+    logFile.println("MODE name=open_loop_controller version=1 transport=usb_serial");
     logFile.flush();
   } else {
-    Serial.println("Error opening log file!");
+    Serial.println("FAULT code=LOG_OPEN_FAILED action=CONTINUE");
   }
 
   // SPI enable (Teensy requirement)
@@ -238,6 +253,8 @@ void setup() {
   // Preload OFF/CLEAN frame (outputs known before first latch)
   uint8_t initBytes[6] = {};
   spi_send_48(initBytes);
+  enqueue_logf("VALVE t_us=%lu olf1_state=0 olf2_state=0 sv1_state=0 sv2_state=0 reason=BOOT_INIT", micros());
+  enqueue_logf("READY t_us=%lu target=ALL olf1=0 olf2=0 sv1=0 sv2=0 reason=BOOT", micros());
 }
 
 void loop() {
@@ -247,6 +264,7 @@ void loop() {
     int idx = logTail;
     interrupts();
 
+    Serial.println((char*)logBuffer[idx]);
     if (logFile) {
       logFile.println((char*)logBuffer[idx]);
       logFile.flush();

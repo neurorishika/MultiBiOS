@@ -548,6 +548,21 @@ def _disable_frame_rate_control(nm) -> None:
     _bool_set(nm, "AcquisitionFrameRateEnabled", False, silent=True)
 
 
+def _command_execute(nodemap, node_name: str) -> bool:
+    node = PySpin.CCommandPtr(nodemap.GetNode(node_name))
+    if not PySpin.IsReadable(node) or not PySpin.IsWritable(node):
+        return False
+    node.Execute()
+    return True
+
+
+def _load_default_userset(cam) -> bool:
+    nm = cam.GetNodeMap()
+    if not _enum_set(nm, "UserSetSelector", "Default"):
+        return False
+    return _command_execute(nm, "UserSetLoad")
+
+
 def _maximize_link_throughput(nm) -> None:
     if _enum_set(nm, "DeviceLinkThroughputLimitMode", "Off"):
         print("  DeviceLinkThroughputLimitMode set to Off.")
@@ -638,6 +653,9 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
 
     nm = cam.GetNodeMap()
     _set_buffer_newest_only(cam)
+
+    if _load_default_userset(cam):
+        nm = cam.GetNodeMap()
 
     # Must disable trigger mode before changing image format / binning
     _enum_set(nm, "TriggerMode", "Off")
@@ -732,6 +750,9 @@ def configure_camera_daq_freerun_mode(cam, fps: float = 60.0,
     nm = cam.GetNodeMap()
     _set_buffer_newest_only(cam)
 
+    if _load_default_userset(cam):
+        nm = cam.GetNodeMap()
+
     # Disable trigger and reset binning before changing image format
     _enum_set(nm, "TriggerMode", "Off")
     _enum_set(nm, "AcquisitionMode", "Continuous")
@@ -784,9 +805,15 @@ def release_cameras(system, cam_list, cams, restore_daq: bool = False) -> None:
     """Release all PySpin camera references before clearing the system instance."""
     if cams is None:
         if cam_list is not None:
-            cam_list.Clear()
+            try:
+                cam_list.Clear()
+            except Exception:
+                pass
         if system is not None:
-            system.ReleaseInstance()
+            try:
+                system.ReleaseInstance()
+            except Exception as exc:
+                print(f"  [warn] Failed to release Spinnaker system: {exc}")
         return
 
     for idx in range(len(cams)):
@@ -812,8 +839,14 @@ def release_cameras(system, cam_list, cams, restore_daq: bool = False) -> None:
     del cam
     gc.collect()
     cams.clear()
-    cam_list.Clear()
-    system.ReleaseInstance()
+    try:
+        cam_list.Clear()
+    except Exception:
+        pass
+    try:
+        system.ReleaseInstance()
+    except Exception as exc:
+        print(f"  [warn] Failed to release Spinnaker system: {exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

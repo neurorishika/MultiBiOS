@@ -67,29 +67,16 @@ from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
                                       FicTracDriver, FicTracFrame,
                                       FicTracFrameStore)
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
+from multibios.protocol.control_plan import (TimelineEvent,
+                                             compile_control_plan,
+                                             write_control_plan_csv)
 from multibios.fictrac_runtime import prepare_fictrac_runtime
 from multibios.protocol.schema import (BIG_STATE_CODE, SMALL_STATE_CODE,
                                        CompileError)
+from multibios.serial_line_monitor import SerialLineMonitor
 from multibios.serial.daq_triggers import (DAQTriggerManager, TriggerConfig,
                                            build_trigger_waveform)
 from multibios.serial.teensy_controller import TeensyController
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Data structures
-# ═══════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class TimelineEvent:
-    """A single scheduled action in the experiment."""
-    time_ms: float
-    action: str              # "olfactometer" | "switch_valve" | "mfc" | "log_only"
-    device: str              # original device key from YAML
-    side: str = ""           # "left" | "right" | ""
-    state: str = ""          # e.g. "AIR", "ODOR3", "CLEAN"
-    value: float = 0.0       # for MFC setpoints
-    phase: str = ""          # which protocol phase this belongs to
-    repeat_idx: int = 0      # repeat index within that phase
-
 
 @dataclass
 class ExperimentConfig:
@@ -334,213 +321,17 @@ def _build_fictrac_recording_summary(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Protocol -> timeline compiler
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _norm_dev(s: str) -> str:
-    return s.strip().lower()
-
-
 def compile_timeline(
     protocol_yaml: Dict[str, Any],
     seed: Optional[int] = None,
 ) -> Tuple[List[TimelineEvent], List[float], List[Tuple[float, float]], float]:
-    """Parse a protocol YAML and produce a flat timeline of events.
-
-    Returns
-    -------
-    timeline : list of TimelineEvent
-        Sorted by ``time_ms``.
-    microscope_times_ms : list of float
-        Absolute times for microscope trigger pulses (for the DAQ waveform).
-    camera_windows : list of (start_ms, end_ms)
-        Windows where camera triggers should be active.
-    total_duration_ms : float
-        Total experiment duration.
-    """
-    p = protocol_yaml.get("protocol", {})
-    timing = p.get("timing", {})
-    seq = protocol_yaml.get("sequence", [])
-
-    # RNG
-    if seed is None:
-        seed_val = timing.get("seed", None)
-        if seed_val is not None:
-            seed = int(seed_val)
-        else:
-            seed = int(np.random.SeedSequence().entropy)
-    rng = np.random.default_rng(seed)
-
-    timeline: List[TimelineEvent] = []
-    microscope_times: List[float] = []
-    camera_windows: List[Tuple[float, float]] = []
-    camera_on_at: Optional[float] = None  # tracks camera enable start
-
-    # Expand phases
-    expanded = []
-    total_ms = 0.0
-    for entry in seq:
-        name = entry.get("phase", "PHASE")
-        dur = int(entry.get("duration", 0))
-        if "times" in entry:
-            times = int(entry["times"])
-        elif "repeat" in entry:
-            times = int(entry["repeat"]) + 1
-        else:
-            times = 1
-        if times <= 0:
-            raise CompileError(f"Phase '{name}': times must be positive")
-        total_ms += dur * times
-        expanded.append((name, dur, entry, times))
-
-    # Walk phases
-    t_cursor = 0.0
-    for name, duration, entry, times in expanded:
-        randomize = bool(entry.get("randomize", False))
-        actions = entry.get("actions", [])
-
-        # Collect olfactometer state lists
-        left_spec = None
-        right_spec = None
-        for a in actions:
-            dev = _norm_dev(a.get("device", ""))
-            if dev == "olfactometer.left":
-                left_spec = a.get("state", "OFF")
-            elif dev == "olfactometer.right":
-                right_spec = a.get("state", "OFF")
-
-        left_list = _parse_state_list(left_spec, times)
-        right_list = _parse_state_list(right_spec, times)
-
-        # Permutation
-        perm = np.arange(times)
-        if randomize:
-            perm = rng.permutation(times)
-
-        if len(left_list) == times:
-            left_list = [left_list[i] for i in perm]
-        else:
-            left_list = left_list * times
-
-        if len(right_list) == times:
-            right_list = [right_list[i] for i in perm]
-        else:
-            right_list = right_list * times
-
-        # Resolve "|" random choices
-        resolved_left = [_resolve_choice(tok, rng) for tok in left_list]
-        resolved_right = [_resolve_choice(tok, rng) for tok in right_list]
-
-        # Camera enables (process once, not per repeat)
-        for a in actions:
-            dev = _norm_dev(a.get("device", ""))
-            timing_ms = float(a.get("timing", 0))
-            if dev == "triggers.camera_continuous":
-                enabled = bool(a.get("state", False))
-                abs_t = t_cursor + timing_ms
-                if enabled:
-                    camera_on_at = abs_t
-                else:
-                    if camera_on_at is not None:
-                        camera_windows.append((camera_on_at, abs_t))
-                        camera_on_at = None
-
-        # Per-repeat events
-        for rep_idx in range(times):
-            t0 = t_cursor + rep_idx * duration
-            for a in actions:
-                dev = _norm_dev(a.get("device", ""))
-                timing_ms = float(a.get("timing", 0))
-                t_abs = t0 + timing_ms
-
-                if dev.startswith("mfc."):
-                    val = float(a.get("value", a.get("state", 0.0)))
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs, action="mfc", device=dev,
-                        value=val, phase=name, repeat_idx=rep_idx,
-                    ))
-
-                elif dev == "olfactometer.left":
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs, action="olfactometer", device=dev,
-                        side="left", state=resolved_left[rep_idx],
-                        phase=name, repeat_idx=rep_idx,
-                    ))
-
-                elif dev == "olfactometer.right":
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs, action="olfactometer", device=dev,
-                        side="right", state=resolved_right[rep_idx],
-                        phase=name, repeat_idx=rep_idx,
-                    ))
-
-                elif dev == "switch_valve.left":
-                    st = str(a.get("state", a.get("value", "CLEAN"))).strip().upper()
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs, action="switch_valve", device=dev,
-                        side="left", state=st,
-                        phase=name, repeat_idx=rep_idx,
-                    ))
-
-                elif dev == "switch_valve.right":
-                    st = str(a.get("state", a.get("value", "CLEAN"))).strip().upper()
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs, action="switch_valve", device=dev,
-                        side="right", state=st,
-                        phase=name, repeat_idx=rep_idx,
-                    ))
-
-                elif dev == "triggers.microscope":
-                    if bool(a.get("state", True)):
-                        microscope_times.append(t_abs)
-                        timeline.append(TimelineEvent(
-                            time_ms=t_abs, action="log_only", device=dev,
-                            state="PULSE", phase=name, repeat_idx=rep_idx,
-                        ))
-
-                elif dev in ("triggers.camera", "triggers.camera_continuous"):
-                    # Camera is handled by DAQ waveform; log the enable/disable
-                    timeline.append(TimelineEvent(
-                        time_ms=t_abs if rep_idx == 0 else -1,  # log once
-                        action="log_only", device=dev,
-                        state=str(a.get("state", "")),
-                        phase=name, repeat_idx=rep_idx,
-                    ))
-
-        t_cursor += duration * times
-
-    # Close open camera window
-    if camera_on_at is not None:
-        camera_windows.append((camera_on_at, total_ms))
-
-    # Sort timeline
-    timeline = [e for e in timeline if e.time_ms >= 0]
-    timeline.sort(key=lambda e: e.time_ms)
-
-    return timeline, microscope_times, camera_windows, total_ms
-
-
-def _parse_state_list(spec, times: int) -> List[str]:
-    if spec is None:
-        return ["OFF"]
-    if isinstance(spec, list):
-        toks = [str(x).strip().upper() for x in spec]
-    else:
-        toks = [p.strip().upper() for p in str(spec).split(",") if p.strip()]
-    if not toks:
-        toks = ["OFF"]
-    if len(toks) not in (1, times):
-        # If mismatch, just use single-element broadcast
-        toks = [toks[0]]
-    return toks
-
-
-def _resolve_choice(tok: str, rng: np.random.Generator) -> str:
-    if "|" not in tok:
-        return tok
-    alts = [a.strip().upper() for a in tok.split("|") if a.strip()]
-    return str(rng.choice(alts))
+    plan = compile_control_plan(protocol_yaml, seed=seed)
+    return (
+        plan.timeline,
+        plan.microscope_times_ms,
+        plan.camera_windows_ms,
+        plan.total_duration_ms,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -870,6 +661,8 @@ class ExperimentRunner:
         self._fictrac_runtime_info: Dict[str, Any] = {}
         self._mfc_monitor: Optional[_MFCMonitor] = None
         self._event_log: List[Dict[str, Any]] = []
+        self._teensy_transcript: List[Dict[str, Any]] = []
+        self._teensy_serial_monitor: Optional[SerialLineMonitor] = None
         self._run_dir: Optional[Path] = None
         self._t0: float = 0.0  # experiment start (perf_counter)
         self._other_camera_recorder: Any = None
@@ -990,9 +783,17 @@ class ExperimentRunner:
         """Initialize all hardware subsystems."""
         # 1. Open Teensy serial
         print(f"Opening Teensy on {self.cfg.teensy_port}...")
+        self._teensy_serial_monitor = SerialLineMonitor(
+            port=self.cfg.teensy_port,
+            baudrate=self.cfg.teensy_baud,
+            timeout=1.0,
+            boot_delay_s=0.5,
+            reset_input_buffer_on_open=True,
+        )
         self._teensy = TeensyController(
             port=self.cfg.teensy_port,
             baudrate=self.cfg.teensy_baud,
+            serial_monitor=self._teensy_serial_monitor,
         )
         self._teensy.open()
         resp = self._teensy.reset()
@@ -1393,8 +1194,11 @@ class ExperimentRunner:
                 self._teensy.reset()
             except Exception as e:
                 print(f"    WARNING: Teensy reset failed: {e}")
+            if self._teensy_serial_monitor is not None:
+                self._teensy_transcript = self._teensy_serial_monitor.get_transcript()
             self._teensy.close()
             self._teensy = None
+            self._teensy_serial_monitor = None
 
         # 3. Stop FicTrac
         if self._fictrac_callback is not None:
@@ -1477,6 +1281,13 @@ class ExperimentRunner:
                     e.get("ev_value", ""),
                 ])
 
+        # 2b. Raw Teensy serial transcript for firmware-level auditability.
+        if self._teensy_transcript:
+            with open(self._run_dir / "teensy_serial_transcript.jsonl", "w", encoding="utf-8") as f:
+                for entry in self._teensy_transcript:
+                    json.dump(entry, f, default=str)
+                    f.write("\n")
+
         # 3. DAQ trigger waveform (compressed)
         if self.trigger_waveform is not None:
             np.savez_compressed(
@@ -1491,18 +1302,7 @@ class ExperimentRunner:
             )
 
         # 4. Timeline (compiled protocol schedule — for reference)
-        with open(self._run_dir / "timeline.csv", "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "time_ms", "action", "device", "side", "state", "value",
-                "phase", "repeat_idx",
-            ])
-            for evt in self.timeline:
-                writer.writerow([
-                    f"{evt.time_ms:.1f}", evt.action, evt.device,
-                    evt.side, evt.state, f"{evt.value:.4f}",
-                    evt.phase, evt.repeat_idx,
-                ])
+        write_control_plan_csv(self._run_dir / "timeline.csv", self.timeline)
 
         # 5. Raw FicTrac frames (compact numeric store)
         if self._fictrac_callback is not None:

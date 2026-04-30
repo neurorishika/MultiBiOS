@@ -6,12 +6,10 @@ For the internal client architecture, full-state storage model, closed-loop cons
 
 ## Current State On This Rig
 
-- The in-repo MultiBiOS FicTrac client is receiving realtime callback frames.
-- The current `fictrac-pgr.exe` is not opening the Blackfly cameras on this machine.
-- `fictrac.exe` without the PGR camera backend is not a viable live-camera fallback for these Blackfly devices.
-- SpinView recognizes the cameras, while the legacy FlyCapture stack does not.
-
-That combination strongly indicates that the live blocker was the FicTrac camera backend, not MultiBiOS or the local UDP callback path.
+- The packaged Spinnaker build at `C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe` is the validated binary for this workstation.
+- The in-repo MultiBiOS FicTrac client is receiving realtime callback frames from the live Blackfly side camera.
+- Both `multibios.run_protocol` and `multibios.experiment` have now been validated against live FicTrac on this rig.
+- MultiBiOS now sanitizes the Windows child-process environment before launching FicTrac, which avoids the conda/Python DLL path conflict that previously caused native startup crashes.
 
 ## Why A Custom Build Is Needed
 
@@ -30,7 +28,7 @@ cmake -A x64 `
   ..
 ```
 
-The shared MultiBiOS environment now prepares the SDK runtime search path before launching FicTrac, so a rebuilt binary can inherit the needed Spinnaker DLL path when launched through `multibios.experiment` or `tests/fictrac_live_probe.py`.
+The shared MultiBiOS environment now prepares the SDK runtime search path before launching FicTrac, and the launcher strips conflicting Python/conda DLL search paths on Windows before spawning the native process. That combination is what is currently validated through `multibios.run_protocol`, `multibios.experiment`, and `tests/fictrac_live_probe.py`.
 
 ## Source Of Truth For FicTrac In This Repo
 
@@ -268,15 +266,16 @@ C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe
 
 MultiBiOS prepares the runtime `PATH` automatically before launching FicTrac, so you do not need to manually prepend the Spinnaker DLL folder when using the MultiBiOS runners.
 
-If the build succeeds, point `fictrac_bin` in `config/experiment_config.yaml` at:
+If the build succeeds, point `hardware.yaml -> fictrac.bin` at:
 
 ```yaml
-fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+fictrac:
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
 ```
 
 ## How To Use The Rebuilt Binary
 
-There are two practical ways to use the rebuilt FicTrac inside MultiBiOS.
+Use the rebuilt binary in three layers, in order: bounded live probe, bounded runner validation, then full experiment.
 
 ## Re-running FicTrac Configuration
 
@@ -331,14 +330,16 @@ If you already have a trigger source running, pass `-NoTriggerTrain` and use the
 
 If you only want the shortest known-good path on this workstation, use these exact steps.
 
-### Terminal 1: Start the trigger train
+### 1. Optional: Start a trigger train for probe/config workflows
 
 ```powershell
 cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python tests\continuous_camera_trigger.py --fps 30
 ```
 
-### Terminal 2: Probe the live camera path
+Use this when your current FicTrac camera config expects external triggers during probing or `configGui` calibration.
+
+### 2. Probe the live camera path directly
 
 ```powershell
 cd C:\Rishika\MultiBiOS
@@ -354,7 +355,35 @@ conda run -n multibios-blackfly python tests\fictrac_live_probe.py `
 - terminal 2 reports callback setup and received frames
 - the summary ends with non-zero `frames_received`
 
-### Then run the full experiment path
+### 3. Validate the bounded runner paths
+
+Short hardware-timed validation:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+conda run -n multibios-blackfly python -m multibios.run_protocol `
+  --yaml config/short_protocol.yaml `
+  --hardware config/hardware.yaml `
+  --verbose --progress
+```
+
+Short legacy serial-path validation:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+conda run -n multibios-blackfly python -m multibios.experiment `
+  --protocol config/short_protocol.yaml `
+  --hardware config/hardware.yaml `
+  --experiment config/experiment_config_probe.yaml
+```
+
+Expected result for both:
+
+- a fresh `data/runs/<timestamp>/` directory is created
+- `fictrac_driver_diagnostics.json` contains a non-null `first_packet_wall_time`
+- the run exits without leaving a `fictrac-spinnaker.exe` process behind
+
+### 4. Then run the full experiment path
 
 After the probe succeeds, use the default `config/experiment_config.yaml` and run:
 
@@ -363,44 +392,22 @@ cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python -m multibios.experiment `
   --protocol config/example_protocol.yaml `
   --hardware config/hardware.yaml `
-  --experiment-config config/experiment_config.yaml
+  --experiment config/experiment_config.yaml
 ```
 
-### 1. Probe The Live Camera Path First
-
-This is the shortest end-to-end check that the rebuilt binary can:
-
-- open the Blackfly through Spinnaker
-- receive externally triggered frames
-- emit data that the MultiBiOS FicTrac callback path receives
-
-Start the camera trigger train in one shell:
+You can also use the hardware-timed primary runner with FicTrac enabled in `hardware.yaml`:
 
 ```powershell
 cd C:\Rishika\MultiBiOS
-conda run -n multibios-blackfly python tests\continuous_camera_trigger.py --fps 30
+conda run -n multibios-blackfly python -m multibios.run_protocol `
+  --yaml config/example_protocol.yaml `
+  --hardware config/hardware.yaml `
+  --verbose --progress
 ```
 
-Then run the live probe in a second shell:
+## Using FicTrac From MultiBiOS Runners
 
-```powershell
-cd C:\Rishika\MultiBiOS
-
-conda run -n multibios-blackfly python tests\fictrac_live_probe.py `
-  --frames 5 `
-  --config C:\Rishika\fictrac_pybmt\config_camera.txt `
-  --fictrac-bin C:\Rishika\MultiBiOS\assets\fictrac-spinnaker\fictrac-spinnaker.exe
-```
-
-Expected result on this rig:
-
-- the probe prints callback setup information
-- frames are received instead of timing out
-- the summary reports non-zero `frames_received`
-
-If the trigger train is not running, a trigger-armed camera will usually stall waiting for frames. That is expected behavior, not evidence that the build is wrong.
-
-### 2. Use It From `multibios.experiment`
+### `multibios.run_protocol`
 
 Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yaml):
 
@@ -408,7 +415,28 @@ Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yam
 fictrac:
   bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
   config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
-  startup_timeout_s: 0
+  first_frame_timeout_ms: 0
+  startup_timeout_s: 90.0
+```
+
+In this mode, MultiBiOS:
+
+- prepares the Spinnaker runtime path
+- launches FicTrac before the DO waveform starts
+- waits for the first FicTrac UDP frame using `hardware.yaml -> fictrac.startup_timeout_s`
+- starts the hardware-timed protocol only after FicTrac is healthy
+- records DAQ outputs and FicTrac artifacts into the same run directory
+
+### `multibios.experiment`
+
+Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yaml):
+
+```yaml
+fictrac:
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  first_frame_timeout_ms: 0
+  startup_timeout_s: 90.0
 ```
 
 Then run the experiment runner from the shared environment:
@@ -419,18 +447,18 @@ cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python -m multibios.experiment `
   --protocol config/example_protocol.yaml `
   --hardware config/hardware.yaml `
-  --experiment-config config/experiment_config.yaml
+  --experiment config/experiment_config.yaml
 ```
 
 In this mode, MultiBiOS:
 
 - prepares the Spinnaker runtime path
-- starts the finite NI-DAQ trigger task
-- starts the FicTrac thread immediately after the DAQ task is armed
+- starts the FicTrac thread and waits for the first frame
+- starts the finite NI-DAQ trigger task after FicTrac is healthy
 - waits for the first FicTrac UDP frame using `hardware.yaml -> fictrac.startup_timeout_s`
 - records the experiment event stream alongside FicTrac output
 
-That startup order matters because the DAQ task must own the trigger hardware before FicTrac begins waiting for the first externally triggered frame.
+That startup order is the currently validated path on this workstation and avoids the old first-frame startup failure.
 
 If you want to arm FicTrac and then wait until you are ready to start the trigger train, use both settings together:
 
@@ -452,9 +480,11 @@ For this specific rig, the safest order is:
 1. Confirm SpinView can see the Blackfly camera.
 2. Confirm the camera is configured for external trigger mode.
 3. Rebuild FicTrac with `PGR_USB3` support if the packaged binary is missing or stale.
-4. Run `tests/continuous_camera_trigger.py` to provide a known trigger train.
+4. If your current camera config expects triggers during probing, run `tests/continuous_camera_trigger.py` to provide a known trigger train.
 5. Run `tests/fictrac_live_probe.py` against `fictrac-spinnaker.exe`.
-6. Only then switch to `multibios.experiment` for a full run.
+6. Run `multibios.run_protocol` with `config/short_protocol.yaml`.
+7. Run `multibios.experiment` with `config/short_protocol.yaml` and `config/experiment_config_probe.yaml`.
+8. Only then switch to a full experimental protocol.
 
 That sequence separates build problems, camera-open problems, and trigger-path problems into distinct steps.
 
@@ -497,13 +527,13 @@ What is already validated:
 - NI-DAQ can issue camera trigger pulses.
 - The Blackfly cameras can acquire on external trigger in the existing Blackfly tests.
 - The internal MultiBiOS FicTrac client receives realtime UDP callbacks when FicTrac is healthy.
-- The rebuilt `fictrac-spinnaker.exe` can run the live Blackfly path on this rig when trigger pulses are present.
+- The rebuilt `fictrac-spinnaker.exe` can run the live Blackfly path on this rig.
+- The Windows child-process launch path used by both MultiBiOS runners is validated on this workstation.
 
-What still needs to be completed before formally deprecating the older wrapper path:
+What is already validated in saved run artifacts:
 
-- comparison testing against the old pybmt parser on representative UDP payloads
-- repeated live probe validation through the new internal client
-- experiment-path validation and saved-data comparison
+- bounded `multibios.run_protocol` execution with FicTrac frames written into the DAQ run directory
+- bounded `multibios.experiment` execution with FicTrac frames written into the serial-runner run directory
 
 What is not yet fully validated:
 
