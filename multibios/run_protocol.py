@@ -45,6 +45,7 @@ from plotly.subplots import make_subplots
 from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
                                       FicTracDriver, FicTracFrame,
                                       FicTracFrameStore)
+from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.fictrac_runtime import prepare_fictrac_runtime
 from multibios.protocol.control_plan import (compile_control_plan,
@@ -259,6 +260,7 @@ def load_run_protocol_config(
     if "fictrac_config" in raw:
         _warn_deprecated_experiment_key("fictrac_config", hardware_path, "fictrac")
         cfg.fictrac_config = str(raw["fictrac_config"])
+    cfg.fictrac_config = str(resolve_fictrac_config_path(cfg.fictrac_config, hardware_path=hardware_path))
 
     cfg.fictrac_bin = str(hardware_fictrac.get("bin", cfg.fictrac_bin))
     if "fictrac_bin" in raw:
@@ -1142,6 +1144,7 @@ def main():
     fictrac_thread: threading.Thread | None = None
     fictrac_state: dict[str, Exception | None] = {"error": None}
     fictrac_runtime_info: dict[str, Any] = {}
+    fictrac_camera_index: int | None = None
     other_camera_recorder: Any = None
     other_camera_recording: dict[str, Any] = {}
     teensy_serial_monitor: SerialLineMonitor | None = None
@@ -1502,6 +1505,20 @@ def main():
             fictrac_callback.request_stop()
         if fictrac_thread is not None:
             fictrac_thread.join(timeout=10.0)
+            if fictrac_thread.is_alive():
+                logger.warning("FicTrac thread did not exit cleanly; skipping camera reset")
+            elif fictrac_camera_index is not None:
+                try:
+                    from multibios.blackfly.live_view import reset_camera_to_editable_mode
+
+                    logger.info("Resetting FicTrac camera %s to editable mode...", fictrac_camera_index)
+                    reset_camera_to_editable_mode(fictrac_camera_index)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reset FicTrac camera %s after shutdown: %s",
+                        fictrac_camera_index,
+                        exc,
+                    )
         if other_camera_recorder is not None:
             logger.info("Stopping second Blackfly recorder...")
             other_camera_recording = other_camera_recorder.stop()

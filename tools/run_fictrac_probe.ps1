@@ -2,7 +2,7 @@ param(
     [string]$CondaExe = "C:/ProgramData/miniconda3/Scripts/conda.exe",
     [string]$CondaEnv = "multibios-blackfly",
     [string]$HardwarePath = "config/hardware.yaml",
-    [string]$ConfigPath = "C:/Rishika/legacy/fictrac_pybmt/config_camera.txt",
+    [string]$ConfigPath = "",
     [string]$FicTracBin = "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe",
     [string]$ConsoleOutput = "fictrac_probe_output.txt",
     [int]$Frames = 5,
@@ -13,6 +13,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$resolvedHardwarePath = if ([System.IO.Path]::IsPathRooted($HardwarePath)) { $HardwarePath } else { Join-Path $repoRoot $HardwarePath }
+$resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    Join-Path (Split-Path -Parent $resolvedHardwarePath) "config_camera.txt"
+} elseif ([System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath
+} else {
+    Join-Path $repoRoot $ConfigPath
+}
 $triggerScript = Join-Path $repoRoot "tests/continuous_camera_trigger.py"
 . (Join-Path $PSScriptRoot "_rig_python.ps1")
 
@@ -31,7 +39,7 @@ try {
         Write-Host "Applying rig Blackfly defaults from $HardwarePath..." -ForegroundColor Yellow
         Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs @(
             "-m", "multibios.blackfly.setup_daq_mode",
-            "--hardware", $HardwarePath
+            "--hardware", $resolvedHardwarePath
         )
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to apply rig Blackfly defaults via setup_daq_mode (exit $LASTEXITCODE). Aborting instead of continuing with partial camera setup."
@@ -51,7 +59,7 @@ try {
     Write-Host "Running FicTrac live probe..." -ForegroundColor Yellow
     Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs @(
         (Join-Path $repoRoot "tests/fictrac_live_probe.py"),
-        "--config", $ConfigPath,
+        "--config", $resolvedConfigPath,
         "--fictrac-bin", $FicTracBin,
         "--console-output", $ConsoleOutput,
         "--frames", $Frames.ToString()

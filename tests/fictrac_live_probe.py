@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from multibios.fictrac_client import BaseFicTracCallback, FicTracDriver
+from multibios.fictrac_config import default_fictrac_config_path
 from multibios.fictrac_runtime import prepare_fictrac_runtime
 
 
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(r"C:\Rishika\fictrac_pybmt\config_camera.txt"),
+        default=default_fictrac_config_path(),
         help="Path to FicTrac camera config",
     )
     parser.add_argument(

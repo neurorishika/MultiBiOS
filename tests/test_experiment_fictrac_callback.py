@@ -139,7 +139,7 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
     hw_path = tmp_path / "hardware.yaml"
     hw_path.write_text(
         "fictrac:\n"
-        "  config: C:/rig/config_camera.txt\n"
+        "  config: config_camera.txt\n"
         "  bin: C:/rig/fictrac-spinnaker.exe\n"
         "  console_out: fictrac_hw.txt\n"
         "  first_frame_timeout_ms: 0\n"
@@ -149,7 +149,7 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
     )
 
     cfg = load_run_protocol_config(None, hardware_path=hw_path)
-    assert cfg.fictrac_config == "C:/rig/config_camera.txt"
+    assert cfg.fictrac_config == str((tmp_path / "config_camera.txt").resolve())
     assert cfg.fictrac_bin == "C:/rig/fictrac-spinnaker.exe"
     assert cfg.fictrac_console_out == "fictrac_hw.txt"
     assert cfg.fictrac_first_frame_timeout_ms == 0

@@ -47,6 +47,8 @@ import cv2
 import numpy as np
 import yaml
 
+from multibios.fictrac_config import default_fictrac_config_path
+
 try:
     import PySpin
 except ImportError:
@@ -801,6 +803,62 @@ def configure_camera_daq_freerun_mode(cam, fps: float = 60.0,
     print(f"  No external trigger needed — camera runs immediately on BeginAcquisition.")
 
 
+def reset_camera_to_editable_mode(camera_index: int, load_default_userset: bool = True) -> None:
+    """Reopen one camera and restore a user-editable continuous configuration.
+
+    FicTrac can exit without returning the camera to a neutral state, which
+    leaves nodes read-only until the user manually resets the device in
+    SpinView. This helper applies the same recovery step in-process.
+    """
+    system = None
+    cam_list = None
+    cam = None
+
+    try:
+        system = PySpin.System.GetInstance()
+        cam_list = system.GetCameras()
+        camera_count = cam_list.GetSize()
+        if camera_index < 0 or camera_index >= camera_count:
+            raise RuntimeError(
+                f"Requested camera index {camera_index}, but only {camera_count} camera(s) were found."
+            )
+
+        cam = cam_list.GetByIndex(camera_index)
+        cam.Init()
+        nm = cam.GetNodeMap()
+
+        _command_execute(nm, "AcquisitionAbort")
+        _command_execute(nm, "AcquisitionStop")
+        _enum_set(nm, "TriggerMode", "Off")
+        _enum_set(nm, "AcquisitionMode", "Continuous")
+        _disable_frame_rate_control(nm)
+
+        if load_default_userset and _load_default_userset(cam):
+            nm = cam.GetNodeMap()
+
+        _enum_set(nm, "TriggerMode", "Off")
+        _enum_set(nm, "AcquisitionMode", "Continuous")
+        _set_buffer_newest_only(cam)
+    finally:
+        if cam is not None:
+            try:
+                cam.DeInit()
+            except Exception:
+                pass
+            cam = None
+        if cam_list is not None:
+            try:
+                cam_list.Clear()
+            except Exception:
+                pass
+            cam_list = None
+        if system is not None:
+            try:
+                system.ReleaseInstance()
+            except Exception as exc:
+                print(f"  [warn] Failed to release Spinnaker system: {exc}")
+
+
 def release_cameras(system, cam_list, cams, restore_daq: bool = False) -> None:
     """Release all PySpin camera references before clearing the system instance."""
     if cams is None:
@@ -1250,7 +1308,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config", type=Path,
-        default=Path(r"c:\Rishika\fictrac_pybmt\config_camera.txt"),
+        default=default_fictrac_config_path(),
         help="Path to FicTrac config.txt for ROI overlay (default: config_camera.txt)."
     )
     parser.add_argument(

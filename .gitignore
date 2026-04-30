@@ -101,3 +101,5 @@ rig/electrical/**/*.csv
 
 # spinnaker
 assets/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64/*
+
+captured_frames/

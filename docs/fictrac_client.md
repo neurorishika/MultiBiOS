@@ -157,7 +157,7 @@ The required validation surface is:
 1. **Parser equivalence**: for the FicTrac UDP message formats you actually receive, the MultiBiOS parser must match pybmt on all fields MultiBiOS consumes.
 2. **Frame-order behavior**: skipped-frame detection and monotonic frame counting must behave the same way.
 3. **Live callback behavior**: the internal client must receive live frames on the triggered Blackfly path.
-4. **Experiment-path behavior**: `multibios.experiment` must remain stable with the internal client.
+4. **Legacy-runner behavior**: the deprecated serial runner must remain stable with the internal client until it is removed.
 5. **Saved-data fidelity**: exported data must contain the same tracked information needed for downstream analysis.
 
 ## What Is Tested In-Repo
@@ -179,6 +179,6 @@ Use this order:
 
 1. Run the existing live triggered probe with the internal client.
 2. Compare parsed values from the internal path and the older pybmt path on the same captured UDP payloads if you still have the older environment available.
-3. Run a short `multibios.experiment` session.
+3. Run the bounded legacy serial-runner procedure from [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md).
 4. Compare frame counts, timestamps, and saved tracking columns across both paths.
 5. Only then remove or formally deprecate the old wrapper path.

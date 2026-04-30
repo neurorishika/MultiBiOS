@@ -1,5 +1,5 @@
 param(
-    [string]$ConfigPath = "C:/Rishika/legacy/fictrac_pybmt/config_camera.txt",
+    [string]$ConfigPath = "",
     [string]$CondaExe = "C:/ProgramData/miniconda3/Scripts/conda.exe",
     [string]$CondaEnv = "multibios-blackfly",
     [string]$HardwarePath = "config/hardware.yaml",
@@ -10,6 +10,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$resolvedHardwarePath = if ([System.IO.Path]::IsPathRooted($HardwarePath)) { $HardwarePath } else { Join-Path $repoRoot $HardwarePath }
+$resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    Join-Path (Split-Path -Parent $resolvedHardwarePath) "config_camera.txt"
+} elseif ([System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath
+} else {
+    Join-Path $repoRoot $ConfigPath
+}
 $fictracRuntimeDir = Join-Path $repoRoot "assets/fictrac-spinnaker"
 $configGuiExe = Join-Path $fictracRuntimeDir "configGui.exe"
 $setupScript = "-m multibios.blackfly.setup_daq_mode"
@@ -21,8 +29,8 @@ $runtimePathPrefix = @(
 ) -join ";"
 . (Join-Path $PSScriptRoot "_rig_python.ps1")
 
-if (-not (Test-Path $ConfigPath)) {
-    throw "Config file not found: $ConfigPath"
+if (-not (Test-Path $resolvedConfigPath)) {
+    throw "Config file not found: $resolvedConfigPath"
 }
 
 if (-not (Test-Path $configGuiExe)) {
@@ -47,7 +55,7 @@ try {
         Write-Host "Applying rig Blackfly defaults from $HardwarePath..." -ForegroundColor Yellow
         $setupArgs = @(
             "-m", "multibios.blackfly.setup_daq_mode",
-            "--hardware", $HardwarePath
+            "--hardware", $resolvedHardwarePath
         )
         Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs $setupArgs
         if ($LASTEXITCODE -ne 0) {
@@ -69,17 +77,17 @@ try {
     }
 
     Write-Host "Launching FicTrac config UI..." -ForegroundColor Yellow
-    Write-Host "  Config: $ConfigPath" -ForegroundColor Gray
+    Write-Host "  Config: $resolvedConfigPath" -ForegroundColor Gray
     Write-Host "  configGui is interactive. Prompts such as 'keep existing sphere ROI configuration' are expected." -ForegroundColor Gray
     if (-not $NoTriggerTrain) {
         Write-Host "  Trigger train PID: $($triggerProcess.Id)" -ForegroundColor Gray
-        Write-Host "  Hardware defaults: $HardwarePath" -ForegroundColor Gray
+        Write-Host "  Hardware defaults: $resolvedHardwarePath" -ForegroundColor Gray
     }
 
     Push-Location $repoRoot
     try {
         $env:PATH = "$runtimePathPrefix;$originalPath"
-        & $configGuiExe $ConfigPath
+        & $configGuiExe $resolvedConfigPath
         $configGuiExitCode = $LASTEXITCODE
     }
     finally {

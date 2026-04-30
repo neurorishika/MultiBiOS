@@ -6,7 +6,7 @@ teensy:
   capture_serial: true
 
 fictrac:
-  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  config: "config_camera.txt"
   bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
   console_out: "fictrac_output.txt"
   first_frame_timeout_ms: 0

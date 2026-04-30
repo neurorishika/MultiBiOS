@@ -34,7 +34,6 @@ python -c "import multibios, nidaqmx, PySpin; print('multibios-blackfly ready')"
 
 # 3. Verify the protocol runner:
 python -m multibios.run_protocol --help
-python -m multibios.experiment --help
 ```
 
 Use the shared Conda environment named `multibios-blackfly` so the DAQ control code and the Teledyne FLIR Blackfly S cameras run in the same Python installation.
@@ -53,14 +52,14 @@ NI-DAQmx drivers must be installed separately from
 
 ## Choose the Runner
 
-Use one of the two validated execution paths below.
+Use the supported execution path below.
 
 | Runner | When to use it | Timing model | FicTrac | Typical outputs |
 | --- | --- | --- | --- | --- |
-| `python -m multibios.run_protocol` | Primary path for new experiments | Hardware-clocked NI-DAQ waveform | Supported when `hardware.yaml -> fictrac` is configured | `compiled_do.npz`, `capture_ai.npz`, optional `fictrac_frames.npz` |
-| `python -m multibios.experiment` | Legacy serial-timed fallback path | Computer-timed serial events plus finite DAQ trigger task | Supported | `experiment_data.csv`, `event_log.csv`, `fictrac_frames.npz` |
+| `python -m multibios.run_protocol` | Default path for all new experiments | Hardware-clocked NI-DAQ waveform | Supported when `hardware.yaml -> fictrac` is configured | `compiled_do.npz`, `capture_ai.npz`, optional `fictrac_frames.npz` |
 
-For this rig, prefer `multibios.run_protocol` unless you specifically need the historical serial/Alicat execution path.
+!!! warning "Legacy serial runner"
+  `multibios.experiment` is deprecated. Its operational notes have moved to [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md) and are intentionally hidden from the default docs navigation.
 
 ---
 
@@ -289,253 +288,7 @@ conda run -n multibios-blackfly python -m multibios.viz_protocol data/runs/<time
 # Run hardware sanity check (short protocol, no animal needed)
 conda run -n multibios-blackfly python -m multibios.run_protocol --yaml config/short_protocol.yaml --hardware config/hardware.yaml --verbose --progress
 
-# Run the legacy serial/FicTrac path with a bounded protocol
-conda run -n multibios-blackfly python -m multibios.experiment --protocol config/short_protocol.yaml --hardware config/hardware.yaml --experiment config/experiment_config_probe.yaml
 ```
 
 All commands should be run from `C:\Rishika\MultiBiOS\`.
-
----
-
-## Running Experiments with FicTrac Integration (`experiment.py`)
-
-> **Use this runner when you specifically need the serial-timed legacy path.** It still records every FicTrac frame alongside the experiment event log, but `run_protocol.py` is now the preferred runner for new hardware-clocked experiments.
-
-Before using the live Blackfly side camera with this runner, first verify the rebuilt binary with the probe flow described in [`docs/fictrac.md`](fictrac.md): start `tests/continuous_camera_trigger.py`, then run `tests/fictrac_live_probe.py` against `assets/fictrac-spinnaker/fictrac-spinnaker.exe`.
-
-### How it differs from `run_protocol.py`
-
-| | `run_protocol.py` | `experiment.py` |
-| --- | --- | --- |
-| Valve control | Hardware-clocked NI-DAQ waveform (sub-ms precision) | Computer-timed serial to Teensy (~1–5 ms jitter) |
-| MFC control | DAQ analog output | Alicat serial (dedicated COM ports) |
-| FicTrac | Integrated through `hardware.yaml -> fictrac` | Integrated through `hardware.yaml -> fictrac` |
-| Camera/scope triggers | Embedded in DAQ waveform | Separate finite NI-DAQ task (latch pulses at `latch_interval_ms`) |
-| Best for | Primary production runner | Legacy compatibility and serial/Alicat workflows |
-| Output files | `compiled_do.npz`, `capture_ai.npz`, optional FicTrac artifacts | `experiment_data.csv`, `event_log.csv`, `trigger_waveform.npz` |
-
----
-
-### Extra Hardware Checklist (experiment runner only)
-
-In addition to the base checklist above:
-
-- [ ] **FicTrac camera** mounted and calibrated; config file at `C:/Rishika/fictrac_pybmt/config_camera.txt`
-- [ ] **FicTrac binary** built for the right camera backend on this PC. For the Blackfly S rig cameras, prefer the Spinnaker build path documented in [`docs/fictrac.md`](fictrac.md)
-- [ ] **Alicat MFC controllers** connected; COM ports noted (run `python -m multibios.apps.flow_monitor --scan` to discover addresses A–D)
-- [ ] **Teensy COM port** confirmed in Device Manager (e.g. `COM4`) and updated in `config/experiment_config.yaml`
-
----
-
-### Step 1 — Configure `hardware.yaml` and `experiment_config.yaml`
-
-Open `config/hardware.yaml` and update the rig-level FicTrac block:
-
-```yaml
-fictrac:
-  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
-  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-  console_out: "fictrac_output.txt"
-  first_frame_timeout_ms: 0
-  startup_timeout_s: 90.0
-  timeout_s: 5.0
-```
-
-`hardware.yaml` is now the source of truth for FicTrac, camera recording, DAQ, MFC, and data-output settings. `experiment_config.yaml` is mainly for the serial-runner-specific values such as Teensy port, optional overrides, and output location.
-
-Then open `config/experiment_config.yaml` and update the per-run settings:
-
-```yaml
-# Teensy serial port — check Device Manager
-teensy_port: "COM4"
-teensy_baud: 115200
-
-# MFC mode: "alicat_serial" or "none" (skip MFC entirely)
-mfc_mode: "alicat_serial"
-
-# Map protocol device keys -> Alicat unit single-letter IDs
-# Run: python -m multibios.apps.flow_monitor --scan   to find these
-mfc_device_map:
-  mfc.air_left_setpoint:   "A"
-  mfc.air_right_setpoint:  "B"
-  mfc.odor_left_setpoint:  "C"
-  mfc.odor_right_setpoint: "D"
-
-alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
-alicat_baud: [115200]
-
-# Latch interval — how often Teensy commits staged valve changes to hardware
-latch_interval_ms: 10.0    # 10 ms = 100 Hz (faster = more responsive, more DAQ load)
-
-# Live MFC readout interval during the run (0 = disable)
-mfc_live_interval_s: 1.0
-
-data_dir: "data/runs"
-```
-
-> **Finding Alicat addresses:** Run `python -m multibios.apps.flow_monitor --scan` — it prints a table of all discovered devices and their letter IDs. Enter those letters in `mfc_device_map`.
-
----
-
-### Step 2 — Dry Run (preview timeline, no hardware)
-
-```powershell
-cd C:\Rishika\MultiBiOS
-
-conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/odor_lateralization.yaml `
-  --hardware config/hardware.yaml `
-  --experiment config/experiment_config.yaml `
-  --dry-run --verbose
-```
-
-This prints the full timeline in order — every valve command, MFC setpoint, and trigger marker — without opening any serial ports or starting FicTrac.
-
-Sample output:
-
-```text
-Protocol: Odor Lateralization
-Total duration: 421.0 s
-Timeline events: 87
-Microscope triggers: 14
-
---- Phase: BOOT SEQUENCE ---
-  [    1.00s] MFC mfc.air_left_setpoint     ->  0.03
-  [    1.00s] OLF left   -> AIR
-  ...
-
---- Phase: TRIAL 1 - BILATERAL ---
-  [   76.00s] DAQ: triggers.microscope -> PULSE
-  [   76.00s] SV  left  -> ODOR
-  ...
-```
-
----
-
-### Step 3 — Connect the Animal and Arm FicTrac
-
-1. Mount the animal on the ball.
-2. If you changed the camera setup or rebuilt FicTrac, first run a bounded probe from [`docs/fictrac.md`](fictrac.md) or run the short protocol once before your long experiment.
-3. Arm your imaging software to wait for the microscope trigger.
-
-### NI-DAQ-triggered FicTrac on the Blackfly rig
-
-When the side camera is externally triggered by NI-DAQ, treat the DAQ waveform as the authoritative timing reference. On the current validated MultiBiOS paths, the runner launches FicTrac, waits for the first UDP frame, and only then starts its own timing source. That protects startup from the old first-frame timeout failure, but the actual experiment alignment should still be taken from DAQ edges and saved waveforms.
-
-For per-frame proof that exposures actually happened, validate a camera return line into DAQ before relying on it in analysis.
-
----
-
-### Step 4 — Run the Experiment
-
-```powershell
-cd C:\Rishika\MultiBiOS
-
-conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/odor_lateralization.yaml `
-  --hardware config/hardware.yaml `
-  --experiment config/experiment_config.yaml `
-  --verbose
-```
-
-**Startup sequence you will see:**
-
-```text
-Opening Teensy on COM4...
-  Teensy RESET: OK
-  Starting MFC monitor (live readout every 1 s)...
-  Waiting for FicTrac first frame...
-  FicTrac connected (frame 1)
-Starting NIDAQ trigger task...
-  NIDAQ running (421.0 s finite task)
-
-════════════════════════════════════════════════════
-EXPERIMENT RUNNING
-════════════════════════════════════════════════════
-
-  [    1.00s] OLF left   -> AIR       (jitter +0.3 ms)
-  [    1.01s] MFC mfc.air_left_setpoint -> 0.03  (jitter +0.2 ms)
-  [   12.0s] MFC: A@COM7 flow=10.001 setpt=10.0 gas=Air  |  B@COM7 flow=10.002 setpt=10.0 gas=Air
-  ...
-```
-
-The jitter column shows how close the actual event dispatch was to the scheduled time. Typical values are ±1–5 ms under normal CPU load.
-
-**Do not close the terminal or disconnect hardware while the experiment is running.**
-
----
-
-### Step 5 — Verify and Explore Data
-
-When the run finishes, the data explorer opens automatically in your browser at `http://127.0.0.1:8050`. You can also re-open it any time:
-
-```powershell
-python -m multibios.apps.explorer
-```
-
-Output directory `data/runs/YYYY-MM-DD_HH-MM-SS/` contains:
-
-| File | Description |
-| --- | --- |
-| `experiment_data.csv` | **Primary analysis file** — one row per FicTrac frame with all valve states, MFC setpoints, and camera trigger forward-filled |
-| `event_log.csv` | Every valve/MFC/trigger event with scheduled vs. actual time and jitter |
-| `event_log.json` | Same events in JSON (full fidelity, extra fields) |
-| `timeline.csv` | Compiled protocol schedule (reference) |
-| `trigger_waveform.npz` | NI-DAQ latch/camera/microscope waveform |
-| `fictrac_runtime_config.txt` | Exact runtime config passed to FicTrac |
-| `fictrac_driver_diagnostics.json` | Launch diagnostics including first-packet timing and frame count |
-| `fictrac-*.dat` | Native FicTrac output |
-| `protocol.yaml` / `hardware.yaml` | Input copies |
-| `meta.json` | Config, seed, timestamps |
-
-**`experiment_data.csv` columns:**
-
-| Column | Description |
-| --- | --- |
-| `experiment_time_s` | Seconds since experiment start |
-| `frame_cnt` | FicTrac frame number |
-| `posx`, `posy` | Integrated ball position (ball radii) |
-| `heading` | Current heading angle (radians) |
-| `speed` | Ball speed (ball radii / s) |
-| `direction` | Movement direction (radians) |
-| `intx`, `inty` | Integrated X/Y (FicTrac units) |
-| `olfactometer_left/right` | Current odor valve state (AIR / ODOR1-5 / OFF) |
-| `switch_valve_left/right` | Current switch valve state (CLEAN / ODOR) |
-| `mfc_air_left/right_sp` | MFC setpoint commanded (SLPM) |
-| `mfc_odor_left/right_sp` | MFC setpoint commanded (SLPM) |
-| `camera_trigger` | 1 if camera trigger is HIGH in DAQ waveform |
-
----
-
-### CLI Reference — `experiment.py`
-
-```text
-conda run -n multibios-blackfly python -m multibios.experiment [OPTIONS]
-
-Required:
-  --protocol FILE       Protocol YAML  (same format as run_protocol)
-  --hardware FILE       Hardware mapping YAML
-  --experiment FILE     Experiment config YAML (default: config/experiment_config.yaml)
-
-Execution:
-  --dry-run             Preview timeline only; no hardware
-  --verbose / -v        Print each event with jitter as it fires
-  --seed INT            Override protocol RNG seed
-
-Output:
-  --out-root DIR        Output root (default: from experiment_config.yaml data_dir)
-```
-
----
-
-### Common Problems (experiment runner)
-
-| Symptom | Likely Cause | Fix |
-| --- | --- | --- |
-| `FicTrac did not produce any frames within N s` | Camera not found, FicTrac crashed, the packaged binary still has the old short first-frame wait, or `fictrac_startup_timeout_s` is too short for delayed triggers | Check camera USB, run FicTrac manually to confirm it works, verify the packaged `fictrac-spinnaker.exe` is the patched custom build documented in `docs/fictrac.md`, and increase `fictrac_startup_timeout_s` or set it to `0` for indefinite startup waiting |
-| `No cached Alicat device matches mapping` | Wrong letter ID or COM port | Run `python -m multibios.apps.flow_monitor --scan` and update `mfc_device_map` in experiment_config.yaml |
-| `Teensy RESET: ERROR` | Wrong COM port or firmware not running | Check Device Manager for correct port; re-flash firmware |
-| FicTrac tracking looks noisy mid-run | Ball surface dirty or lighting changed | Check illumination; clean ball; re-calibrate FicTrac |
-| `FicTrac stopped producing frames for N s` | FicTrac crashed mid-run | Check `fictrac_output.txt` for error; increase `fictrac_timeout_s` if just a hiccup |
-| High jitter (> 20 ms) on valve events | CPU load from FicTrac or other processes | Close non-essential applications; consider increasing `latch_interval_ms` to reduce DAQ polling |
-| MFC live readout not appearing | `mfc_live_interval_s: 0` in config | Set to `1.0` or higher |
+If you still need the deprecated serial/Alicat `experiment.py` workflow, its commands, config notes, and troubleshooting now live in [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md).

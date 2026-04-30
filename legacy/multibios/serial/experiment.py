@@ -66,6 +66,7 @@ import yaml
 from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
                                       FicTracDriver, FicTracFrame,
                                       FicTracFrameStore)
+from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.protocol.control_plan import (TimelineEvent,
                                              compile_control_plan,
@@ -74,9 +75,9 @@ from multibios.fictrac_runtime import prepare_fictrac_runtime
 from multibios.protocol.schema import (BIG_STATE_CODE, SMALL_STATE_CODE,
                                        CompileError)
 from multibios.serial_line_monitor import SerialLineMonitor
-from multibios.serial.daq_triggers import (DAQTriggerManager, TriggerConfig,
+from MultiBiOS.legacy.multibios.serial.daq_triggers import (DAQTriggerManager, TriggerConfig,
                                            build_trigger_waveform)
-from multibios.serial.teensy_controller import TeensyController
+from MultiBiOS.legacy.multibios.serial.teensy_controller import TeensyController
 
 @dataclass
 class ExperimentConfig:
@@ -1208,6 +1209,16 @@ class ExperimentRunner:
             self._fictrac_thread.join(timeout=10.0)
             if self._fictrac_thread.is_alive():
                 print("    WARNING: FicTrac thread did not exit cleanly")
+            else:
+                fictrac_camera_index = self._fictrac_runtime_info.get("fictrac_camera_index")
+                if fictrac_camera_index is not None:
+                    try:
+                        from multibios.blackfly.live_view import reset_camera_to_editable_mode
+
+                        print(f"  Resetting FicTrac camera {fictrac_camera_index} to editable mode...")
+                        reset_camera_to_editable_mode(int(fictrac_camera_index))
+                    except Exception as e:
+                        print(f"    WARNING: FicTrac camera reset failed: {e}")
 
         # 4. Zero MFCs then stop the monitor
         if self._mfc_monitor is not None:
@@ -1656,6 +1667,7 @@ def load_experiment_config(
     if "fictrac_config" in raw:
         _warn_deprecated_experiment_key("fictrac_config", hardware_path, "fictrac")
         cfg.fictrac_config = str(raw["fictrac_config"])
+    cfg.fictrac_config = str(resolve_fictrac_config_path(cfg.fictrac_config, hardware_path=hardware_path))
 
     cfg.fictrac_bin = str(hardware_fictrac.get("bin", cfg.fictrac_bin))
     if "fictrac_bin" in raw:

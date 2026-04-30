@@ -68,7 +68,7 @@
 - Conda or Miniconda
 - NI-DAQmx drivers (for hardware execution)
 - Spinnaker SDK 4.3.0.189 installed on Windows before installing `PySpin`
-- If you want live Blackfly input in FicTrac on this rig, build a Spinnaker-enabled FicTrac binary and point `config/experiment_config.yaml` at it
+- If you want live Blackfly input in FicTrac on this rig, build a Spinnaker-enabled FicTrac binary and configure the `fictrac` block in `config/hardware.yaml`
 
 ### Installation
 

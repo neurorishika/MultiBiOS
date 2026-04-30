@@ -8,7 +8,7 @@ For the internal client architecture, full-state storage model, closed-loop cons
 
 - The packaged Spinnaker build at `C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe` is the validated binary for this workstation.
 - The in-repo MultiBiOS FicTrac client is receiving realtime callback frames from the live Blackfly side camera.
-- Both `multibios.run_protocol` and `multibios.experiment` have now been validated against live FicTrac on this rig.
+- `multibios.run_protocol` has been validated against live FicTrac on this rig.
 - MultiBiOS now sanitizes the Windows child-process environment before launching FicTrac, which avoids the conda/Python DLL path conflict that previously caused native startup crashes.
 
 ## Why A Custom Build Is Needed
@@ -28,7 +28,7 @@ cmake -A x64 `
   ..
 ```
 
-The shared MultiBiOS environment now prepares the SDK runtime search path before launching FicTrac, and the launcher strips conflicting Python/conda DLL search paths on Windows before spawning the native process. That combination is what is currently validated through `multibios.run_protocol`, `multibios.experiment`, and `tests/fictrac_live_probe.py`.
+The shared MultiBiOS environment now prepares the SDK runtime search path before launching FicTrac, and the launcher strips conflicting Python/conda DLL search paths on Windows before spawning the native process. That combination is what is currently validated through `multibios.run_protocol` and `tests/fictrac_live_probe.py`.
 
 ## Source Of Truth For FicTrac In This Repo
 
@@ -286,7 +286,7 @@ The correct reconfiguration path is still the classic upstream FicTrac UI:
 ```powershell
 cd C:\Rishika\MultiBiOS\assets\fictrac-spinnaker
 
-./configGui.exe C:\Rishika\legacy\fictrac_pybmt\config_camera.txt
+./configGui.exe C:\Rishika\MultiBiOS\config\config_camera.txt
 ```
 
 For this rig, that is now safe to use as the standard reconfiguration workflow because the patched `configGui.exe` will default `src_first_frame_timeout_ms` to `0` if the key is missing and will honor the configured value when it opens the live Spinnaker camera.
@@ -301,7 +301,6 @@ The easiest packaged workflow is now:
 cd C:\Rishika\MultiBiOS
 
 ./tools/run_fictrac_config_gui.ps1 `
-  -ConfigPath C:/Rishika/legacy/fictrac_pybmt/config_camera.txt `
   -Fps 30
 ```
 
@@ -345,7 +344,7 @@ Use this when your current FicTrac camera config expects external triggers durin
 cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python tests\fictrac_live_probe.py `
   --frames 5 `
-  --config C:\Rishika\fictrac_pybmt\config_camera.txt `
+  --config C:\Rishika\MultiBiOS\config\config_camera.txt `
   --fictrac-bin C:\Rishika\MultiBiOS\assets\fictrac-spinnaker\fictrac-spinnaker.exe
 ```
 
@@ -367,17 +366,7 @@ conda run -n multibios-blackfly python -m multibios.run_protocol `
   --verbose --progress
 ```
 
-Short legacy serial-path validation:
-
-```powershell
-cd C:\Rishika\MultiBiOS
-conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/short_protocol.yaml `
-  --hardware config/hardware.yaml `
-  --experiment config/experiment_config_probe.yaml
-```
-
-Expected result for both:
+Expected result:
 
 - a fresh `data/runs/<timestamp>/` directory is created
 - `fictrac_driver_diagnostics.json` contains a non-null `first_packet_wall_time`
@@ -385,17 +374,7 @@ Expected result for both:
 
 ### 4. Then run the full experiment path
 
-After the probe succeeds, use the default `config/experiment_config.yaml` and run:
-
-```powershell
-cd C:\Rishika\MultiBiOS
-conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/example_protocol.yaml `
-  --hardware config/hardware.yaml `
-  --experiment config/experiment_config.yaml
-```
-
-You can also use the hardware-timed primary runner with FicTrac enabled in `hardware.yaml`:
+After the probe succeeds, use the hardware-timed primary runner with FicTrac enabled in `hardware.yaml`:
 
 ```powershell
 cd C:\Rishika\MultiBiOS
@@ -414,10 +393,12 @@ Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yam
 ```yaml
 fictrac:
   bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  config: "config_camera.txt"
   first_frame_timeout_ms: 0
   startup_timeout_s: 90.0
 ```
+
+The canonical FicTrac config now lives at `config/config_camera.txt`, next to `hardware.yaml`. Reconfiguration helpers, probes, and experiment runners should all use that single file.
 
 In this mode, MultiBiOS:
 
@@ -427,51 +408,9 @@ In this mode, MultiBiOS:
 - starts the hardware-timed protocol only after FicTrac is healthy
 - records DAQ outputs and FicTrac artifacts into the same run directory
 
-### `multibios.experiment`
+### Legacy serial runner
 
-Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yaml):
-
-```yaml
-fictrac:
-  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
-  first_frame_timeout_ms: 0
-  startup_timeout_s: 90.0
-```
-
-Then run the experiment runner from the shared environment:
-
-```powershell
-cd C:\Rishika\MultiBiOS
-
-conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/example_protocol.yaml `
-  --hardware config/hardware.yaml `
-  --experiment config/experiment_config.yaml
-```
-
-In this mode, MultiBiOS:
-
-- prepares the Spinnaker runtime path
-- starts the FicTrac thread and waits for the first frame
-- starts the finite NI-DAQ trigger task after FicTrac is healthy
-- waits for the first FicTrac UDP frame using `hardware.yaml -> fictrac.startup_timeout_s`
-- records the experiment event stream alongside FicTrac output
-
-That startup order is the currently validated path on this workstation and avoids the old first-frame startup failure.
-
-If you want to arm FicTrac and then wait until you are ready to start the trigger train, use both settings together:
-
-```yaml
-# FicTrac runtime config
-src_first_frame_timeout_ms: 0
-
-# MultiBiOS hardware config
-fictrac:
-  startup_timeout_s: 0
-```
-
-That combination makes both layers wait indefinitely for the first externally triggered frame instead of timing out early.
+`multibios.experiment` is deprecated. Its FicTrac bring-up notes now live in [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md).
 
 ## Recommended Bring-Up Sequence
 
@@ -483,7 +422,7 @@ For this specific rig, the safest order is:
 4. If your current camera config expects triggers during probing, run `tests/continuous_camera_trigger.py` to provide a known trigger train.
 5. Run `tests/fictrac_live_probe.py` against `fictrac-spinnaker.exe`.
 6. Run `multibios.run_protocol` with `config/short_protocol.yaml`.
-7. Run `multibios.experiment` with `config/short_protocol.yaml` and `config/experiment_config_probe.yaml`.
+7. If you are maintaining the deprecated serial runner, use the bounded legacy procedure in [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md).
 8. Only then switch to a full experimental protocol.
 
 That sequence separates build problems, camera-open problems, and trigger-path problems into distinct steps.
@@ -518,7 +457,7 @@ Before a triggered FicTrac run will work reliably:
 - The DAQ task must be armed before FicTrac blocks on its first externally triggered frame.
 - The FicTrac binary must tolerate a delayed first trigger pulse.
 
-MultiBiOS now follows that startup requirement in `multibios.experiment`: it starts the NI-DAQ task first, then launches the FicTrac thread and waits up to 90 s for the first UDP frame.
+The supported runner now follows that startup requirement before protocol execution and waits up to `hardware.yaml -> fictrac.startup_timeout_s` for the first UDP frame.
 
 ## What MultiBiOS Can Trust Today
 
@@ -533,7 +472,7 @@ What is already validated:
 What is already validated in saved run artifacts:
 
 - bounded `multibios.run_protocol` execution with FicTrac frames written into the DAQ run directory
-- bounded `multibios.experiment` execution with FicTrac frames written into the serial-runner run directory
+- deprecated serial-runner validation notes have been moved to [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md)
 
 What is not yet fully validated:
 
