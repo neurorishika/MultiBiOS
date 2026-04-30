@@ -7,14 +7,14 @@ Utilities shared by run_protocol and viz_protocol:
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
 
 import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 
 # ---------- IO helpers ----------
 
@@ -148,6 +148,23 @@ def _get_color_group_label(name: str) -> tuple[str, str, str]:
     return "#95a5a6", "Other", name.replace("_", " ")
 
 
+def _get_di_style(name: str) -> tuple[str, str, str]:
+    """Return (hex_color, legend_group, display_name) for a DI signal."""
+    upper = name.upper()
+
+    if upper.startswith("READY_"):
+        return "#2ecc71", "READY (DI)", name.replace("_", " ")
+
+    if "CAMERA" in upper and upper.endswith("_O1"):
+        if "FRONT" in upper:
+            return "#f39c12", "Camera Returns (DI)", "CAMERA FRONT O1"
+        if "SIDE" in upper or "FICTRAC" in upper:
+            return "#3498db", "Camera Returns (DI)", "CAMERA SIDE O1"
+        return "#9b59b6", "Camera Returns (DI)", name.replace("_", " ")
+
+    return "#7f8c8d", "Digital Inputs", name.replace("_", " ")
+
+
 def make_protocol_figure(
     t_ms: np.ndarray,
     do: np.ndarray,
@@ -244,20 +261,21 @@ def make_protocol_figure(
             )
             y_offset += y_step
 
-    # READY (DI) overlays below DO stack
+    # DI overlays below DO stack
     if di is not None and di_names is not None and len(di_names) == di.shape[0]:
         for i, name in enumerate(di_names):
             y = di[i].astype(float) + y_offset
+            color, legend_group, display_name = _get_di_style(name)
             fig.add_trace(
                 go.Scatter(
                     x=t_ms,
                     y=y,
                     mode="lines",
-                    name=name.replace("_", " "),
-                    legendgroup="Ready (DI)",
-                    legendgrouptitle_text="Ready (DI)",
-                    line=dict(shape="hv", width=2, color="#2ecc71"),
-                    hovertemplate=f"<b>{name}</b><br>Time: %{{x:.2f}} ms<br>Level: %{{customdata}}<extra></extra>",
+                    name=display_name,
+                    legendgroup=legend_group,
+                    legendgrouptitle_text=legend_group,
+                    line=dict(shape="hv", width=2, color=color),
+                    hovertemplate=f"<b>{display_name}</b><br>Time: %{{x:.2f}} ms<br>Level: %{{customdata}}<extra></extra>",
                     customdata=di[i].astype(int),
                 ),
                 row=1,
@@ -268,7 +286,7 @@ def make_protocol_figure(
                     x=[t_ms[0], t_ms[-1]],
                     y=[y_offset, y_offset],
                     mode="lines+text",
-                    text=["", name.replace("_", " ")],
+                    text=["", display_name],
                     textposition="middle right",
                     textfont=dict(size=9, color="rgba(100,100,100,0.7)"),
                     showlegend=False,

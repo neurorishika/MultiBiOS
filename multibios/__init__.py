@@ -7,10 +7,11 @@ __getattr__, __dir__, __all__ = lazy_loader.attach(
         "protocol",
         "run_protocol",
         "viz_protocol",
-        "alicat_manager",
+        "apps",
         "daq_triggers",
         "teensy_controller",
         "experiment",
+        "blackfly",
     },
     submod_attrs={
         "protocol": [
@@ -20,14 +21,6 @@ __getattr__, __dir__, __all__ = lazy_loader.attach(
             "SMALL_STATE_CODE",
             "TimingConfig",
             "schema",
-        ],
-        "alicat_manager": [
-            "AlicatManager",
-            "scan",
-            "load_cache",
-            "save_cache",
-            "STANDARD_BAUDRATES",
-            "UNIT_IDS",
         ],
         "daq_triggers": [
             "DAQTriggerManager",
@@ -57,14 +50,7 @@ __all__ = [
     "run_protocol",
     "schema",
     "viz_protocol",
-    # alicat
-    "alicat_manager",
-    "AlicatManager",
-    "scan",
-    "load_cache",
-    "save_cache",
-    "STANDARD_BAUDRATES",
-    "UNIT_IDS",
+    "apps",
     # integration (computer-timebase + serial)
     "daq_triggers",
     "DAQTriggerManager",
@@ -73,6 +59,7 @@ __all__ = [
     "teensy_controller",
     "TeensyController",
     "experiment",
+    "blackfly",
     "ExperimentRunner",
     "ExperimentConfig",
     "ExperimentCallback",

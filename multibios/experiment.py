@@ -8,7 +8,7 @@ but executes it via:
   * **Teensy v2 serial** for odor valve control
   * **AlicatManager serial** for MFC setpoints
   * **NIDAQ finite DO task** for camera/microscope triggers & latch pulses
-  * **pybmt / FicTrac** for ball tracking (recorded throughout)
+    * **Internal FicTrac client** for ball tracking (recorded throughout)
 
 Architecture
 ------------
@@ -28,9 +28,10 @@ Architecture
 
 Closed-loop readiness
 ---------------------
-The ``ExperimentCallback`` (pybmt callback) exposes the latest FicTrac state
-via a thread-safe property.  A future closed-loop engine can read this in
-the timeline loop and branch protocol logic on fly behavior.
+The ``ExperimentCallback`` exposes the latest FicTrac state via a thread-safe
+property and supports waiting for the next received frame by sequence number.
+A future closed-loop engine can read the newest frame without trying to process
+every intermediate frame when the control loop runs slower than camera rate.
 
 Usage
 -----
@@ -48,7 +49,7 @@ import argparse
 import asyncio
 import csv
 import json
-import os
+import shutil
 import sys
 import threading
 import time
@@ -59,13 +60,15 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
-# pybmt
-from pybmt.callback.base import PyBMTCallback
-from pybmt.fictrac.driver import FicTracDriver
 
 # MultiBiOS imports
 from multibios.daq_triggers import (DAQTriggerManager, TriggerConfig,
                                     build_trigger_waveform)
+from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
+                                      FicTracDriver, FicTracFrame,
+                                      FicTracFrameStore)
+from multibios.fictrac_consumer import ClosedLoopFrameConsumer
+from multibios.fictrac_runtime import prepare_fictrac_runtime
 from multibios.protocol.schema import (BIG_STATE_CODE, SMALL_STATE_CODE,
                                        CompileError)
 from multibios.teensy_controller import TeensyController
@@ -99,6 +102,14 @@ class ExperimentConfig:
     fictrac_bin: str = ""
     fictrac_console_out: str = "fictrac_output.txt"
     fictrac_timeout_s: float = 5.0
+    save_camera_raw_video: bool = False
+    fictrac_raw_video_codec: str = "raw"
+    other_camera_timeout_ms: int = 250
+    other_camera_queue_size: int = 512
+    other_camera_stream_buffer_count: int = 256
+    other_camera_exposure_us: float | None = None
+    other_camera_roi_height: int | None = None
+    other_camera_binning: int = 1
 
     # MFC control mode: "alicat_serial" or "none" (skip MFC)
     mfc_mode: str = "alicat_serial"
@@ -128,76 +139,119 @@ class ExperimentConfig:
     # Set to 0 to disable live readout (setpoint commands still work normally).
     mfc_live_interval_s: float = 1.0
 
-
-@dataclass
-class FicTracFrame:
-    """One logged FicTrac frame."""
-    wall_time: float          # time.perf_counter() value
-    frame_cnt: int
-    posx: float
-    posy: float
-    heading: float
-    speed: float
-    direction: float
-    intx: float
-    inty: float
-    timestamp: float          # FicTrac internal timestamp
-    delta_timestamp: float
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # FicTrac callback — records every frame, exposes latest state
 # ═══════════════════════════════════════════════════════════════════════════
 
-class ExperimentCallback(PyBMTCallback):
-    """pybmt callback that logs every FicTrac frame and exposes the latest.
-
-    The experiment runner reads ``latest`` from the main thread; the pybmt
-    driver calls ``process_callback`` from its own thread.  Thread safety is
-    ensured by the GIL for simple attribute reads and the explicit lock for
-    the log list.
-    """
+class ExperimentCallback(BaseFicTracCallback):
+    """FicTrac callback with efficient frame retention for logging and control."""
 
     def __init__(self) -> None:
-        self.latest: Optional[FicTracFrame] = None
-        self._frames: List[FicTracFrame] = []
-        self._lock = threading.Lock()
+        self._store = FicTracFrameStore(chunk_size=8192, recent_capacity=2048)
         self._stop = threading.Event()
 
-    def setup_callback(self):
-        pass
+    @property
+    def latest(self) -> Optional[FicTracFrame]:
+        return self._store.latest
+
+    @property
+    def frame_count(self) -> int:
+        return self._store.count
+
+    def get_latest(self) -> tuple[int, Optional[FicTracFrame]]:
+        return self._store.get_latest()
+
+    def wait_for_next_frame(
+        self, after_seq: int = -1, timeout: float | None = None
+    ) -> tuple[int, Optional[FicTracFrame]]:
+        return self._store.wait_for_next(after_seq=after_seq, timeout=timeout)
+
+    def recent_frames(self, max_count: int | None = None) -> np.ndarray:
+        return self._store.recent_array(max_count=max_count)
+
+    def frame_array(self) -> np.ndarray:
+        return self._store.frame_array()
+
+    def save_npz(self, path: str | Path) -> int:
+        return self._store.save_npz(path)
+
+    def make_consumer(self, *, start_at_latest: bool = False) -> ClosedLoopFrameConsumer:
+        return ClosedLoopFrameConsumer(self._store, start_at_latest=start_at_latest)
 
     def process_callback(self, track_state) -> bool:
-        now = time.perf_counter()
-        frame = FicTracFrame(
-            wall_time=now,
-            frame_cnt=track_state.frame_cnt,
-            posx=track_state.posx,
-            posy=track_state.posy,
-            heading=track_state.heading,
-            speed=track_state.speed,
-            direction=track_state.direction,
-            intx=track_state.intx,
-            inty=track_state.inty,
-            timestamp=track_state.timestamp,
-            delta_timestamp=track_state.delta_timestamp,
-        )
-        self.latest = frame
-        with self._lock:
-            self._frames.append(frame)
-        # Return True to keep running, False when stop requested
+        self._store.append(FicTracFrame.from_state(track_state, time.perf_counter()))
         return not self._stop.is_set()
-
-    def shutdown_callback(self):
-        pass
 
     def request_stop(self) -> None:
         self._stop.set()
 
-    @property
-    def frames(self) -> List[FicTracFrame]:
-        with self._lock:
-            return list(self._frames)
+
+def _read_fictrac_config_values(path: str | Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _upsert_fictrac_config_line(lines: list[str], key: str, value: str) -> None:
+    rendered = f"{key:<17}: {value}\n"
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        current_key, _, _ = line.partition(":")
+        if current_key.strip() == key:
+            lines[idx] = rendered
+            return
+    lines.append(rendered)
+
+
+def _prepare_fictrac_runtime_config(
+    source_config_path: str | Path,
+    run_dir: str | Path,
+    *,
+    enable_raw_video: bool,
+    camera_fps: float | None,
+    video_codec: str,
+) -> tuple[Path, int | None, dict[str, Any]]:
+    source_path = Path(source_config_path)
+    target_dir = Path(run_dir)
+    lines = source_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    values = _read_fictrac_config_values(source_path)
+
+    fictrac_camera_index: int | None = None
+    src_fn = values.get("src_fn")
+    if src_fn is not None:
+        try:
+            fictrac_camera_index = int(src_fn)
+        except ValueError:
+            fictrac_camera_index = None
+
+    output_base = (target_dir.resolve() / "fictrac").as_posix()
+    _upsert_fictrac_config_line(lines, "output_fn", output_base)
+    if enable_raw_video:
+        _upsert_fictrac_config_line(lines, "save_raw", "y")
+        _upsert_fictrac_config_line(lines, "vid_codec", video_codec)
+        if camera_fps is not None and camera_fps > 0:
+            _upsert_fictrac_config_line(lines, "src_fps", f"{camera_fps:.6f}")
+
+    runtime_path = target_dir / "fictrac_runtime_config.txt"
+    runtime_path.write_text("".join(lines), encoding="utf-8")
+
+    return runtime_path, fictrac_camera_index, {
+        "source_config": str(source_path),
+        "runtime_config": str(runtime_path),
+        "output_base": output_base,
+        "save_raw": bool(enable_raw_video),
+        "video_codec": video_codec,
+        "camera_fps": camera_fps,
+        "fictrac_camera_index": fictrac_camera_index,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -495,7 +549,14 @@ async def _set_mfc_setpoints(
     ``_MFCMonitor.set_setpoints()`` so all MFC I/O shares a single
     persistent event loop and AlicatManager instance.
     """
-    from multibios.alicat_manager import AlicatManager
+    try:
+        from multibios.alicat_manager import AlicatManager  # legacy serial path
+    except ImportError:
+        raise RuntimeError(
+            "AlicatManager (serial MFC control) has been moved to legacy/. "
+            "MFC setpoints are now driven via NI-DAQ analog outputs — "
+            "use run_protocol.py or tests/mfc_analog_test.py instead."
+        )
 
     mgr = AlicatManager()
     if not mgr.device_map:
@@ -562,7 +623,14 @@ class _MFCMonitor:
 
     def start(self, t0: float = 0.0) -> None:
         """Start the background event loop and initialise AlicatManager."""
-        from multibios.alicat_manager import AlicatManager
+        try:
+            from multibios.alicat_manager import AlicatManager  # legacy serial path
+        except ImportError:
+            raise RuntimeError(
+                "AlicatManager (serial MFC control) has been moved to legacy/. "
+                "MFC setpoints are now driven via NI-DAQ analog outputs — "
+                "use run_protocol.py or tests/mfc_analog_test.py instead."
+            )
 
         self._t0 = t0
         self._thread.start()
@@ -719,10 +787,13 @@ class ExperimentRunner:
         self._fictrac_driver: Optional[FicTracDriver] = None
         self._fictrac_thread: Optional[threading.Thread] = None
         self._fictrac_error: Optional[Exception] = None   # set if thread crashes
+        self._fictrac_runtime_info: Dict[str, Any] = {}
         self._mfc_monitor: Optional[_MFCMonitor] = None
         self._event_log: List[Dict[str, Any]] = []
         self._run_dir: Optional[Path] = None
         self._t0: float = 0.0  # experiment start (perf_counter)
+        self._other_camera_recorder: Any = None
+        self._other_camera_recording: Dict[str, Any] = {}
 
     # ── Phase 1: Prepare ────────────────────────────────────────────────────
 
@@ -866,10 +937,52 @@ class ExperimentRunner:
 
         # 3. Start FicTrac
         if self.cfg.fictrac_config:
+            if self._run_dir is None:
+                raise RuntimeError("Run directory was not prepared before starting FicTrac.")
+
             print("Starting FicTrac...")
+            nominal_camera_fps = None
+            if self.trigger_cfg is not None and self.trigger_cfg.camera_interval_ms > 0:
+                nominal_camera_fps = 1000.0 / self.trigger_cfg.camera_interval_ms
+
+            fictrac_config_path, fictrac_camera_index, self._fictrac_runtime_info = _prepare_fictrac_runtime_config(
+                self.cfg.fictrac_config,
+                self._run_dir,
+                enable_raw_video=self.cfg.save_camera_raw_video,
+                camera_fps=nominal_camera_fps,
+                video_codec=self.cfg.fictrac_raw_video_codec,
+            )
+
+            if self.cfg.save_camera_raw_video:
+                if fictrac_camera_index not in (0, 1):
+                    raise RuntimeError(
+                        "save_camera_raw_video requires a numeric FicTrac src_fn camera index of 0 or 1."
+                    )
+
+                from multibios.blackfly.triggered_camera_record import TriggeredCameraRecorder
+
+                other_camera_index = 1 - fictrac_camera_index
+                print(f"  Recording non-FicTrac Blackfly camera {other_camera_index} into the run directory...")
+                self._other_camera_recorder = TriggeredCameraRecorder(
+                    camera_index=other_camera_index,
+                    run_dir=self._run_dir,
+                    timeout_ms=self.cfg.other_camera_timeout_ms,
+                    queue_size=self.cfg.other_camera_queue_size,
+                    stream_buffer_count=self.cfg.other_camera_stream_buffer_count,
+                    exposure_us=self.cfg.other_camera_exposure_us,
+                    roi_height=self.cfg.other_camera_roi_height,
+                    binning=self.cfg.other_camera_binning,
+                )
+                self._other_camera_recording = self._other_camera_recorder.start()
+
+            runtime_dirs = prepare_fictrac_runtime()
+            if runtime_dirs:
+                print("  FicTrac runtime PATH prepared:")
+                for runtime_dir in runtime_dirs:
+                    print(f"    {runtime_dir}")
             self._fictrac_callback = ExperimentCallback()
             self._fictrac_driver = FicTracDriver(
-                config_file=self.cfg.fictrac_config,
+                config_file=str(fictrac_config_path),
                 console_ouput_file=self.cfg.fictrac_console_out,
                 track_change_callback=self._fictrac_callback,
                 plot_on=False,
@@ -880,15 +993,6 @@ class ExperimentRunner:
                 name="FicTrac",
                 daemon=True,
             )
-            self._fictrac_thread.start()
-            # Wait for first frame
-            print("  Waiting for FicTrac first frame...")
-            deadline = time.monotonic() + 90.0
-            while self._fictrac_callback.latest is None and time.monotonic() < deadline:
-                time.sleep(0.5)
-            if self._fictrac_callback.latest is None:
-                raise RuntimeError("FicTrac did not produce any frames within 90 s")
-            print(f"  FicTrac connected (frame {self._fictrac_callback.latest.frame_cnt})")
 
         # 4. Start NIDAQ triggers
         print("Starting NIDAQ trigger task...")
@@ -899,6 +1003,18 @@ class ExperimentRunner:
         )
         self._daq.start()
         print(f"  NIDAQ running ({self._daq.duration_s:.1f} s finite task)")
+
+        if self._fictrac_thread is not None:
+            self._fictrac_thread.start()
+
+        if self._fictrac_callback is not None:
+            print("  Waiting for FicTrac first frame...")
+            deadline = time.monotonic() + 90.0
+            while self._fictrac_callback.latest is None and time.monotonic() < deadline:
+                time.sleep(0.5)
+            if self._fictrac_callback.latest is None:
+                raise RuntimeError("FicTrac did not produce any frames within 90 s")
+            print(f"  FicTrac connected (frame {self._fictrac_callback.latest.frame_cnt})")
 
     def _run_fictrac(self) -> None:
         """Target for the FicTrac background thread."""
@@ -918,6 +1034,9 @@ class ExperimentRunner:
 
     def _check_fictrac_health(self) -> None:
         """Raise if FicTrac has died or stopped producing frames."""
+        if self._other_camera_recorder is not None:
+            self._other_camera_recorder.raise_if_failed()
+
         if self._fictrac_callback is None:
             return
 
@@ -1158,6 +1277,16 @@ class ExperimentRunner:
             self._daq.stop()
             self._daq = None
 
+        if self._other_camera_recorder is not None:
+            print("  Stopping non-FicTrac Blackfly recorder...")
+            try:
+                self._other_camera_recording = self._other_camera_recorder.stop()
+            except Exception as e:
+                print(f"    WARNING: Blackfly recorder shutdown failed: {e}")
+                self._log_event("ERROR", f"blackfly_recorder: {e}")
+            finally:
+                self._other_camera_recorder = None
+
         # 2. Reset Teensy (all valves off)
         if self._teensy is not None and self._teensy.is_open:
             print("  Resetting Teensy (all valves off)...")
@@ -1276,10 +1405,24 @@ class ExperimentRunner:
                     evt.phase, evt.repeat_idx,
                 ])
 
-        # 5. Merged experiment CSV — primary analysis file
+        # 5. Raw FicTrac frames (compact numeric store)
+        if self._fictrac_callback is not None:
+            self._fictrac_callback.save_npz(self._run_dir / "fictrac_frames.npz")
+
+        # 6. Merged experiment CSV — primary analysis file
         n_frames = self._save_merged_csv()
 
+        if self._other_camera_recording:
+            with open(self._run_dir / "blackfly_recording.json", "w", encoding="utf-8") as f:
+                json.dump(self._other_camera_recording, f, indent=2)
+
         print(f"  FicTrac frames: {n_frames}")
+        if self._other_camera_recording:
+            print(
+                "  Other camera raw frames: "
+                f"{self._other_camera_recording.get('saved_frames', 0)} "
+                f"(manifest: {self._other_camera_recording.get('manifest_path')})"
+            )
         print(f"  Data saved to:  {self._run_dir}")
 
         if self.cfg.open_explorer and not self.dry_run:
@@ -1304,12 +1447,8 @@ class ExperimentRunner:
             pass
 
         if not already_running:
-            explorer_py = Path(__file__).parent.parent / "explorer.py"
-            if not explorer_py.exists():
-                print(f"  Explorer: {explorer_py} not found — skipping auto-open")
-                return
             subprocess.Popen(
-                [sys.executable, str(explorer_py), "--no-browser", "--port", str(port)],
+                [sys.executable, "-m", "multibios.apps.explorer", "--no-browser", "--port", str(port)],
                 cwd=str(Path(__file__).parent.parent),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 | getattr(subprocess, "DETACHED_PROCESS", 0),
@@ -1336,13 +1475,20 @@ class ExperimentRunner:
         experiment_time_s          wall_time − t0
         wall_time                  time.perf_counter() value
         frame_cnt                  FicTrac frame number
+        del_rot_cam_*              camera-frame delta rotation vector
+        del_rot_error              FicTrac delta-rotation fit error
+        del_rot_lab_*              lab-frame delta rotation vector
+        abs_ori_cam_*              camera-frame absolute orientation vector
+        abs_ori_lab_*              lab-frame absolute orientation vector
         posx / posy                integrated ball position (ball radii)
         heading                    heading angle (radians)
         speed                      ball speed (ball radii / s)
         direction                  movement direction (radians)
         intx / inty                integrated X/Y (alternate FicTrac units)
         fictrac_timestamp          FicTrac internal frame timestamp
+        seq_num                    FicTrac UDP message sequence number
         delta_timestamp            time since last FicTrac frame
+        alt_timestamp              optional FicTrac v2.1.1 timestamp field
         olfactometer_left/right    current odor valve state (AIR/ODOR1-5/OFF…)
         switch_valve_left/right    current switch valve state (CLEAN/ODOR)
         mfc_air_left/right_sp      MFC setpoint commanded
@@ -1356,11 +1502,11 @@ class ExperimentRunner:
         """
         if self._fictrac_callback is None:
             return 0
-        frames = self._fictrac_callback.frames
-        if not frames:
+        frames = self._fictrac_callback.frame_array()
+        if len(frames) == 0:
             return 0
 
-        t0 = self._t0 if self._t0 else frames[0].wall_time
+        t0 = self._t0 if self._t0 else float(frames[0]["wall_time"])
         sr = self.trigger_cfg.sample_rate if self.trigger_cfg else 1000
         # Waveform row indices (matches TRIGGER_LINE_NAMES order in daq_triggers.py)
         WF_CAMERA = 5
@@ -1441,8 +1587,12 @@ class ExperimentRunner:
             writer.writerow([
                 "experiment_time_s", "wall_time", "frame_cnt",
                 # FicTrac tracking
+                "del_rot_cam_x", "del_rot_cam_y", "del_rot_cam_z", "del_rot_error",
+                "del_rot_lab_x", "del_rot_lab_y", "del_rot_lab_z",
+                "abs_ori_cam_x", "abs_ori_cam_y", "abs_ori_cam_z",
+                "abs_ori_lab_x", "abs_ori_lab_y", "abs_ori_lab_z",
                 "posx", "posy", "heading", "speed", "direction", "intx", "inty",
-                "fictrac_timestamp", "delta_timestamp",
+                "fictrac_timestamp", "seq_num", "delta_timestamp", "alt_timestamp",
                 # Odor valve states
                 "olfactometer_left", "olfactometer_right",
                 "switch_valve_left", "switch_valve_right",
@@ -1456,26 +1606,42 @@ class ExperimentRunner:
             ])
 
             for fr in frames:
-                exp_t = fr.wall_time - t0
+                fr_wall_time = float(fr["wall_time"])
+                exp_t = fr_wall_time - t0
 
                 # Advance event pointer: apply all events up to this frame
-                while ev_ptr < n_events and state_events[ev_ptr]["wall_time"] <= fr.wall_time:
+                while ev_ptr < n_events and state_events[ev_ptr]["wall_time"] <= fr_wall_time:
                     apply_event(state_events[ev_ptr])
                     ev_ptr += 1
 
                 writer.writerow([
                     f"{exp_t:.6f}",
-                    f"{fr.wall_time:.6f}",
-                    fr.frame_cnt,
-                    f"{fr.posx:.8f}",
-                    f"{fr.posy:.8f}",
-                    f"{fr.heading:.8f}",
-                    f"{fr.speed:.8f}",
-                    f"{fr.direction:.8f}",
-                    f"{fr.intx:.8f}",
-                    f"{fr.inty:.8f}",
-                    f"{fr.timestamp:.8f}",
-                    f"{fr.delta_timestamp:.8f}",
+                    f"{fr_wall_time:.6f}",
+                    int(fr["frame_cnt"]),
+                    f"{float(fr['del_rot_cam_x']):.8f}",
+                    f"{float(fr['del_rot_cam_y']):.8f}",
+                    f"{float(fr['del_rot_cam_z']):.8f}",
+                    f"{float(fr['del_rot_error']):.8f}",
+                    f"{float(fr['del_rot_lab_x']):.8f}",
+                    f"{float(fr['del_rot_lab_y']):.8f}",
+                    f"{float(fr['del_rot_lab_z']):.8f}",
+                    f"{float(fr['abs_ori_cam_x']):.8f}",
+                    f"{float(fr['abs_ori_cam_y']):.8f}",
+                    f"{float(fr['abs_ori_cam_z']):.8f}",
+                    f"{float(fr['abs_ori_lab_x']):.8f}",
+                    f"{float(fr['abs_ori_lab_y']):.8f}",
+                    f"{float(fr['abs_ori_lab_z']):.8f}",
+                    f"{float(fr['posx']):.8f}",
+                    f"{float(fr['posy']):.8f}",
+                    f"{float(fr['heading']):.8f}",
+                    f"{float(fr['speed']):.8f}",
+                    f"{float(fr['direction']):.8f}",
+                    f"{float(fr['intx']):.8f}",
+                    f"{float(fr['inty']):.8f}",
+                    f"{float(fr['timestamp']):.8f}",
+                    int(fr["seq_num"]),
+                    f"{float(fr['delta_timestamp']):.8f}",
+                    f"{float(fr['alt_timestamp']):.8f}",
                     state["olfactometer_left"],
                     state["olfactometer_right"],
                     state["switch_valve_left"],
@@ -1490,7 +1656,7 @@ class ExperimentRunner:
                     state["repeat_idx"],
                 ])
 
-        return len(frames)
+        return int(len(frames))
 
     def _save_metadata(self) -> None:
         """Save metadata even for dry runs."""
@@ -1500,7 +1666,6 @@ class ExperimentRunner:
         self._run_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy protocol and hardware config
-        import shutil
         shutil.copy2(self.protocol_path, self._run_dir / "protocol.yaml")
         shutil.copy2(self.hardware_path, self._run_dir / "hardware.yaml")
 
@@ -1513,6 +1678,8 @@ class ExperimentRunner:
             "dry_run": self.dry_run,
             "trigger_config": asdict(self.trigger_cfg) if self.trigger_cfg else {},
             "experiment_config": asdict(self.cfg),
+            "fictrac_runtime": self._fictrac_runtime_info,
+            "other_camera_recording": self._other_camera_recording,
             "n_timeline_events": len(self.timeline),
             "n_microscope_triggers": len(self.microscope_times),
             "n_camera_windows": len(self.camera_windows),
@@ -1537,6 +1704,18 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     cfg.fictrac_bin = raw.get("fictrac_bin", cfg.fictrac_bin)
     cfg.fictrac_console_out = raw.get("fictrac_console_out", cfg.fictrac_console_out)
     cfg.fictrac_timeout_s = float(raw.get("fictrac_timeout_s", cfg.fictrac_timeout_s))
+    cfg.save_camera_raw_video = bool(raw.get("save_camera_raw_video", cfg.save_camera_raw_video))
+    cfg.fictrac_raw_video_codec = raw.get("fictrac_raw_video_codec", cfg.fictrac_raw_video_codec)
+    cfg.other_camera_timeout_ms = int(raw.get("other_camera_timeout_ms", cfg.other_camera_timeout_ms))
+    cfg.other_camera_queue_size = int(raw.get("other_camera_queue_size", cfg.other_camera_queue_size))
+    cfg.other_camera_stream_buffer_count = int(
+        raw.get("other_camera_stream_buffer_count", cfg.other_camera_stream_buffer_count)
+    )
+    other_camera_exposure = raw.get("other_camera_exposure_us", cfg.other_camera_exposure_us)
+    cfg.other_camera_exposure_us = None if other_camera_exposure is None else float(other_camera_exposure)
+    other_camera_roi_height = raw.get("other_camera_roi_height", cfg.other_camera_roi_height)
+    cfg.other_camera_roi_height = None if other_camera_roi_height is None else int(other_camera_roi_height)
+    cfg.other_camera_binning = int(raw.get("other_camera_binning", cfg.other_camera_binning))
     cfg.mfc_mode = raw.get("mfc_mode", cfg.mfc_mode)
     cfg.mfc_device_map = raw.get("mfc_device_map", cfg.mfc_device_map)
     cfg.alicat_ports = raw.get("alicat_ports", cfg.alicat_ports)

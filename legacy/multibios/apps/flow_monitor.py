@@ -1,4 +1,9 @@
-"""flow_monitor.py — fixed-rate Alicat monitor with jitter stats."""
+"""Fixed-rate Alicat monitor with jitter stats.
+
+Run with:
+
+    python -m multibios.apps.flow_monitor --scan
+"""
 from __future__ import annotations
 
 import argparse

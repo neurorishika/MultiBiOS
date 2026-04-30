@@ -24,19 +24,29 @@ Complete this checklist each session before launching any software:
 ## Software Setup (First Time Only)
 
 ```powershell
-# 1. Install poetry if not already installed:
-(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
-
-# 2. Install project dependencies:
+# 1. Create the shared MultiBiOS + Blackfly camera environment:
 cd C:\Rishika\MultiBiOS
-poetry install
+conda env create -f environment.yml
+conda activate multibios-blackfly
 
-# 3. Verify installation:
-poetry run python -m multibios.run_protocol --help
+# 2. Verify the DAQ + camera stack:
+python -c "import multibios, nidaqmx, PySpin; print('multibios-blackfly ready')"
+
+# 3. Verify the protocol runner:
+python -m multibios.run_protocol --help
 ```
 
-Python **3.11 or 3.12** is required. NI-DAQmx drivers must be installed separately from
-[ni.com/downloads](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html).
+Use the shared Conda environment named `multibios-blackfly` so the DAQ control code and the Teledyne FLIR Blackfly S cameras run in the same Python installation.
+
+Rig camera model for this setup:
+
+- Front camera: **Blackfly S BFS-U3-13Y3M**
+- Side/FicTrac camera: **Blackfly S BFS-U3-13Y3M**
+
+If you want to use the side camera with live FicTrac on this rig, build and use the Spinnaker-enabled binary documented in [`docs/fictrac.md`](fictrac.md). The validated packaged path on this workstation is `C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe`.
+
+NI-DAQmx drivers must be installed separately from
+[ni.com/downloads](https://www.ni.com/en/support/downloads/drivers/download.ni-daq-mx.html), and the matching Spinnaker SDK must be installed before the bundled `PySpin` wheel.
 
 ---
 
@@ -84,7 +94,7 @@ Always validate the protocol before touching real hardware:
 ```powershell
 cd C:\Rishika\MultiBiOS
 
-poetry run python -m multibios.run_protocol `
+python -m multibios.run_protocol `
   --yaml config/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --dry-run --interactive
@@ -204,7 +214,7 @@ Every run creates `data/runs/YYYY-MM-DD_HH-MM-SS/`:
 | `GuardrailViolation` on compile | Two events on the same valve < 3 ms apart | Increase spacing between `timing:` values |
 | `DAQmxError -200220` | NI-DAQ not found | Check USB, confirm device name in NI MAX matches `hardware.yaml` |
 | `ModuleNotFoundError: multibios` | Wrong environment | Run `poetry install` in `MultiBiOS/`, then use `poetry run ...` |
-| Valves don't respond | Teensy not ready | Check Teensy USB, confirm firmware; watch for READY signal in `ready_edges.csv` |
+| Valves don't respond | Teensy not ready | Check Teensy USB, confirm firmware; watch for READY signal in `di_edges.csv` |
 | MFC feedback all zeros | AI wiring or ground issue | Check MFC feedback cables to `ai0–ai3` and common ground |
 | Progress bar never starts | DAQ task not starting | Check hardware connection; try `--debug` for detailed log |
 | Wrong odor delivered | YAML anchor not updated | Make sure you changed `_active_odor: &odor "ODORx"` at the top of the YAML |
@@ -240,6 +250,8 @@ All commands should be run from `C:\Rishika\MultiBiOS\`.
 
 > **Use this runner when you need ball-tracking data (FicTrac) synchronized with your odor delivery.** It uses the same YAML protocol files as `run_protocol.py` but executes valve control over computer-timed serial rather than hardware-clocked DAQ waveforms, and records every FicTrac frame alongside the experiment event log.
 
+Before using the live Blackfly side camera with this runner, first verify the rebuilt binary with the probe flow described in [`docs/fictrac.md`](fictrac.md): start `tests/continuous_camera_trigger.py`, then run `tests/fictrac_live_probe.py` against `assets/fictrac-spinnaker/fictrac-spinnaker.exe`.
+
 ### How it differs from `run_protocol.py`
 
 | | `run_protocol.py` | `experiment.py` |
@@ -258,8 +270,8 @@ All commands should be run from `C:\Rishika\MultiBiOS\`.
 In addition to the base checklist above:
 
 - [ ] **FicTrac camera** mounted and calibrated; config file at `C:/Rishika/fictrac_pybmt/config_camera.txt`
-- [ ] **FicTrac binary** present at `C:/Rishika/fictrac_pybmt/fictrac-pgr.exe`
-- [ ] **Alicat MFC controllers** connected; COM ports noted (run `flow_monitor.py --scan` to discover addresses A–D)
+- [ ] **FicTrac binary** built for the right camera backend on this PC. For the Blackfly S rig cameras, prefer the Spinnaker build path documented in [`docs/fictrac.md`](fictrac.md)
+- [ ] **Alicat MFC controllers** connected; COM ports noted (run `python -m multibios.apps.flow_monitor --scan` to discover addresses A–D)
 - [ ] **Teensy COM port** confirmed in Device Manager (e.g. `COM4`) and updated in `config/experiment_config.yaml`
 
 ---
@@ -275,7 +287,7 @@ teensy_baud: 115200
 
 # FicTrac paths
 fictrac_config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
-fictrac_bin:    "C:/Rishika/fictrac_pybmt/fictrac-pgr.exe"
+fictrac_bin:    "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
 fictrac_console_out: "fictrac_output.txt"
 fictrac_timeout_s: 5.0     # abort if no new frames for this long
 
@@ -283,7 +295,7 @@ fictrac_timeout_s: 5.0     # abort if no new frames for this long
 mfc_mode: "alicat_serial"
 
 # Map protocol device keys -> Alicat unit single-letter IDs
-# Run: poetry run python flow_monitor.py --scan   to find these
+# Run: python -m multibios.apps.flow_monitor --scan   to find these
 mfc_device_map:
   mfc.air_left_setpoint:   "A"
   mfc.air_right_setpoint:  "B"
@@ -302,7 +314,7 @@ mfc_live_interval_s: 1.0
 data_dir: "data/runs"
 ```
 
-> **Finding Alicat addresses:** Run `poetry run python flow_monitor.py --scan` — it prints a table of all discovered devices and their letter IDs. Enter those letters in `mfc_device_map`.
+> **Finding Alicat addresses:** Run `python -m multibios.apps.flow_monitor --scan` — it prints a table of all discovered devices and their letter IDs. Enter those letters in `mfc_device_map`.
 
 ---
 
@@ -346,6 +358,19 @@ Microscope triggers: 14
 2. Launch FicTrac manually **once** to confirm the camera sees the ball and tracking is working, then close it — the experiment runner will launch it automatically.
 3. Arm your imaging software to wait for the microscope trigger.
 
+### NI-DAQ-triggered FicTrac on the Blackfly rig
+
+When the side camera is externally triggered by NI-DAQ, the timing model is:
+
+1. MultiBiOS starts the finite NI-DAQ trigger waveform.
+2. MultiBiOS launches the FicTrac thread immediately after the DAQ task is armed.
+3. The DAQ `TRIG_CAMERA` line issues `FrameStart` pulses to the Blackfly.
+4. FicTrac only receives frames when those pulses occur.
+
+Treat the DAQ waveform as the authoritative timing reference. FicTrac's host-side frame arrival timestamps are useful for health monitoring, but not the primary synchronization clock for the experiment.
+
+For per-frame proof that exposures actually happened, validate a camera return line into DAQ before relying on it in analysis.
+
 ---
 
 ### Step 4 — Run the Experiment
@@ -365,11 +390,10 @@ poetry run python -m multibios.experiment `
 Opening Teensy on COM4...
   Teensy RESET: OK
   Starting MFC monitor (live readout every 1 s)...
-Starting FicTrac...
-  Waiting for FicTrac first frame...
-  FicTrac connected (frame 1)
 Starting NIDAQ trigger task...
   NIDAQ running (421.0 s finite task)
+  Waiting for FicTrac first frame...
+  FicTrac connected (frame 1)
 
 ════════════════════════════════════════════════════
 EXPERIMENT RUNNING
@@ -392,7 +416,7 @@ The jitter column shows how close the actual event dispatch was to the scheduled
 When the run finishes, the data explorer opens automatically in your browser at `http://127.0.0.1:8050`. You can also re-open it any time:
 
 ```powershell
-poetry run python explorer.py
+python -m multibios.apps.explorer
 ```
 
 Output directory `data/runs/YYYY-MM-DD_HH-MM-SS/` contains:
@@ -451,8 +475,8 @@ Output:
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| `FicTrac did not produce any frames within 90 s` | Camera not found or FicTrac crashed | Check camera USB, run FicTrac manually to confirm it works |
-| `No cached Alicat device matches mapping` | Wrong letter ID or COM port | Run `flow_monitor.py --scan` and update `mfc_device_map` in experiment_config.yaml |
+| `FicTrac did not produce any frames within 90 s` | Camera not found, FicTrac crashed, or the binary still has the old short first-frame wait | Check camera USB, run FicTrac manually to confirm it works, and verify the packaged `fictrac-spinnaker.exe` is the patched custom build documented in `docs/fictrac.md` |
+| `No cached Alicat device matches mapping` | Wrong letter ID or COM port | Run `python -m multibios.apps.flow_monitor --scan` and update `mfc_device_map` in experiment_config.yaml |
 | `Teensy RESET: ERROR` | Wrong COM port or firmware not running | Check Device Manager for correct port; re-flash firmware |
 | FicTrac tracking looks noisy mid-run | Ball surface dirty or lighting changed | Check illumination; clean ball; re-calibrate FicTrac |
 | `FicTrac stopped producing frames for N s` | FicTrac crashed mid-run | Check `fictrac_output.txt` for error; increase `fictrac_timeout_s` if just a hiccup |

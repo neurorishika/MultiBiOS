@@ -20,6 +20,21 @@ The system separates **state preparation** from **state commit**:
 - **MFCs**: Four channels (air L/R, odor L/R). AO setpoint (0–5 V), AI feedback (0–5 V).
 - **Timing**: NI USB-6353 sample clock slaves AO & AI to DO.
 
+## Camera Rig
+
+- **Front camera**: Teledyne FLIR Blackfly S BFS-U3-13Y3M, Mono8, USB3
+- **Side/FicTrac camera**: Teledyne FLIR Blackfly S BFS-U3-13Y3M, Mono8, USB3
+- **Camera SDK**: Spinnaker / PySpin 4.3.0.189 on Windows
+- **Shared environment**: `multibios-blackfly`
+
+GPIO findings verified on the live rig cameras:
+
+- `Line1` is the white-wire return path and reports as `OptoCoupled`
+- `Line2` is a separate GPIO path and reports as `OpenDrain`
+- the blue wire is `Opto GND` for the isolated white-wire output
+
+Documenting the exact camera model and software stack here is intentional: this rig assumes both camera positions use the same Blackfly S hardware so acquisition timing and synchronization checks are repeatable across rebuilds.
+
 ## Signal Naming (logical)
 
 Digital outputs (from DAQ to Teensy/TPIC):

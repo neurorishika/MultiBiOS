@@ -1,46 +1,48 @@
 #!/usr/bin/env python3
 """
-Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback + READY DI rails.
+Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback + synchronized DI rails.
 
 - DO (master): drives S bits, LOAD_REQ, RCK, triggers
 - AO (slave): drives MFC setpoints
 - AI (slave): records MFC feedback (0–10 V) locked to DO sample clock
-- DI (slave): records READY rails from Teensy, locked to DO sample clock
+- DI (slave): records synchronized digital input rails, locked to DO sample clock
 
 Artifacts are written to data/runs/YYYY-MM-DD_HH-MM-SS/
 - compiled_do.npz / compiled_ao.npz
 - capture_ai.npz (MFC feedback, optional)
-- capture_di.npz (READY rails, optional)
+- capture_di.npz (digital input rails, optional)
 - do_map.json / ao_map.json / di_map.json
 - rck_edges.csv (planned commits)
 - digital_edges.csv (rising/falling edges for all DO lines)
-- ready_edges.csv (rising/falling edges for READY DI lines, if present)
+- di_edges.csv (rising/falling edges for DI lines, if present)
 - preview.html (interactive Plotly: DO + AO + AI/DI overlays)
 """
 
 from __future__ import annotations
 
-import argparse, json, time, logging, sys, threading
+import argparse
+import json
+import logging
+import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List
-
-import numpy as np
-import yaml
+from typing import Any, Dict, List, Optional
 
 import nidaqmx
-from nidaqmx.constants import AcquisitionType, Edge, LineGrouping
-from nidaqmx.stream_writers import AnalogMultiChannelWriter
-from nidaqmx.stream_readers import AnalogMultiChannelReader
-from multibios.viz_helpers import make_protocol_figure, write_edge_csv
-
+import numpy as np
 # Plotly
 import plotly.graph_objects as go
+import yaml
+from nidaqmx.constants import AcquisitionType, Edge, LineGrouping
+from nidaqmx.stream_readers import AnalogMultiChannelReader
+from nidaqmx.stream_writers import AnalogMultiChannelWriter
 from plotly.subplots import make_subplots
 
 # Compiler
-from multibios.protocol.schema import ProtocolCompiler, TimingConfig, CompileError
-
+from multibios.protocol.schema import (CompileError, ProtocolCompiler,
+                                       TimingConfig)
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
@@ -180,7 +182,7 @@ class HardwareMap:
     digital_outputs: Dict[str, str]
     analog_outputs: Dict[str, str]
     analog_inputs: Dict[str, str]
-    digital_inputs: Dict[str, str]  # READY rails (Teensy -> NI-DAQ)
+    digital_inputs: Dict[str, str]  # Synchronized digital inputs (READY rails, camera returns, etc.)
 
     # adapter fields the compiler expects
     @property
@@ -528,7 +530,7 @@ def main():
     ao_map_file.write_text(json.dumps(ao_map, indent=2))
     logger.info(f"  ✓ AO mapping: {ao_map_file} ({len(ao_names)} channels)")
     
-    # DI map (READY inputs) — write even if empty for consistency
+    # DI map (synchronized digital inputs) — write even if empty for consistency
     di_names_cfg = list(hw.digital_inputs.keys())
     di_map = {"names": di_names_cfg, "phys": [hw.digital_inputs[n] for n in di_names_cfg]}
     di_map_file = run_dir / "di_map.json"
@@ -587,7 +589,7 @@ def main():
         print(f"Dry-run complete. Preview: {run_dir/'preview.html'}")
         return
 
-    # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback), DI slave (READY)
+    # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback), DI slave (synchronized DI)
     logger.info("=== Starting DAQ Hardware Execution ===")
     N = comp.N
     rate = comp.tcfg.sample_rate
@@ -705,7 +707,7 @@ def main():
         else:
             logger.info("No AI channels configured, skipping AI task")
 
-        # DI slave (READY inputs from Teensy)
+        # DI slave (synchronized digital inputs such as READY rails and camera returns)
         if di_phys:
             logger.info("Configuring DI slave task...")
             for i, ch in enumerate(di_phys):
@@ -886,7 +888,7 @@ def main():
             di=di_data_overlay,
             di_names=di_names_overlay,
             rck_log=comp.rck_log,
-            title="Protocol (DO/AO) + READY (DI) + MFC Feedback (AI)",
+            title="Protocol (DO/AO) + Digital Inputs (DI) + MFC Feedback (AI)",
         )
         
         final_preview = run_dir / "preview.html"
@@ -894,19 +896,19 @@ def main():
         fig.write_html(final_preview, include_plotlyjs="cdn")
         logger.info(f"✓ Final visualization saved: {final_preview}")
 
-    # Generate READY edge log if present
+    # Generate DI edge log if present
     if di_file.exists():
-        logger.info("Computing READY line edge transitions...")
-        ready_edge_file = run_dir / "ready_edges.csv"
-        write_edge_csv(ready_edge_file, di_names_overlay, di_data_overlay, comp.dt_ms)
+        logger.info("Computing DI line edge transitions...")
+        di_edge_file = run_dir / "di_edges.csv"
+        write_edge_csv(di_edge_file, di_names_overlay, di_data_overlay, comp.dt_ms)
         
-        # Count READY edges for summary
-        ready_edges_total = 0
+        # Count DI edges for summary
+        di_edges_total = 0
         for i in range(len(di_names_overlay)):
             edges = np.sum(np.diff(di_data_overlay[i, :].astype(int)) != 0)
-            ready_edges_total += edges
-            logger.debug(f"    {di_names_overlay[i]}: {edges} READY transitions")
-        logger.info(f"✓ READY edges saved: {ready_edge_file} ({ready_edges_total} total transitions)")
+            di_edges_total += edges
+            logger.debug(f"    {di_names_overlay[i]}: {edges} DI transitions")
+        logger.info(f"✓ DI edges saved: {di_edge_file} ({di_edges_total} total transitions)")
 
     # Final summary
     logger.info("=== RUN COMPLETION SUMMARY ===")

@@ -12,8 +12,15 @@ build/
 
 # Poetry
 .poetry/
-*.lock
-poetry.lock
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+.venv/
+venv/
 
 # VSCode
 .vscode/
@@ -32,14 +39,24 @@ poetry.lock
 .DS_Store
 Thumbs.db
 
-# Data
-data/*
+# Experiment outputs
+data/runs/
+fictrac_direct_redirect_test.txt
+fictrac_probe_output.txt
+fictrac_output*.txt
 
 # mkdocs
 site/*
 
 # test results
 tests/results/*
+!tests/results/.gitkeep
+
+# Local FicTrac build outputs
+assets/fictrac-spinnaker/
+assets/third_party/FicTrac-build/
+assets/third_party/FicTrac/bin/*/
+assets/third_party/FicTrac/lib/*/
 
 # For PCBs designed using KiCad: https://www.kicad.org/
 # Format documentation: https://kicad.org/help/file-formats/
@@ -73,8 +90,8 @@ fp-info-cache
 *.ses
 
 # Exported BOM files
-*.xml
-*.csv
+rig/electrical/**/*.xml
+rig/electrical/**/*.csv
 
 # Archived Backups (KiCad 6.0)
 **/*-backups/*.zip
@@ -83,4 +100,4 @@ fp-info-cache
 *.kicad_prl
 
 # spinnaker
-spinnaker_python-4.3.0.189-cp310-cp310-win_amd64/*
+assets/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64/*

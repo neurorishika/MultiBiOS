@@ -12,19 +12,10 @@ We welcome contributions from the neuroscience and engineering communities! This
    cd MultiBiOS
    ```
 
-2. **Install Poetry (if not already installed):**
+2. **Create the shared development environment:**
    ```bash
-   curl -sSL https://install.python-poetry.org | python3 -
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   poetry install
-   ```
-
-4. **Activate the virtual environment:**
-   ```bash
-   poetry shell
+    conda env create -f environment.yml
+   conda activate multibios-blackfly
    ```
 
 ### Development Workflow
@@ -38,13 +29,13 @@ We welcome contributions from the neuroscience and engineering communities! This
 
 3. **Run tests:**
    ```bash
-   poetry run pytest tests/
+   pytest tests/
    ```
 
 4. **Format your code:**
    ```bash
-   poetry run black multibios/
-   poetry run ruff check multibios/
+   black multibios/
+   ruff check multibios/
    ```
 
 5. **Update documentation** if needed

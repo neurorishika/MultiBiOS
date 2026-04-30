@@ -7,7 +7,7 @@
 #   - Teensy v2 serial for odor valve control
 #   - AlicatManager serial for MFC setpoints
 #   - NIDAQ finite DO task for camera/microscope triggers & latch pulses
-#   - pybmt / FicTrac for continuous ball tracking
+#   - an internal MultiBiOS FicTrac client for continuous ball tracking
 #
 # The protocol itself (phases, timing, odor sequences) is still defined in
 # the protocol YAML (e.g. config/example_protocol.yaml).
@@ -23,15 +23,40 @@ teensy_baud: 115200
 # Path to the FicTrac configuration file (camera calibration, ROI, etc.)
 fictrac_config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
 
-# Path to the FicTrac binary.  Leave empty to search PATH.
-fictrac_bin: "C:/Rishika/fictrac_pybmt/fictrac-pgr.exe"
+# Path to the FicTrac binary. For Blackfly live camera use on this rig,
+# prefer a Spinnaker-enabled build; see docs/fictrac.md and
+# tools/build_fictrac_spinnaker.ps1. Leave empty to search PATH.
+fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
 
 # Console output file for FicTrac (stdout redirect)
 fictrac_console_out: "fictrac_output.txt"
 
 # Maximum allowed time without a new FicTrac frame before the experiment
 # aborts. This catches cases where FicTrac exits or stalls mid-run.
+# In hardware-triggered mode, this still measures host-side callback staleness,
+# not a DAQ-derived camera timestamp.
 fictrac_timeout_s: 5.0
+
+# ─── Raw Camera Recording ────────────────────────────────────────────────
+# When enabled, MultiBiOS writes a run-local FicTrac config that turns on
+# FicTrac's own raw video recording for the live ball camera and sets its
+# output base inside the experiment folder. The non-FicTrac Blackfly camera
+# is recorded separately as a raw Mono8 frame stream with per-frame metadata.
+# Both streams follow the same DAQ trigger train, so their nominal fps is the
+# hardware-triggered camera rate from the protocol timing section.
+save_camera_raw_video: false
+
+# FicTrac output codec for the ball-camera raw video.
+# Valid values come from FicTrac: h264, xvid, mpg4, mjpg, raw.
+fictrac_raw_video_codec: "raw"
+
+# Non-FicTrac camera recorder settings.
+other_camera_timeout_ms: 250
+other_camera_queue_size: 512
+other_camera_stream_buffer_count: 256
+other_camera_exposure_us:
+other_camera_roi_height:
+other_camera_binning: 1
 
 # ─── Mass Flow Controllers ────────────────────────────────────────────────
 # MFC control mode:
@@ -41,7 +66,7 @@ mfc_mode: "alicat_serial"
 
 # Mapping from protocol YAML device names to Alicat unit IDs.
 # These are the single-character addresses assigned to each Alicat device.
-# Run `flow_monitor.py --scan` to discover your device addresses.
+# Run `python -m multibios.apps.flow_monitor --scan` to discover your device addresses.
 mfc_device_map:
   mfc.air_left_setpoint: "A"
   mfc.air_right_setpoint: "B"

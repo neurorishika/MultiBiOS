@@ -91,6 +91,8 @@ nav:
   - Getting Started:
       - Overview: index.md
       - Running Experiments: running_experiments.md
+      - FicTrac Integration: fictrac.md
+      - FicTrac Client API: fictrac_client.md
       - Safety Notes: safety.md
   - Hardware:
       - System Architecture: hardware.md
@@ -105,6 +107,7 @@ nav:
       - Logging & Data: logging.md
   - Quality Assurance:
       - Validation & Testing: validation.md
+      - MFC Analog Test: mfc_analog_test.md
       - Troubleshooting: troubleshooting.md
   - Reference:
       - FAQ: faq.md

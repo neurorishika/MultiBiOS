@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""
-explorer.py  —  MultiBiOS Interactive Experiment Explorer
-==========================================================
-Run from the MultiBiOS workspace root:
+"""MultiBiOS interactive experiment explorer.
 
-    python explorer.py
-    python explorer.py --runs data/runs --port 8050
+Run with:
+
+    python -m multibios.apps.explorer
+    python -m multibios.apps.explorer --runs data/runs --port 8050
 
 Then open http://localhost:8050 in a browser.
 """

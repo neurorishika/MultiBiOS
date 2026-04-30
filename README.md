@@ -65,9 +65,10 @@
 
 ### Prerequisites
 
-- Python 3.8+
+- Conda or Miniconda
 - NI-DAQmx drivers (for hardware execution)
-- Poetry package manager
+- Spinnaker SDK 4.3.0.189 installed on Windows before installing `PySpin`
+- If you want live Blackfly input in FicTrac on this rig, build a Spinnaker-enabled FicTrac binary and point `config/experiment_config.yaml` at it
 
 ### Installation
 
@@ -76,18 +77,36 @@
 git clone https://github.com/neurorishika/MultiBiOS.git
 cd MultiBiOS
 
-# Install dependencies using Poetry
-poetry install
+# Create the shared NI-DAQ + Blackfly camera environment
+conda env create -f environment.yml
+conda activate multibios-blackfly
 
-# Activate the virtual environment
-poetry shell
+# Verify the combined stack
+python -c "import multibios, nidaqmx, PySpin; print('multibios-blackfly ready')"
+
+# Optional app smoke tests
+multibios-explorer --help
+multibios-flow-monitor --help
 ```
+
+This environment is intended to run both the MultiBiOS DAQ stack and the Blackfly camera scripts in one place. The rig camera model is **Teledyne FLIR Blackfly S BFS-U3-13Y3M**.
+
+For live FicTrac on the Blackfly side camera, see `docs/fictrac.md`. MultiBiOS now prepares the Spinnaker runtime DLL path automatically before launching FicTrac, but you still need a FicTrac binary built with the upstream `PGR_USB3` option.
+
+If you are on this workstation and want the same validated build that was used for the Blackfly side camera, run:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+.\tools\build_fictrac_spinnaker.ps1 -VcpkgRoot C:\Users\markd\vcpkg
+```
+
+The resulting binary is expected at `assets/fictrac-spinnaker/fictrac-spinnaker.exe`. The step-by-step build and usage guide lives in `docs/fictrac.md`.
 
 ### Your First Protocol
 
 1. **Preview a protocol** (no hardware required):
    ```bash
-   poetry run python -m multibios.run_protocol \
+     python -m multibios.run_protocol \
        --yaml config/example_protocol.yaml \
        --hardware config/hardware.yaml \
        --dry-run --interactive
@@ -95,14 +114,14 @@ poetry shell
 
 2. **Run on hardware** (requires NI-DAQ setup):
    ```bash
-   poetry run python -m multibios.run_protocol \
+     python -m multibios.run_protocol \
        --yaml config/example_protocol.yaml \
        --hardware config/hardware.yaml
    ```
 
 3. **Run with real-time progress monitoring**:
    ```bash
-   poetry run python -m multibios.run_protocol \
+     python -m multibios.run_protocol \
        --yaml config/example_protocol.yaml \
        --hardware config/hardware.yaml \
        --verbose --progress
@@ -119,7 +138,7 @@ poetry shell
 
 4. **Analyze results**:
    ```bash
-   poetry run python -m multibios.viz_protocol data/runs/latest
+  python -m multibios.viz_protocol data/runs/latest
    ```
 
 ## 📖 Examples

@@ -285,7 +285,7 @@ When showing the system to others:
 **To verify actual behavior**:
 1. Review captured AI/DI data in `capture_*.npz` files
 2. Use oscilloscope to measure actual outputs
-3. Check `ready_edges.csv` for Teensy READY signals
+3. Check `di_edges.csv` for Teensy READY or camera return signals
 4. Examine `preview.html` for full protocol visualization
 
 ## Advanced: Custom Monitoring

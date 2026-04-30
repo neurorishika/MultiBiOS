@@ -11,6 +11,7 @@ echo  It will open automatically in your default browser.
 echo  Press Ctrl+C to stop the server.
 echo.
 
-"C:\Users\markd\.conda\envs\multibios\python.exe" explorer.py
+call conda activate multibios-blackfly
+python -m multibios.apps.explorer
 
 pause

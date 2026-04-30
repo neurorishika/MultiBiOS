@@ -2,6 +2,83 @@
 
 This directory contains hardware testing utilities for the MultiBiOS system.
 
+## FicTrac Client Tests
+
+The internal FicTrac client now has automated tests that are intentionally separate from the live hardware probes.
+
+These tests cover:
+
+- parser equivalence against the older pybmt state parser
+- frame-store chunking and recent-history behavior
+- newest-frame closed-loop consumer semantics
+- experiment callback integration
+
+Run them from the MultiBiOS root with:
+
+```bash
+pytest tests/test_fictrac_client.py tests/test_experiment_fictrac_callback.py
+```
+
+## Pre-Connect Scope Test
+
+Use [tests/preconnect_scope_test.py](../tests/preconnect_scope_test.py) before connecting cameras or MFCs.
+
+This script is intentionally narrower than `hardware_test.py`:
+
+- `trigger` mode tests only the shared camera trigger line
+- `analog` mode tests only the four MFC analog output channels
+- it is designed for oscilloscope validation while the external devices are still disconnected
+
+Detailed bench instructions are in [docs/preconnect_scope_checklist.md](../docs/preconnect_scope_checklist.md).
+
+For the camera return path specifically, use [docs/camera_return_line_checklist.md](../docs/camera_return_line_checklist.md).
+
+## Camera Return-Line Verification
+
+Use [tests/verify_camera_return_line.py](../tests/verify_camera_return_line.py) to check whether the camera GPIO return wire is electrically visible at the NI-DAQ inputs.
+
+Typical flow:
+
+1. If you are testing the white return wire on the BFS-U3-13Y3M, wire the blue `Opto GND` into the measurement circuit as well.
+2. Run `python tests/verify_camera_return_line.py --line line1` from the MultiBiOS root in the `multibios-blackfly` environment.
+3. If you are intentionally testing the red GPIO wire instead, run `python tests/verify_camera_return_line.py --line line2` and provide an external pull-up.
+
+This is narrower than the trigger-acquisition test: it tells you whether the return wire itself is electrically visible at the DAQ at all.
+
+## Continuous Camera Trigger Test
+
+Use [tests/continuous_camera_trigger.py](../tests/continuous_camera_trigger.py) to continuously pulse the shared `TRIG_CAMERA` line from the NI-DAQ while both Teledyne FLIR Blackfly S BFS-U3-13Y3M cameras are armed in external-trigger mode.
+
+Typical flow:
+
+1. Run `python -m multibios.blackfly.setup_daq_mode` from the MultiBiOS root.
+2. Open SpinView or your Blackfly acquisition app and arm both cameras.
+3. Run `python tests/continuous_camera_trigger.py --fps 30` from the MultiBiOS root.
+
+## Camera Trigger Path Verification
+
+Use [tests/verify_camera_trigger_path.py](../tests/verify_camera_trigger_path.py) to generate a finite trigger train and measure the camera return lines on the same DAQ hardware clock.
+
+Typical flow:
+
+1. Run `python tests/verify_camera_trigger_path.py --arm-cameras --fps 60 --duration 3` from the MultiBiOS root when using the `multibios-blackfly` environment.
+2. If you prefer to arm cameras externally, run `python -m multibios.blackfly.setup_daq_mode` first, then arm both cameras in SpinView or your Blackfly acquisition app, then run `python tests/verify_camera_trigger_path.py --fps 60 --duration 3`.
+
+Optional loopback:
+
+1. Temporarily wire `TRIG_CAMERA` to a spare `port0` digital input line.
+2. Run `python tests/verify_camera_trigger_path.py --fps 60 --duration 3 --trigger-monitor Dev1/port0/line28`.
+
+This tells you whether the DAQ is really outputting the commanded trigger rate and whether each camera is returning one exposure pulse per trigger.
+
+Important for BFS-U3-13Y3M wiring:
+
+- the white wire is `Line1`, not `Line2`
+- `Line1` is an opto-coupled output referenced to the blue `Opto GND` wire
+- `Line2` is a different open-drain GPIO line
+
+When `--arm-cameras` is used, the script also reports how many frames PySpin actually acquired during the trigger train. That is the most direct acceptance check for overlap-capable cameras.
+
 ## Hardware Test Script
 
 The `hardware_test.py` script generates synchronized square waves on all digital and analog outputs to test hardware connectivity and configuration.

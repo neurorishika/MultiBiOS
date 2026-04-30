@@ -1,0 +1,19 @@
+# Short validation config for live FicTrac experiment-path checks.
+# Keeps the existing Teensy and FicTrac settings, but disables Alicat and UI extras.
+
+teensy_port: "COM4"
+teensy_baud: 115200
+
+fictrac_config: "C:/Rishika/legacy/fictrac_pybmt/config_camera.txt"
+fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+fictrac_console_out: "fictrac_output_probe.txt"
+fictrac_timeout_s: 5.0
+
+mfc_mode: "none"
+
+latch_interval_ms: 10.0
+
+data_dir: "data/runs"
+open_explorer: false
+explorer_port: 8050
+mfc_live_interval_s: 0.0

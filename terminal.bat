@@ -1,2 +1,2 @@
 cd C://Rishika//MultiBiOS
-conda activate multibios
+conda activate multibios-blackfly

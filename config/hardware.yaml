@@ -15,7 +15,7 @@ digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   RCK_SWITCHVALVE_RIGHT:       "Dev1/port0/line11" # Pin 100
   GLOBAL_LOAD_REQ:             "Dev1/port0/line12" # Pin 101
   TRIG_MICRO:                  "Dev1/port0/line13" # Pin 102
-  TRIG_CAMERA:                 "Dev1/port0/line14" # Pin 103
+  TRIG_CAMERA:                 "Dev1/port0/line31" # Pin 127 (shared trigger to both cameras)
   # The following lines are deprecated; use GLOBAL_LOAD_REQ instead
   # OLFACTOMETER_LEFT_LOAD_REQ:  "Dev1/port0/line19"
   # OLFACTOMETER_RIGHT_LOAD_REQ: "Dev1/port0/line20"
@@ -27,6 +27,8 @@ digital_inputs:
   READY_SWITCHVALVE_LEFT:        "Dev1/port0/line16" # Pin 105
   READY_OLFACTOMETER_RIGHT:      "Dev1/port0/line17" # Pin 106
   READY_SWITCHVALVE_RIGHT:       "Dev1/port0/line18" # Pin 107
+  CAMERA_FRONT_O1:               "Dev1/port0/line29" # Pin 125 (front camera white wire)
+  CAMERA_SIDE_O1:                "Dev1/port0/line27" # Pin 123 (side/FicTrac camera white wire)
 
 analog_outputs:     # MFC Control
   mfc.air_left_setpoint:   "Dev1/ao0"

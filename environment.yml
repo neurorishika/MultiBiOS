@@ -1,0 +1,26 @@
+name: multibios-blackfly
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy>=1.26,<2
+  - opencv>=4.8,<5
+  - pyzmq
+  - pip:
+      - pyyaml>=6,<7
+      - alicat>=0.4,<0.5
+      - dash>=3.2,<4
+      - nidaqmx>=1.2,<2
+      - matplotlib>=3.8,<4
+      - pandas>=2.2,<3
+      - plotly>=6,<7
+      - mkdocs>=1.6,<2
+      - mkdocs-material>=9.6,<10
+      - lazy-loader>=0.4,<0.5
+      - pytest
+      - mkinit>=1.1,<2
+      - mkdocs-minify-plugin>=0.8,<0.9
+      - -e .
+      - ./assets/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64.whl

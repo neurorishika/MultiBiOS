@@ -16,9 +16,21 @@
 
 ## Hardware tests (with MFC loopback or live MFCs)
 
-1. **MFC AO/AI tracking**
-   - Step `mfc.*_setpoint` and verify `AI` tracks setpoint in `preview.html`.
-   - Optional: add per-channel scales (V→sccm) and check steady-state error < your tolerance.
+1. **MFC AO/AI tracking** — see [MFC Analog Test](mfc_analog_test.md) for the full reference.
+
+   Quick pre-session sweep (all four channels, ±0.1 V tolerance):
+
+   ```bash
+   python tests/mfc_analog_test.py sweep
+   ```
+
+   Live monitor while setting setpoints manually:
+
+   ```bash
+   python tests/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
+   ```
+
+   Exit code 0 = PASS.  Exit code 1 = one or more channels outside tolerance — investigate before running an experiment.
 
 2. **Latency sanity**
    - Use the viewer’s vertical rulers and hover readouts to confirm spacing between S-bit switch, LOAD_REQ, and RCK matches YAML timing.

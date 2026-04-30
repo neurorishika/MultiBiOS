@@ -7,11 +7,14 @@ authors = [
 ]
 license = {text = "MIT"}
 readme = "README.md"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.10,<3.13"
 dependencies = [
+    "alicat (>=0.9.0,<1.0.0)",
+    "dash (>=3.2.0,<4.0.0)",
     "mkinit (>=1.1.0,<2.0.0)",
     "lazy-loader (>=0.4,<0.5)",
-    "numpy (>=2.3.2,<3.0.0)",
+    "numpy (>=1.26.0,<2.0.0)",
+    "pandas (>=2.2.0,<3.0.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
     "nidaqmx (>=1.2.0,<2.0.0)",
     "matplotlib (>=3.10.5,<4.0.0)",
@@ -20,6 +23,16 @@ dependencies = [
     "mkdocs-material (>=9.6.17,<10.0.0)",
     "mkdocs-minify-plugin (>=0.8.0,<0.9.0)"
 ]
+
+[project.scripts]
+multibios-run-protocol = "multibios.run_protocol:main"
+multibios-viz-protocol = "multibios.viz_protocol:main"
+multibios-experiment = "multibios.experiment:main"
+multibios-explorer = "multibios.apps.explorer:main"
+multibios-blackfly-setup = "multibios.blackfly.setup_daq_mode:main"
+multibios-blackfly-max-freerun = "multibios.blackfly.max_freerun_roi:main"
+multibios-blackfly-equivalence = "multibios.blackfly.equivalence:main"
+multibios-blackfly-live-view = "multibios.blackfly.live_view:main"
 
 
 [build-system]
