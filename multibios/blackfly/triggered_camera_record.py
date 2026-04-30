@@ -21,6 +21,7 @@ class TriggeredCameraRecorder:
         queue_size: int = 512,
         stream_buffer_count: int = 256,
         exposure_us: float | None = None,
+        roi_width: int | None = None,
         roi_height: int | None = None,
         binning: int = 1,
     ) -> None:
@@ -30,6 +31,7 @@ class TriggeredCameraRecorder:
         self.queue_size = max(1, int(queue_size))
         self.stream_buffer_count = max(1, int(stream_buffer_count))
         self.exposure_us = exposure_us
+        self.roi_width = roi_width
         self.roi_height = roi_height
         self.binning = max(1, int(binning))
 
@@ -59,6 +61,7 @@ class TriggeredCameraRecorder:
             "stream_buffer_count_requested": self.stream_buffer_count,
             "binning": self.binning,
             "requested_exposure_us": self.exposure_us,
+            "requested_roi_width": self.roi_width,
             "requested_roi_height": self.roi_height,
             "frame_bin_path": str(self._bin_path),
             "frame_index_path": str(self._csv_path),
@@ -102,6 +105,7 @@ class TriggeredCameraRecorder:
             configure_camera_daq_mode(
                 self._cam,
                 exposure_us=self.exposure_us,
+                roi_width=self.roi_width,
                 roi_height=self.roi_height,
                 binning=self.binning,
             )

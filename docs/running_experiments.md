@@ -276,20 +276,25 @@ In addition to the base checklist above:
 
 ---
 
-### Step 1 — Configure `experiment_config.yaml`
+### Step 1 — Configure `hardware.yaml` and `experiment_config.yaml`
 
-Open `config/experiment_config.yaml` and update:
+Open `config/hardware.yaml` and update the rig-level FicTrac block:
+
+```yaml
+fictrac:
+  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  console_out: "fictrac_output.txt"
+  startup_timeout_s: 90.0
+  timeout_s: 5.0
+```
+
+Then open `config/experiment_config.yaml` and update the per-run settings:
 
 ```yaml
 # Teensy serial port — check Device Manager
 teensy_port: "COM4"
 teensy_baud: 115200
-
-# FicTrac paths
-fictrac_config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
-fictrac_bin:    "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-fictrac_console_out: "fictrac_output.txt"
-fictrac_timeout_s: 5.0     # abort if no new frames for this long
 
 # MFC mode: "alicat_serial" or "none" (skip MFC entirely)
 mfc_mode: "alicat_serial"
@@ -475,7 +480,7 @@ Output:
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| `FicTrac did not produce any frames within 90 s` | Camera not found, FicTrac crashed, or the binary still has the old short first-frame wait | Check camera USB, run FicTrac manually to confirm it works, and verify the packaged `fictrac-spinnaker.exe` is the patched custom build documented in `docs/fictrac.md` |
+| `FicTrac did not produce any frames within N s` | Camera not found, FicTrac crashed, the packaged binary still has the old short first-frame wait, or `fictrac_startup_timeout_s` is too short for delayed triggers | Check camera USB, run FicTrac manually to confirm it works, verify the packaged `fictrac-spinnaker.exe` is the patched custom build documented in `docs/fictrac.md`, and increase `fictrac_startup_timeout_s` or set it to `0` for indefinite startup waiting |
 | `No cached Alicat device matches mapping` | Wrong letter ID or COM port | Run `python -m multibios.apps.flow_monitor --scan` and update `mfc_device_map` in experiment_config.yaml |
 | `Teensy RESET: ERROR` | Wrong COM port or firmware not running | Check Device Manager for correct port; re-flash firmware |
 | FicTrac tracking looks noisy mid-run | Ball surface dirty or lighting changed | Check illumination; clean ball; re-calibrate FicTrac |

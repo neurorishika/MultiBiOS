@@ -465,12 +465,20 @@ class FicTracDriver:
             ):
                 raise RuntimeError(
                     "FicTrac failed because of an application error. "
+                    f"Return code: {self.fictrac_process.returncode}. "
                     f"Consult the FicTrac console output file ({self.console_output_file})."
                 )
 
             if self.frame_cnt == 0:
+                process_state = "not started"
+                if self.fictrac_process is not None:
+                    returncode = self.fictrac_process.poll()
+                    process_state = (
+                        "still running" if returncode is None else f"exited with return code {returncode}"
+                    )
                 raise RuntimeError(
                     "Zero frames processed. FicTrac failed because of an application error. "
+                    f"Process state: {process_state}. "
                     f"Consult the FicTrac console output file ({self.console_output_file})."
                 )
         finally:

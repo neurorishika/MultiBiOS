@@ -27,6 +27,7 @@ import argparse
 
 from .live_view import (configure_camera_daq_freerun_mode,
                         configure_camera_daq_mode, connect_cameras,
+                        load_blackfly_defaults,
                         release_cameras)
 
 
@@ -38,15 +39,31 @@ def main() -> None:
                              "'freerun' = internal free-run (60 Hz capable).")
     parser.add_argument("--fps", type=float, default=60.0,
                         help="Target fps for --mode freerun (default: 60).")
+    parser.add_argument("--hardware", default="config/hardware.yaml",
+                        help="Path to hardware.yaml for rig-level Blackfly defaults.")
     parser.add_argument("--exposure", type=float, default=None,
                         help="Fixed exposure time in µs (default: 5000). "
                              "Clamped to camera's valid range.")
+    parser.add_argument("--width", type=int, default=None,
+                        help="Centered ROI width in pixels (--mode frame only).")
     parser.add_argument("--height", type=int, default=None,
                         help="Vertical ROI in pixels (--mode frame only).")
     parser.add_argument("--binning", type=int, default=1, choices=[1, 2],
                         help="Pixel binning: 1=none (default), 2=2x2. "
                              "Reduces resolution but may increase max trigger rate.")
     args = parser.parse_args()
+
+    defaults = load_blackfly_defaults(args.hardware)
+    default_exposure = defaults.get("exposure_us")
+    default_roi_width = defaults.get("roi_width")
+    default_roi_height = defaults.get("roi_height")
+
+    if args.exposure is None and default_exposure is not None:
+        args.exposure = float(default_exposure)
+    if args.width is None and default_roi_width is not None:
+        args.width = int(default_roi_width)
+    if args.height is None and default_roi_height is not None:
+        args.height = int(default_roi_height)
 
     system, cam_list, cams = connect_cameras()
     try:
@@ -66,6 +83,7 @@ def main() -> None:
                 print(f"Camera {idx}:")
                 configure_camera_daq_mode(cams[idx],
                                           exposure_us=args.exposure,
+                                          roi_width=args.width,
                                           roi_height=args.height,
                                           binning=args.binning)
             print("\nDAQ per-frame mode configured.")

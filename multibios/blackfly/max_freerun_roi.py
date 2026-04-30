@@ -658,6 +658,7 @@ def run(
         args=(run_dir, frame_q, writer_manifest, writer_error),
         daemon=True,
     )
+    capture_started = False
 
     try:
         print("\nConfiguring both cameras for maximum free-run ROI recording ...")
@@ -718,6 +719,7 @@ def run(
         print(f"  Exposure-only upper bound {exposure_limit_txt}")
 
         writer_thread.start()
+        capture_started = True
 
         for cam in cams:
             cam.BeginAcquisition()
@@ -782,11 +784,13 @@ def run(
         if writer_error:
             print(f"  [warn] Writer thread failed: {writer_error[0]}")
 
-        if not writer_error:
+        if not writer_error and capture_started and (run_dir / "frame_index.csv").exists():
             latency_analysis = _run_latency_analysis(run_dir, writer_manifest)
             writer_manifest["no_dropped_frames"] = latency_analysis["no_dropped_frames"]
             writer_manifest["lossless_videos"] = _convert_all_bins_to_videos(run_dir, writer_manifest)
             (run_dir / "manifest.json").write_text(json.dumps(writer_manifest, indent=2), encoding="utf-8")
+        elif not writer_error:
+            print("  [warn] Skipping latency analysis because capture never started successfully.")
 
         print("Stopping cameras ...")
         # PySpin camera objects are reference-counted. Loop variables and other

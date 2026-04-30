@@ -1,5 +1,17 @@
 device: "Dev1"
 
+fictrac:
+  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  console_out: "fictrac_output.txt"
+  startup_timeout_s: 90.0
+  timeout_s: 5.0
+
+blackfly_defaults:
+  exposure_us: 4500
+  roi_width: 400
+  roi_height: 400
+
 digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   OLFACTOMETER_LEFT_S0:        "Dev1/port0/line0" # Pin 65
   OLFACTOMETER_LEFT_S1:        "Dev1/port0/line1" # Pin 66

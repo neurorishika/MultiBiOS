@@ -1,0 +1,129 @@
+{
+  "format": "raw-mono8-stream",
+  "dtype": "uint8",
+  "roi_width": 400,
+  "roi_height": 400,
+  "timeout_ms": 1000,
+  "queue_size": 512,
+  "stream_buffer_count_requested": 256,
+  "run_dir": "captured_frames\\max_freerun_roi_20260430_004108",
+  "started_at": "2026-04-30 00:41:08",
+  "cameras": [
+    {
+      "roi_w": 400,
+      "roi_h": 400,
+      "off_x": 440,
+      "off_y": 312,
+      "requested_exposure_us": null,
+      "exposure_us": 6.0,
+      "exposure_min_us": 6.0,
+      "exposure_max_us": 29999999.0,
+      "exposure_node": "ExposureTime",
+      "gain_value": 0.0,
+      "target_fps": 416.96966462295933,
+      "resulting_fps": 416.96966212114137,
+      "fps_mode": "AcquisitionFrameRate=max",
+      "stream_buffer_count": 256,
+      "model": "Blackfly S BFS-U3-13Y3M",
+      "serial": "26021184"
+    },
+    {
+      "roi_w": 400,
+      "roi_h": 400,
+      "off_x": 440,
+      "off_y": 312,
+      "requested_exposure_us": null,
+      "exposure_us": 6.0,
+      "exposure_min_us": 6.0,
+      "exposure_max_us": 29999999.0,
+      "exposure_node": "ExposureTime",
+      "gain_value": 0.0,
+      "target_fps": 416.96966462295933,
+      "resulting_fps": 416.96966212114137,
+      "fps_mode": "AcquisitionFrameRate=max",
+      "stream_buffer_count": 256,
+      "model": "Blackfly S BFS-U3-13Y3M",
+      "serial": "26048173"
+    }
+  ],
+  "synchronized_freerun_limit": {
+    "synchronized_freerun_fps": 416.96966212114137,
+    "synchronized_freerun_bottleneck_camera": 0,
+    "exposure_only_fps_limit": 166666.66666666666,
+    "exposure_only_bottleneck_camera": 0
+  },
+  "saved_pairs": 2086,
+  "camera0_saved_frames": 2086,
+  "camera1_saved_frames": 2086,
+  "completed_at": "2026-04-30 00:41:14",
+  "latency_analysis": {
+    "run_dir": "captured_frames\\max_freerun_roi_20260430_004108",
+    "timestamp": "2026-04-30 00:41:14",
+    "camera0": {
+      "frames_saved": 2086,
+      "frame_id_first": 0,
+      "frame_id_last": 2085,
+      "duration_s": 5.00053872,
+      "saved_fps": 416.9550755923354,
+      "source_fps": 416.9550755923354,
+      "skipped_frames": 0,
+      "drop_pct_vs_source": 0.0,
+      "normalized_dt_ms_mean": 2.398339913669065,
+      "normalized_dt_ms_std": 0.00042142636888724977,
+      "normalized_dt_ms_min": 2.397352,
+      "normalized_dt_ms_p50": 2.39828,
+      "normalized_dt_ms_p95": 2.399056,
+      "normalized_dt_ms_p99": 2.39917728,
+      "normalized_dt_ms_max": 2.399312,
+      "id_step_histogram": {
+        "1": 2085
+      },
+      "pair_index_gap_histogram": {
+        "1": 2085
+      }
+    },
+    "camera1": {
+      "frames_saved": 2086,
+      "frame_id_first": 0,
+      "frame_id_last": 2085,
+      "duration_s": 5.000539048,
+      "saved_fps": 416.95504824303094,
+      "source_fps": 416.95504824303094,
+      "skipped_frames": 0,
+      "drop_pct_vs_source": 0.0,
+      "normalized_dt_ms_mean": 2.3983400709832132,
+      "normalized_dt_ms_std": 0.0004147732913421337,
+      "normalized_dt_ms_min": 2.397376,
+      "normalized_dt_ms_p50": 2.398288,
+      "normalized_dt_ms_p95": 2.39904,
+      "normalized_dt_ms_p99": 2.399184,
+      "normalized_dt_ms_max": 2.399296,
+      "id_step_histogram": {
+        "1": 2085
+      },
+      "pair_index_gap_histogram": {
+        "1": 2085
+      }
+    },
+    "no_dropped_frames": true,
+    "pair_count_match": true
+  },
+  "latency_analysis_path": "captured_frames\\max_freerun_roi_20260430_004108\\latency_analysis.json",
+  "no_dropped_frames": true,
+  "lossless_videos": [
+    {
+      "camera_index": 0,
+      "path": "captured_frames\\max_freerun_roi_20260430_004108\\cam0_lossless.mkv",
+      "codec": "FFV1",
+      "fps": 416.9550755923354,
+      "frame_count": 2086
+    },
+    {
+      "camera_index": 1,
+      "path": "captured_frames\\max_freerun_roi_20260430_004108\\cam1_lossless.mkv",
+      "codec": "FFV1",
+      "fps": 416.95504824303094,
+      "frame_count": 2086
+    }
+  ]
+}

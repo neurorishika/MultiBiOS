@@ -2,6 +2,17 @@
 
 This directory contains hardware testing utilities for the MultiBiOS system.
 
+## Rig Helpers
+
+For operator-facing hardware checks, use the PowerShell wrappers in [tools](../tools):
+
+- [tools/run_fictrac_probe.ps1](../tools/run_fictrac_probe.ps1) for a short live FicTrac end-to-end probe with optional trigger train setup
+- [tools/run_mfc_test.ps1](../tools/run_mfc_test.ps1) for the analog MFC monitor and sweep modes
+- [tools/run_valve_test.ps1](../tools/run_valve_test.ps1) for hardware-clocked valve protocol checks, defaulting to [config/switch_valve_test.yaml](../config/switch_valve_test.yaml)
+- [tools/run_fictrac_config_gui.ps1](../tools/run_fictrac_config_gui.ps1) for trigger-aware FicTrac reconfiguration
+
+These wrappers prefer the active `multibios-blackfly` environment when it is already activated and fall back to `conda run` otherwise.
+
 ## FicTrac Client Tests
 
 The internal FicTrac client now has automated tests that are intentionally separate from the live hardware probes.

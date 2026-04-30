@@ -45,6 +45,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import yaml
 
 try:
     import PySpin
@@ -70,6 +71,20 @@ DAQ_ROI_HEIGHT  = 0          # 0 = full sensor; set e.g. 776 to halve readout ti
 # DAQ-triggered GPIO lines — check your camera's pin-out in SpinView
 DAQ_OUTPUT_LINE  = "Line2"   # camera output line used for ExposureActive
 DAQ_TRIGGER_LINE = "Line0"   # camera trigger input line from NI-DAQ
+
+
+def load_blackfly_defaults(hardware_path: str | Path) -> dict:
+    """Load rig-level Blackfly defaults from hardware.yaml."""
+    path = Path(hardware_path)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except Exception:
+        return {}
+    defaults = raw.get("blackfly_defaults") or {}
+    return defaults if isinstance(defaults, dict) else {}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Spinnaker helpers  (Spinnaker 4.x / PySpin node-access pattern)
@@ -209,6 +224,59 @@ def _set_roi_height(cam, height: int) -> tuple:
     _int_node_set(nm, "OffsetY", offset_y)
     print(f"  ROI: {w_max} x {height} px  (offset_y={offset_y}, full={h_max})")
     return w_max, height
+
+
+def _set_centered_roi(cam, width: int, height: int) -> tuple[int, int, int, int]:
+    """Apply a centered ROI and return (width, height, offset_x, offset_y)."""
+    nm = cam.GetNodeMap()
+
+    _int_node_set(nm, "OffsetX", 0)
+    _int_node_set(nm, "OffsetY", 0)
+
+    width_max = _int_node_max(nm, "Width")
+    height_max = _int_node_max(nm, "Height")
+    if not width_max or not height_max:
+        raise RuntimeError("Could not read maximum Width/Height from camera.")
+
+    width_node = PySpin.CIntegerPtr(nm.GetNode("Width"))
+    height_node = PySpin.CIntegerPtr(nm.GetNode("Height"))
+    offset_x_node = PySpin.CIntegerPtr(nm.GetNode("OffsetX"))
+    offset_y_node = PySpin.CIntegerPtr(nm.GetNode("OffsetY"))
+
+    if not PySpin.IsWritable(width_node) or not PySpin.IsWritable(height_node):
+        raise RuntimeError("Width/Height nodes are not writable.")
+
+    width_inc = int(width_node.GetInc()) or 1
+    height_inc = int(height_node.GetInc()) or 1
+
+    width = max(int(width_node.GetMin()), min(width_max, int(width)))
+    height = max(int(height_node.GetMin()), min(height_max, int(height)))
+    width = max(width_inc, (width // width_inc) * width_inc)
+    height = max(height_inc, (height // height_inc) * height_inc)
+
+    _int_node_set(nm, "Width", width)
+    _int_node_set(nm, "Height", height)
+
+    offset_x_inc = int(offset_x_node.GetInc()) if PySpin.IsReadable(offset_x_node) else 1
+    offset_y_inc = int(offset_y_node.GetInc()) if PySpin.IsReadable(offset_y_node) else 1
+    offset_x_inc = offset_x_inc or 1
+    offset_y_inc = offset_y_inc or 1
+
+    offset_x = ((width_max - width) // 2 // offset_x_inc) * offset_x_inc
+    offset_y = ((height_max - height) // 2 // offset_y_inc) * offset_y_inc
+
+    _int_node_set(nm, "OffsetX", offset_x)
+    _int_node_set(nm, "OffsetY", offset_y)
+
+    actual_width = int(width_node.GetValue())
+    actual_height = int(height_node.GetValue())
+    actual_offset_x = int(offset_x_node.GetValue()) if PySpin.IsReadable(offset_x_node) else offset_x
+    actual_offset_y = int(offset_y_node.GetValue()) if PySpin.IsReadable(offset_y_node) else offset_y
+    print(
+        f"  ROI: {actual_width} x {actual_height} px  "
+        f"(offset_x={actual_offset_x}, offset_y={actual_offset_y}, full={width_max}x{height_max})"
+    )
+    return actual_width, actual_height, actual_offset_x, actual_offset_y
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -542,6 +610,7 @@ def configure_camera_software_mode(cam, fps: float) -> None:
 
 
 def configure_camera_daq_mode(cam, exposure_us: float = None,
+                              roi_width: int = None,
                               roi_height: int = None,
                               binning: int = 1) -> None:
     """DAQ-triggered mode: FrameStart on Line0, ExposureActive on Line2.
@@ -551,8 +620,11 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
     exposure_us : float, optional
         Fixed exposure time in microseconds.  Default: DAQ_EXPOSURE_US.
         Lower values allow higher trigger rates (less dead-time per frame).
+    roi_width : int, optional
+        ROI width in pixels. Used with roi_height to apply a centred crop.
+        0 or None means full sensor width.
     roi_height : int, optional
-        Vertical ROI in pixels.  0 or None = full sensor.
+        ROI height in pixels. 0 or None = full sensor height.
         On Blackfly S global-shutter CMOS cameras, smaller ROI may increase
         the practical trigger rate.
     binning : int
@@ -589,7 +661,9 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
         _int_node_set(nm, "BinningVertical", 1)
 
     # Set FOV (full or reduced ROI)
-    if roi_height and roi_height > 0:
+    if roi_width and roi_width > 0 and roi_height and roi_height > 0:
+        _set_centered_roi(cam, roi_width, roi_height)
+    elif roi_height and roi_height > 0:
         _set_roi_height(cam, roi_height)
     else:
         _set_full_fov(cam)

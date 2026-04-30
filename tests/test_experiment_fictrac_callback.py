@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from multibios.experiment import ExperimentCallback
@@ -70,6 +71,14 @@ def test_prepare_fictrac_runtime_config_enables_raw_video(tmp_path: Path) -> Non
 
 def test_load_experiment_config_reads_camera_recording_fields(tmp_path: Path) -> None:
     cfg_path = tmp_path / "experiment_config.yaml"
+    hw_path = tmp_path / "hardware.yaml"
+    hw_path.write_text(
+        "blackfly_defaults:\n"
+        "  exposure_us: 4500\n"
+        "  roi_width: 400\n"
+        "  roi_height: 400\n",
+        encoding="utf-8",
+    )
     cfg_path.write_text(
         "save_camera_raw_video: true\n"
         "fictrac_raw_video_codec: mjpg\n"
@@ -77,17 +86,62 @@ def test_load_experiment_config_reads_camera_recording_fields(tmp_path: Path) ->
         "other_camera_queue_size: 32\n"
         "other_camera_stream_buffer_count: 64\n"
         "other_camera_exposure_us: 4000\n"
+        "other_camera_roi_width: 512\n"
         "other_camera_roi_height: 512\n"
         "other_camera_binning: 2\n",
         encoding="utf-8",
     )
 
-    cfg = load_experiment_config(cfg_path)
+    cfg = load_experiment_config(cfg_path, hardware_path=hw_path)
     assert cfg.save_camera_raw_video is True
     assert cfg.fictrac_raw_video_codec == "mjpg"
     assert cfg.other_camera_timeout_ms == 125
     assert cfg.other_camera_queue_size == 32
     assert cfg.other_camera_stream_buffer_count == 64
     assert cfg.other_camera_exposure_us == 4000.0
+    assert cfg.other_camera_roi_width == 512
     assert cfg.other_camera_roi_height == 512
     assert cfg.other_camera_binning == 2
+
+
+def test_load_experiment_config_reads_hardware_fictrac_defaults(tmp_path: Path) -> None:
+    hw_path = tmp_path / "hardware.yaml"
+    hw_path.write_text(
+        "fictrac:\n"
+        "  config: C:/rig/config_camera.txt\n"
+        "  bin: C:/rig/fictrac-spinnaker.exe\n"
+        "  console_out: fictrac_hw.txt\n"
+        "  startup_timeout_s: 0\n"
+        "  timeout_s: 7\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_experiment_config(None, hardware_path=hw_path)
+    assert cfg.fictrac_config == "C:/rig/config_camera.txt"
+    assert cfg.fictrac_bin == "C:/rig/fictrac-spinnaker.exe"
+    assert cfg.fictrac_console_out == "fictrac_hw.txt"
+    assert cfg.fictrac_startup_timeout_s == 0.0
+    assert cfg.fictrac_timeout_s == 7.0
+
+
+def test_load_experiment_config_warns_for_deprecated_fictrac_keys(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "experiment_config.yaml"
+    cfg_path.write_text(
+        "fictrac_config: C:/deprecated/config_camera.txt\n"
+        "fictrac_bin: C:/deprecated/fictrac.exe\n"
+        "fictrac_console_out: deprecated.txt\n"
+        "fictrac_startup_timeout_s: 90\n"
+        "fictrac_timeout_s: 5\n",
+        encoding="utf-8",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cfg = load_experiment_config(cfg_path, hardware_path=tmp_path / "hardware.yaml")
+
+    assert cfg.fictrac_config == "C:/deprecated/config_camera.txt"
+    assert cfg.fictrac_bin == "C:/deprecated/fictrac.exe"
+    assert cfg.fictrac_console_out == "deprecated.txt"
+    assert cfg.fictrac_startup_timeout_s == 90.0
+    assert cfg.fictrac_timeout_s == 5.0
+    assert len(caught) == 5

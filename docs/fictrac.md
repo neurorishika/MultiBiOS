@@ -32,6 +32,20 @@ cmake -A x64 `
 
 The shared MultiBiOS environment now prepares the SDK runtime search path before launching FicTrac, so a rebuilt binary can inherit the needed Spinnaker DLL path when launched through `multibios.experiment` or `tests/fictrac_live_probe.py`.
 
+## Source Of Truth For FicTrac In This Repo
+
+MultiBiOS now treats FicTrac as vendored source, not a disposable upstream clone.
+
+That is intentional because this rig needs source-level changes inside FicTrac itself to work reliably with the MultiBiOS trigger model.
+
+Practical consequences:
+
+- `assets/third_party/FicTrac` is the source of truth and may contain local MultiBiOS-specific patches
+- `assets/third_party/FicTrac-build` is only a local build directory and should stay untracked
+- `assets/fictrac-spinnaker` is a packaged runtime output, not the editable source tree
+
+The build helper no longer silently fetches upstream and checks out `master`. That behavior was unsafe once local patches became part of the rig setup.
+
 ## First-Frame Trigger Failure On This Rig
 
 The April 2026 blocker on this workstation was not the MultiBiOS-side `fictrac_timeout_s` setting. It was the upstream Spinnaker first-frame wait inside FicTrac itself.
@@ -55,22 +69,87 @@ The root cause is in upstream FicTrac's Spinnaker camera path:
 
 That is too short for a hardware-triggered startup where the first camera pulse may be delayed.
 
-## Exact Custom Patch That Fixed It
+## Exact Custom Patch History
 
-The working custom build on this rig made two changes in the bundled FicTrac source:
+The vendored FicTrac tree now contains these local source edits that matter on this rig.
 
-1. Added a longer first-frame wait for the Spinnaker path.
-2. Guarded `pgr_image->Release()` in exception paths so a failed first grab does not also hit a null-image cleanup bug.
+### 1. Spinnaker 4.x conversion compatibility
 
-The patched files are:
+File:
+
+- `assets/third_party/FicTrac/src/PGRSource.cpp`
+
+Edit made:
+
+- switched the Spinnaker conversion path to `ImageProcessor().Convert(..., PixelFormat_BGR8)`
+- set the processor color handling explicitly with `SPINNAKER_COLOR_PROCESSING_ALGORITHM_NEAREST_NEIGHBOR`
+
+Why it exists:
+
+- the older conversion call pattern used by upstream did not match the Spinnaker 4.x SDK on this workstation
+
+### 2. First-frame wait is now configurable instead of fixed at 1 s
+
+Files:
 
 - `assets/third_party/FicTrac/include/PGRSource.h`
 - `assets/third_party/FicTrac/src/PGRSource.cpp`
+- `assets/third_party/FicTrac/src/Trackball.cpp`
 
-The validated behavior is:
+Edits made:
 
-- first frame wait: `30000` ms minimum
+- `PGRSource` now accepts a `first_frame_timeout_ms` constructor argument
+- `Trackball.cpp` reads `src_first_frame_timeout_ms` from the FicTrac config and passes it into `PGRSource`
+- the Spinnaker path still uses the normal per-frame timeout after tracking starts
+- for the very first frame only:
+  - positive `src_first_frame_timeout_ms` values wait that many milliseconds
+  - `0` or any negative value means wait indefinitely for the first trigger
+
+Why it exists:
+
+- the upstream Spinnaker live-camera path aborted too early for hardware-triggered startup on this rig
+- we need to be able to arm FicTrac before the DAQ trigger train or animal recording starts
+
+### 3. Exception cleanup no longer assumes an image object exists
+
+File:
+
+- `assets/third_party/FicTrac/src/PGRSource.cpp`
+
+Edit made:
+
+- exception paths now guard `pgr_image->Release()` with a null check
+
+Why it exists:
+
+- a failed first grab should report the real capture error, not cascade into a null-image cleanup bug
+
+### 4. The classic FicTrac configuration UI now defaults this setting to `0`
+
+Files:
+
+- `assets/third_party/FicTrac/src/ConfigGUI.cpp`
+
+Edits made:
+
+- `configGui` now seeds `src_first_frame_timeout_ms` to `0` when the key is missing
+- when `configGui` opens a live PGR/Spinnaker camera, it now passes that configured value into `PGRSource`
+
+Why it exists:
+
+- there is no separate MultiBiOS reconfiguration path for FicTrac calibration today
+- the real reconfiguration workflow is still the upstream `configGui.exe` UI
+- when that UI is re-run on this rig, it should preserve the rig-safe default of waiting indefinitely for the first trigger unless the user chooses a different value
+
+### Effective behavior after these edits
+
+- first frame wait default in tracking path: `30000` ms
+- first frame wait override: `src_first_frame_timeout_ms`
+- infinite first frame wait: set `src_first_frame_timeout_ms: 0`
 - subsequent frame waits: unchanged upstream logic (`max(1000, 1000 / fps)`)
+- default when re-running `configGui.exe` on a config that does not already have the key: `0`
+
+For the exact MultiBiOS validation path used in this repo, set `fictrac.startup_timeout_s: 0` in `config/hardware.yaml` if you want the Python runner to wait indefinitely for the first UDP frame.
 
 ## Exact Rebuild Procedure Used On This Workstation
 
@@ -122,9 +201,55 @@ Copy-Item "C:\Rishika\MultiBiOS\assets\third_party\FicTrac\bin\Release\fictrac.e
 
 Copy-Item "C:\Rishika\MultiBiOS\assets\third_party\FicTrac\bin\Release\fictrac.exe" `
   "C:\Rishika\MultiBiOS\assets\fictrac-spinnaker\fictrac.exe" -Force
+
+Copy-Item "C:\Rishika\MultiBiOS\assets\third_party\FicTrac\bin\Release\configGui.exe" `
+  "C:\Rishika\MultiBiOS\assets\fictrac-spinnaker\configGui.exe" -Force
 ```
 
-The existing helper script `tools/build_fictrac_spinnaker.ps1` is still usable, but the commands above are the exact ones that were used for this recovery.
+The rebuild completed successfully with the current source patch set on this workstation.
+
+The existing helper script `tools/build_fictrac_spinnaker.ps1` is still usable, but it now assumes the vendored source tree already exists and should not be reset automatically. The commands above are the exact ones that were used for this recovery.
+
+## Helper Script Behavior
+
+The helper script now defaults to the safe vendored-source workflow:
+
+- it expects the patched FicTrac tree at `assets/third_party/FicTrac`
+- it uses `assets/third_party/FicTrac-build` only as a local build directory
+- it does not fetch or check out upstream refs unless you ask it to explicitly
+
+Default usage:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+
+.\tools\build_fictrac_spinnaker.ps1 `
+  -VcpkgRoot C:\Users\markd\vcpkg `
+  -SpinnakerRoot "C:\Program Files\Teledyne\Spinnaker"
+```
+
+If you need to seed a fresh checkout into the vendored source path, do that explicitly:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+
+.\tools\build_fictrac_spinnaker.ps1 `
+  -VcpkgRoot C:\Users\markd\vcpkg `
+  -BootstrapClone
+```
+
+If you intentionally want to move the vendored tree to another upstream ref, do it explicitly as well:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+
+.\tools\build_fictrac_spinnaker.ps1 `
+  -VcpkgRoot C:\Users\markd\vcpkg `
+  -FetchUpstream `
+  -CheckoutRef <tag-or-commit>
+```
+
+That separation matters because a local patched vendor tree and a local build tree are two different things. Only the source tree should carry rig-specific fixes.
 
 ## What The Build Produces
 
@@ -152,6 +277,55 @@ fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.ex
 ## How To Use The Rebuilt Binary
 
 There are two practical ways to use the rebuilt FicTrac inside MultiBiOS.
+
+## Re-running FicTrac Configuration
+
+There is not currently a separate MultiBiOS-side codepath that reconfigures FicTrac calibration for you.
+
+The correct reconfiguration path is still the classic upstream FicTrac UI:
+
+```powershell
+cd C:\Rishika\MultiBiOS\assets\fictrac-spinnaker
+
+./configGui.exe C:\Rishika\legacy\fictrac_pybmt\config_camera.txt
+```
+
+For this rig, that is now safe to use as the standard reconfiguration workflow because the patched `configGui.exe` will default `src_first_frame_timeout_ms` to `0` if the key is missing and will honor the configured value when it opens the live Spinnaker camera.
+
+If you prefer a bounded wait in the UI, set `src_first_frame_timeout_ms` to a positive millisecond value before launching `configGui.exe`.
+
+Because the camera is normally left in external-trigger mode on this rig, the plain upstream workflow is still awkward: `configGui.exe` needs frames to already be arriving before its first `grab()` succeeds.
+
+The easiest packaged workflow is now:
+
+```powershell
+cd C:\Rishika\MultiBiOS
+
+./tools/run_fictrac_config_gui.ps1 `
+  -ConfigPath C:/Rishika/legacy/fictrac_pybmt/config_camera.txt `
+  -Fps 30
+```
+
+That helper:
+
+- reapplies the rig's Blackfly defaults from `config/hardware.yaml`
+- prepends the required FicTrac/Spinnaker runtime DLL paths
+- starts `tests/continuous_camera_trigger.py`
+- launches the packaged `configGui.exe` in its own interactive console window
+- stops the trigger train when the UI exits
+
+For this rig, the relevant defaults now live in [hardware.yaml](../config/hardware.yaml) under `blackfly_defaults`:
+
+```yaml
+blackfly_defaults:
+  exposure_us: 4500
+  roi_width: 400
+  roi_height: 400
+```
+
+That means re-running the FicTrac UI helper will first put both cameras into the same `400x400` centered ROI and `4500 us` exposure mode before calibration starts, so the resulting FicTrac ROI is calibrated against the actual cropped sensor image rather than the old full-frame geometry.
+
+If you already have a trigger source running, pass `-NoTriggerTrain` and use the classic UI launch directly.
 
 ## Quick Start For This Rig
 
@@ -228,11 +402,13 @@ If the trigger train is not running, a trigger-armed camera will usually stall w
 
 ### 2. Use It From `multibios.experiment`
 
-Set the FicTrac binary path in [config/experiment_config.yaml](../config/experiment_config.yaml):
+Set the rig-level FicTrac paths in [config/hardware.yaml](../config/hardware.yaml):
 
 ```yaml
-fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-fictrac_config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+fictrac:
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
+  startup_timeout_s: 0
 ```
 
 Then run the experiment runner from the shared environment:
@@ -251,9 +427,23 @@ In this mode, MultiBiOS:
 - prepares the Spinnaker runtime path
 - starts the finite NI-DAQ trigger task
 - starts the FicTrac thread immediately after the DAQ task is armed
+- waits for the first FicTrac UDP frame using `hardware.yaml -> fictrac.startup_timeout_s`
 - records the experiment event stream alongside FicTrac output
 
 That startup order matters because the DAQ task must own the trigger hardware before FicTrac begins waiting for the first externally triggered frame.
+
+If you want to arm FicTrac and then wait until you are ready to start the trigger train, use both settings together:
+
+```yaml
+# FicTrac runtime config
+src_first_frame_timeout_ms: 0
+
+# MultiBiOS hardware config
+fictrac:
+  startup_timeout_s: 0
+```
+
+That combination makes both layers wait indefinitely for the first externally triggered frame instead of timing out early.
 
 ## Recommended Bring-Up Sequence
 

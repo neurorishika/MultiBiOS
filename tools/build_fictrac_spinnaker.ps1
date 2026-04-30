@@ -4,8 +4,10 @@ param(
     [string]$OutputDir = (Join-Path $PSScriptRoot "..\assets\fictrac-spinnaker"),
     [string]$VcpkgRoot,
     [string]$SpinnakerRoot = "C:\Program Files\Teledyne\Spinnaker",
-    [string]$GitRef = "master",
-    [switch]$SkipClone,
+    [string]$CheckoutRef,
+    [string]$UpstreamUrl = "https://github.com/rjdmoore/FicTrac.git",
+    [switch]$BootstrapClone,
+    [switch]$FetchUpstream,
     [switch]$SkipCopy
 )
 
@@ -29,7 +31,6 @@ function Resolve-VcpkgRoot {
     throw "Set -VcpkgRoot or VCPKG_ROOT before building FicTrac."
 }
 
-Require-Command git
 Require-Command cmake
 
 $SourceDir = [System.IO.Path]::GetFullPath($SourceDir)
@@ -46,12 +47,29 @@ if (-not (Test-Path (Join-Path $SpinnakerRoot "lib64\vs2015\Spinnaker_v140.lib")
     throw "Spinnaker SDK not found under $SpinnakerRoot"
 }
 
-if (-not $SkipClone) {
-    if (-not (Test-Path $SourceDir)) {
-        git clone https://github.com/rjdmoore/FicTrac.git $SourceDir
+if (-not (Test-Path $SourceDir)) {
+    if (-not $BootstrapClone) {
+        throw "Vendored FicTrac source not found at $SourceDir. Commit or unpack the patched source tree there, or rerun with -BootstrapClone to seed it from upstream."
     }
-    git -C $SourceDir fetch --all --tags
-    git -C $SourceDir checkout $GitRef
+
+    Require-Command git
+    git clone $UpstreamUrl $SourceDir
+}
+
+if ($CheckoutRef -or $FetchUpstream) {
+    if (-not (Test-Path (Join-Path $SourceDir ".git"))) {
+        throw "Cannot update FicTrac source at $SourceDir because it is not a git checkout. Vendored snapshots without .git metadata must be updated manually."
+    }
+
+    Require-Command git
+
+    if ($FetchUpstream) {
+        git -C $SourceDir fetch --all --tags
+    }
+
+    if ($CheckoutRef) {
+        git -C $SourceDir checkout $CheckoutRef
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
@@ -92,4 +110,5 @@ Write-Host ""
 Write-Host "Build complete."
 Write-Host "Source bin:   $sourceBinDir"
 Write-Host "Output dir:   $OutputDir"
+Write-Host "Source mode:  vendored FicTrac tree at $SourceDir"
 Write-Host "Next step: set config/experiment_config.yaml fictrac_bin to the rebuilt fictrac-spinnaker.exe"

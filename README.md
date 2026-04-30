@@ -102,6 +102,8 @@ cd C:\Rishika\MultiBiOS
 
 The resulting binary is expected at `assets/fictrac-spinnaker/fictrac-spinnaker.exe`. The step-by-step build and usage guide lives in `docs/fictrac.md`.
 
+FicTrac is treated as vendored source in this repo because MultiBiOS carries source-level patches in `assets/third_party/FicTrac`. The local build directory `assets/third_party/FicTrac-build` should remain untracked.
+
 ### Your First Protocol
 
 1. **Preview a protocol** (no hardware required):

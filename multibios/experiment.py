@@ -53,6 +53,7 @@ import shutil
 import sys
 import threading
 import time
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -101,6 +102,7 @@ class ExperimentConfig:
     fictrac_config: str = ""
     fictrac_bin: str = ""
     fictrac_console_out: str = "fictrac_output.txt"
+    fictrac_startup_timeout_s: float = 90.0
     fictrac_timeout_s: float = 5.0
     save_camera_raw_video: bool = False
     fictrac_raw_video_codec: str = "raw"
@@ -108,6 +110,7 @@ class ExperimentConfig:
     other_camera_queue_size: int = 512
     other_camera_stream_buffer_count: int = 256
     other_camera_exposure_us: float | None = None
+    other_camera_roi_width: int | None = None
     other_camera_roi_height: int | None = None
     other_camera_binning: int = 1
 
@@ -252,6 +255,25 @@ def _prepare_fictrac_runtime_config(
         "camera_fps": camera_fps,
         "fictrac_camera_index": fictrac_camera_index,
     }
+
+
+def _load_yaml_file(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    yaml_path = Path(path)
+    if not yaml_path.exists():
+        return {}
+    with open(yaml_path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def _warn_deprecated_experiment_key(key: str, hardware_path: str | Path | None) -> None:
+    target = str(hardware_path) if hardware_path is not None else "config/hardware.yaml"
+    warnings.warn(
+        f"experiment_config key '{key}' is deprecated; move it to the fictrac block in {target}",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -970,6 +992,7 @@ class ExperimentRunner:
                     queue_size=self.cfg.other_camera_queue_size,
                     stream_buffer_count=self.cfg.other_camera_stream_buffer_count,
                     exposure_us=self.cfg.other_camera_exposure_us,
+                    roi_width=self.cfg.other_camera_roi_width,
                     roi_height=self.cfg.other_camera_roi_height,
                     binning=self.cfg.other_camera_binning,
                 )
@@ -1008,12 +1031,22 @@ class ExperimentRunner:
             self._fictrac_thread.start()
 
         if self._fictrac_callback is not None:
-            print("  Waiting for FicTrac first frame...")
-            deadline = time.monotonic() + 90.0
-            while self._fictrac_callback.latest is None and time.monotonic() < deadline:
-                time.sleep(0.5)
+            startup_timeout_s = self.cfg.fictrac_startup_timeout_s
+            if startup_timeout_s <= 0:
+                print("  Waiting indefinitely for FicTrac first frame...")
+                while self._fictrac_callback.latest is None:
+                    time.sleep(0.5)
+                    self._check_fictrac_health()
+            else:
+                print(f"  Waiting up to {startup_timeout_s:.1f} s for FicTrac first frame...")
+                deadline = time.monotonic() + startup_timeout_s
+                while self._fictrac_callback.latest is None and time.monotonic() < deadline:
+                    time.sleep(0.5)
+                    self._check_fictrac_health()
             if self._fictrac_callback.latest is None:
-                raise RuntimeError("FicTrac did not produce any frames within 90 s")
+                raise RuntimeError(
+                    f"FicTrac did not produce any frames within {startup_timeout_s:.1f} s"
+                )
             print(f"  FicTrac connected (frame {self._fictrac_callback.latest.frame_cnt})")
 
     def _run_fictrac(self) -> None:
@@ -1692,18 +1725,47 @@ class ExperimentRunner:
 # CLI entry point
 # ═══════════════════════════════════════════════════════════════════════════
 
-def load_experiment_config(path: str | Path) -> ExperimentConfig:
+def load_experiment_config(
+    path: str | Path | None,
+    hardware_path: str | Path | None = None,
+) -> ExperimentConfig:
     """Load experiment_config.yaml into an ExperimentConfig."""
-    with open(path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _load_yaml_file(path)
+    hardware = _load_yaml_file(hardware_path)
+    hardware_fictrac = hardware.get("fictrac", {}) if isinstance(hardware.get("fictrac", {}), dict) else {}
+    hardware_blackfly = hardware.get("blackfly_defaults", {}) if isinstance(hardware.get("blackfly_defaults", {}), dict) else {}
 
     cfg = ExperimentConfig()
     cfg.teensy_port = raw.get("teensy_port", cfg.teensy_port)
     cfg.teensy_baud = raw.get("teensy_baud", cfg.teensy_baud)
-    cfg.fictrac_config = raw.get("fictrac_config", cfg.fictrac_config)
-    cfg.fictrac_bin = raw.get("fictrac_bin", cfg.fictrac_bin)
-    cfg.fictrac_console_out = raw.get("fictrac_console_out", cfg.fictrac_console_out)
-    cfg.fictrac_timeout_s = float(raw.get("fictrac_timeout_s", cfg.fictrac_timeout_s))
+
+    cfg.fictrac_config = str(hardware_fictrac.get("config", cfg.fictrac_config))
+    if "fictrac_config" in raw:
+        _warn_deprecated_experiment_key("fictrac_config", hardware_path)
+        cfg.fictrac_config = str(raw["fictrac_config"])
+
+    cfg.fictrac_bin = str(hardware_fictrac.get("bin", cfg.fictrac_bin))
+    if "fictrac_bin" in raw:
+        _warn_deprecated_experiment_key("fictrac_bin", hardware_path)
+        cfg.fictrac_bin = str(raw["fictrac_bin"])
+
+    cfg.fictrac_console_out = str(hardware_fictrac.get("console_out", cfg.fictrac_console_out))
+    if "fictrac_console_out" in raw:
+        _warn_deprecated_experiment_key("fictrac_console_out", hardware_path)
+        cfg.fictrac_console_out = str(raw["fictrac_console_out"])
+
+    cfg.fictrac_startup_timeout_s = float(
+        hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s)
+    )
+    if "fictrac_startup_timeout_s" in raw:
+        _warn_deprecated_experiment_key("fictrac_startup_timeout_s", hardware_path)
+        cfg.fictrac_startup_timeout_s = float(raw["fictrac_startup_timeout_s"])
+
+    cfg.fictrac_timeout_s = float(hardware_fictrac.get("timeout_s", cfg.fictrac_timeout_s))
+    if "fictrac_timeout_s" in raw:
+        _warn_deprecated_experiment_key("fictrac_timeout_s", hardware_path)
+        cfg.fictrac_timeout_s = float(raw["fictrac_timeout_s"])
+
     cfg.save_camera_raw_video = bool(raw.get("save_camera_raw_video", cfg.save_camera_raw_video))
     cfg.fictrac_raw_video_codec = raw.get("fictrac_raw_video_codec", cfg.fictrac_raw_video_codec)
     cfg.other_camera_timeout_ms = int(raw.get("other_camera_timeout_ms", cfg.other_camera_timeout_ms))
@@ -1711,11 +1773,13 @@ def load_experiment_config(path: str | Path) -> ExperimentConfig:
     cfg.other_camera_stream_buffer_count = int(
         raw.get("other_camera_stream_buffer_count", cfg.other_camera_stream_buffer_count)
     )
-    other_camera_exposure = raw.get("other_camera_exposure_us", cfg.other_camera_exposure_us)
+    other_camera_exposure = raw.get("other_camera_exposure_us", hardware_blackfly.get("exposure_us", cfg.other_camera_exposure_us))
     cfg.other_camera_exposure_us = None if other_camera_exposure is None else float(other_camera_exposure)
-    other_camera_roi_height = raw.get("other_camera_roi_height", cfg.other_camera_roi_height)
+    other_camera_roi_width = raw.get("other_camera_roi_width", hardware_blackfly.get("roi_width", cfg.other_camera_roi_width))
+    cfg.other_camera_roi_width = None if other_camera_roi_width is None else int(other_camera_roi_width)
+    other_camera_roi_height = raw.get("other_camera_roi_height", hardware_blackfly.get("roi_height", cfg.other_camera_roi_height))
     cfg.other_camera_roi_height = None if other_camera_roi_height is None else int(other_camera_roi_height)
-    cfg.other_camera_binning = int(raw.get("other_camera_binning", cfg.other_camera_binning))
+    cfg.other_camera_binning = int(raw.get("other_camera_binning", hardware_blackfly.get("binning", cfg.other_camera_binning)))
     cfg.mfc_mode = raw.get("mfc_mode", cfg.mfc_mode)
     cfg.mfc_device_map = raw.get("mfc_device_map", cfg.mfc_device_map)
     cfg.alicat_ports = raw.get("alicat_ports", cfg.alicat_ports)
@@ -1763,12 +1827,13 @@ Examples:
     args = parser.parse_args()
 
     # Load configs
-    exp_cfg = ExperimentConfig()  # defaults
     exp_cfg_path = Path(args.experiment)
-    if exp_cfg_path.exists():
-        exp_cfg = load_experiment_config(exp_cfg_path)
-    elif not args.dry_run:
+    if not exp_cfg_path.exists() and not args.dry_run:
         print(f"WARNING: Experiment config '{args.experiment}' not found, using defaults")
+    exp_cfg = load_experiment_config(
+        exp_cfg_path if exp_cfg_path.exists() else None,
+        hardware_path=args.hardware,
+    )
 
     # Apply CLI overrides
     if args.teensy_port is not None:
