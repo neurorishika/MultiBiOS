@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import queue
+import statistics as stats
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+import cv2
+import numpy as np
+
+
+LOSSLESS_VIDEO_CANDIDATES = [
+    ("FFV1", ".mkv"),
+    ("FFV1", ".avi"),
+    ("HFYU", ".avi"),
+]
 
 
 class TriggeredCameraRecorder:
@@ -333,3 +345,183 @@ class TriggeredCameraRecorder:
             except Exception:
                 pass
         self._system = None
+
+
+def _percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = (len(ordered) - 1) * p
+    lo = int(math.floor(idx))
+    hi = int(math.ceil(idx))
+    if lo == hi:
+        return ordered[lo]
+    frac = idx - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
+def _codec_candidates():
+    for fourcc_name, suffix in LOSSLESS_VIDEO_CANDIDATES:
+        yield cv2.VideoWriter_fourcc(*fourcc_name), fourcc_name, suffix
+
+
+def _read_rows(csv_path: Path) -> list[dict[str, int]]:
+    rows: list[dict[str, int]] = []
+    with open(csv_path, newline="", encoding="utf-8") as csv_fh:
+        reader = csv.DictReader(csv_fh)
+        for row in reader:
+            rows.append(
+                {
+                    "frame_index": int(row["frame_index"]),
+                    "frame_id": int(row["frame_id"]),
+                    "camera_timestamp": int(row["camera_timestamp"]),
+                    "host_timestamp_ns": int(row["host_timestamp_ns"]),
+                }
+            )
+    return rows
+
+
+def _analyze_rows(rows: list[dict[str, int]], expected_frame_count: int | None) -> dict[str, Any]:
+    frames_saved = len(rows)
+    if frames_saved == 0:
+        no_dropped_frames = expected_frame_count in (None, 0)
+        missing_frames = None if expected_frame_count is None else max(int(expected_frame_count), 0)
+        return {
+            "frames_saved": 0,
+            "frame_id_first": None,
+            "frame_id_last": None,
+            "duration_s": 0.0,
+            "saved_fps": None,
+            "source_fps": None,
+            "skipped_frames": 0,
+            "drop_pct_vs_source": 0.0,
+            "normalized_dt_ms_mean": None,
+            "normalized_dt_ms_std": None,
+            "normalized_dt_ms_min": None,
+            "normalized_dt_ms_p50": None,
+            "normalized_dt_ms_p95": None,
+            "normalized_dt_ms_p99": None,
+            "normalized_dt_ms_max": None,
+            "expected_frame_count": expected_frame_count,
+            "missing_frames_vs_expected": missing_frames,
+            "frame_count_matches_expected": no_dropped_frames,
+            "no_dropped_frames": no_dropped_frames,
+        }
+
+    frame_ids = [row["frame_id"] for row in rows]
+    timestamps = [row["camera_timestamp"] for row in rows]
+    id_diffs = [b - a for a, b in zip(frame_ids, frame_ids[1:])]
+    dt_ns = [b - a for a, b in zip(timestamps, timestamps[1:])]
+    skipped_frames = sum(max(0, diff - 1) for diff in id_diffs)
+    duration_s = (timestamps[-1] - timestamps[0]) / 1e9 if frames_saved > 1 else 0.0
+    total_source_frames = frame_ids[-1] - frame_ids[0] + 1 if frames_saved > 0 else 0
+    normalized_dt_ms = [(dt / diff) / 1e6 for dt, diff in zip(dt_ns, id_diffs) if diff > 0]
+    missing_frames = None if expected_frame_count is None else max(int(expected_frame_count) - frames_saved, 0)
+    frame_count_matches_expected = expected_frame_count is None or frames_saved == int(expected_frame_count)
+    no_dropped_frames = skipped_frames == 0 and frame_count_matches_expected
+
+    return {
+        "frames_saved": frames_saved,
+        "frame_id_first": frame_ids[0],
+        "frame_id_last": frame_ids[-1],
+        "duration_s": duration_s,
+        "saved_fps": ((frames_saved - 1) / duration_s) if duration_s > 0 and frames_saved > 1 else None,
+        "source_fps": ((total_source_frames - 1) / duration_s) if duration_s > 0 and total_source_frames > 1 else None,
+        "skipped_frames": skipped_frames,
+        "drop_pct_vs_source": (100.0 * skipped_frames / total_source_frames) if total_source_frames > 0 else 0.0,
+        "normalized_dt_ms_mean": stats.mean(normalized_dt_ms) if normalized_dt_ms else None,
+        "normalized_dt_ms_std": stats.pstdev(normalized_dt_ms) if len(normalized_dt_ms) > 1 else 0.0 if normalized_dt_ms else None,
+        "normalized_dt_ms_min": min(normalized_dt_ms) if normalized_dt_ms else None,
+        "normalized_dt_ms_p50": _percentile(normalized_dt_ms, 0.50),
+        "normalized_dt_ms_p95": _percentile(normalized_dt_ms, 0.95),
+        "normalized_dt_ms_p99": _percentile(normalized_dt_ms, 0.99),
+        "normalized_dt_ms_max": max(normalized_dt_ms) if normalized_dt_ms else None,
+        "expected_frame_count": expected_frame_count,
+        "missing_frames_vs_expected": missing_frames,
+        "frame_count_matches_expected": frame_count_matches_expected,
+        "no_dropped_frames": no_dropped_frames,
+    }
+
+
+def _convert_bin_to_lossless_video(
+    manifest: dict[str, Any],
+    analysis: dict[str, Any],
+    nominal_fps: float | None,
+) -> dict[str, Any]:
+    run_dir = Path(manifest["manifest_path"]).parent
+    frame_count = int(manifest.get("saved_frames", 0))
+    width = int(manifest["frame_width"])
+    height = int(manifest["frame_height"])
+    bin_path = Path(manifest["frame_bin_path"])
+    if frame_count <= 0 or not bin_path.exists():
+        raise RuntimeError(f"Missing raw frame stream for conversion: {bin_path}")
+
+    fps = analysis.get("source_fps") or analysis.get("saved_fps") or nominal_fps
+    if not fps or float(fps) <= 0:
+        raise RuntimeError("Could not determine fps for second-camera lossless conversion.")
+
+    frames = np.memmap(bin_path, dtype=np.uint8, mode="r", shape=(frame_count, height, width))
+    trial_frame = cv2.cvtColor(np.asarray(frames[0]), cv2.COLOR_GRAY2BGR)
+
+    writer = None
+    chosen = None
+    video_path = None
+    stem = f"blackfly_cam{manifest['camera_index']}_lossless"
+    for fourcc, fourcc_name, suffix in _codec_candidates():
+        candidate_path = run_dir / f"{stem}{suffix}"
+        test_writer = cv2.VideoWriter(str(candidate_path), fourcc, float(fps), (width, height), True)
+        if not test_writer.isOpened():
+            test_writer.release()
+            continue
+        try:
+            test_writer.write(trial_frame)
+            writer = test_writer
+            chosen = fourcc_name
+            video_path = candidate_path
+            break
+        except Exception:
+            test_writer.release()
+
+    if writer is None or chosen is None or video_path is None:
+        raise RuntimeError("Could not open a lossless VideoWriter for second-camera conversion.")
+
+    try:
+        for idx in range(1, frame_count):
+            writer.write(cv2.cvtColor(np.asarray(frames[idx]), cv2.COLOR_GRAY2BGR))
+    finally:
+        writer.release()
+
+    return {
+        "path": str(video_path),
+        "codec": chosen,
+        "fps": float(fps),
+        "frame_count": frame_count,
+    }
+
+
+def postprocess_triggered_camera_recording(
+    manifest: dict[str, Any],
+    *,
+    expected_frame_count: int | None = None,
+    nominal_fps: float | None = None,
+    convert_to_lossless_mkv: bool = True,
+) -> dict[str, Any]:
+    recording = dict(manifest)
+    csv_path = Path(recording["frame_index_path"])
+    analysis = _analyze_rows(_read_rows(csv_path), expected_frame_count)
+    analysis_path = Path(recording["manifest_path"]).with_name(
+        f"blackfly_cam{recording['camera_index']}_analysis.json"
+    )
+    analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+
+    recording["expected_frame_count"] = expected_frame_count
+    recording["nominal_trigger_fps"] = nominal_fps
+    recording["analysis_path"] = str(analysis_path)
+    recording["analysis"] = analysis
+    recording["no_dropped_frames"] = analysis["no_dropped_frames"]
+
+    if convert_to_lossless_mkv and int(recording.get("saved_frames", 0)) > 0:
+        recording["lossless_video"] = _convert_bin_to_lossless_video(recording, analysis, nominal_fps)
+
+    Path(recording["manifest_path"]).write_text(json.dumps(recording, indent=2), encoding="utf-8")
+    return recording

@@ -1,0 +1,103 @@
+protocol:
+  name: "Hardware Timed FicTrac Probe"
+  version: "1.0"
+  description: "Temporary validation protocol for hardware-timed FicTrac and dual-camera startup."
+  timing:
+    base_unit: "ms"
+    sample_rate: 2000
+    camera_interval: 100
+    camera_pulse_duration: 5
+    preload_lead_ms: 5
+    load_req_ms: 1
+    rck_pulse_ms: 1
+    trig_pulse_ms: 5
+    setup_hold_samples: 1000
+    load_mode: "global"
+
+sequence:
+  - phase: "BOOT SEQUENCE"
+    duration: 30000
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.air_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_left_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "olfactometer.left"
+        state: "AIR"
+        timing: 100
+      - device: "olfactometer.right"
+        state: "AIR"
+        timing: 100
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 100
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 100
+      - device: "triggers.camera_continuous"
+        state: true
+        timing: 100
+
+  - phase: "PROBE"
+    duration: 3000
+    repeat: 0
+    actions:
+      - device: "triggers.microscope"
+        state: true
+        timing: 0
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 500
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 500
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 1500
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 1500
+      - device: "triggers.microscope"
+        state: true
+        timing: 2000
+
+  - phase: "SHUTDOWN"
+    duration: 1000
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.air_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "olfactometer.left"
+        state: "OFF"
+        timing: 0
+      - device: "olfactometer.right"
+        state: "OFF"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0
+      - device: "triggers.camera_continuous"
+        state: false
+        timing: 0

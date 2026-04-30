@@ -1,0 +1,102 @@
+# Independent valve test round that mirrors the short serial-controller odor walk
+# but never opens left and right switch valves at the same time.
+
+protocol:
+  name: "Independent Serial Valve Round"
+  version: "1.0"
+  description: "Walk ODOR1-ODOR5 while pulsing left and right switch valves independently."
+
+  timing:
+    base_unit: "ms"
+    sample_rate: 2000
+    camera_interval: 100
+    camera_pulse_duration: 5
+    preload_lead_ms: 5
+    load_req_ms: 1
+    rck_pulse_ms: 1
+    trig_pulse_ms: 5
+    setup_hold_samples: 1000
+    load_mode: "global"
+
+sequence:
+  - phase: "BOOT SEQUENCE"
+    duration: 1100
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.air_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_left_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "mfc.odor_right_setpoint"
+        value: 2.1
+        timing: 100
+      - device: "olfactometer.left"
+        state: "AIR"
+        timing: 100
+      - device: "olfactometer.right"
+        state: "AIR"
+        timing: 100
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 100
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 100
+
+  - phase: "INDEPENDENT ODOR1-ODOR5 VALVE WALK"
+    duration: 1300
+    times: 5
+    randomize: false
+    actions:
+      - device: "olfactometer.left"
+        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"
+        timing: 0
+      - device: "olfactometer.right"
+        state: "ODOR1,ODOR2,ODOR3,ODOR4,ODOR5"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: 200
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 400
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: 700
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 900
+
+  - phase: "SHUTDOWN SEQUENCE"
+    duration: 100
+    repeat: 0
+    actions:
+      - device: "mfc.air_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.air_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_left_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "mfc.odor_right_setpoint"
+        value: 0.0
+        timing: 0
+      - device: "olfactometer.left"
+        state: "OFF"
+        timing: 0
+      - device: "olfactometer.right"
+        state: "OFF"
+        timing: 0
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: 0
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: 0

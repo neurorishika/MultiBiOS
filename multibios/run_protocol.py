@@ -26,6 +26,7 @@ import logging
 import sys
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,11 +41,464 @@ from nidaqmx.stream_readers import AnalogMultiChannelReader
 from nidaqmx.stream_writers import AnalogMultiChannelWriter
 from plotly.subplots import make_subplots
 
+# FicTrac / camera helpers
+from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
+                                      FicTracDriver, FicTracFrame,
+                                      FicTracFrameStore)
+from multibios.fictrac_consumer import ClosedLoopFrameConsumer
+from multibios.fictrac_runtime import prepare_fictrac_runtime
 # Compiler
 from multibios.protocol.schema import (CompileError, ProtocolCompiler,
                                        TimingConfig)
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
+
+
+@dataclass
+class RunProtocolConfig:
+    fictrac_config: str = ""
+    fictrac_bin: str = ""
+    fictrac_console_out: str = "fictrac_output.txt"
+    fictrac_first_frame_timeout_ms: int = 0
+    fictrac_startup_timeout_s: float = 90.0
+    fictrac_timeout_s: float = 5.0
+    save_fictrac_camera_video: bool = False
+    fictrac_raw_video_codec: str = "raw"
+    save_second_camera_video: bool = False
+    second_camera_index: int | None = None
+    second_camera_timeout_ms: int = 250
+    second_camera_queue_size: int = 512
+    second_camera_stream_buffer_count: int = 256
+    second_camera_exposure_us: float | None = None
+    second_camera_roi_width: int | None = None
+    second_camera_roi_height: int | None = None
+    second_camera_binning: int = 1
+    verify_camera_recording: bool = True
+    convert_second_camera_bin_to_lossless_mkv: bool = True
+    data_dir: str = "data/runs"
+
+
+class ExperimentCallback(BaseFicTracCallback):
+    """FicTrac callback with efficient frame retention for logging and control."""
+
+    def __init__(self) -> None:
+        self._store = FicTracFrameStore(chunk_size=8192, recent_capacity=2048)
+        self._stop = threading.Event()
+
+    @property
+    def latest(self) -> Optional[FicTracFrame]:
+        return self._store.latest
+
+    @property
+    def frame_count(self) -> int:
+        return self._store.count
+
+    def get_latest(self) -> tuple[int, Optional[FicTracFrame]]:
+        return self._store.get_latest()
+
+    def wait_for_next_frame(
+        self, after_seq: int = -1, timeout: float | None = None
+    ) -> tuple[int, Optional[FicTracFrame]]:
+        return self._store.wait_for_next(after_seq=after_seq, timeout=timeout)
+
+    def recent_frames(self, max_count: int | None = None) -> np.ndarray:
+        return self._store.recent_array(max_count=max_count)
+
+    def frame_array(self) -> np.ndarray:
+        return self._store.frame_array()
+
+    def save_npz(self, path: str | Path) -> int:
+        return self._store.save_npz(path)
+
+    def make_consumer(self, *, start_at_latest: bool = False) -> ClosedLoopFrameConsumer:
+        return ClosedLoopFrameConsumer(self._store, start_at_latest=start_at_latest)
+
+    def process_callback(self, track_state) -> bool:
+        self._store.append(FicTracFrame.from_state(track_state, time.perf_counter()))
+        return not self._stop.is_set()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+
+def _read_fictrac_config_values(path: str | Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _upsert_fictrac_config_line(lines: list[str], key: str, value: str) -> None:
+    rendered = f"{key:<17}: {value}\n"
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        current_key, _, _ = line.partition(":")
+        if current_key.strip() == key:
+            lines[idx] = rendered
+            return
+    lines.append(rendered)
+
+
+def _prepare_fictrac_runtime_config(
+    source_config_path: str | Path,
+    run_dir: str | Path,
+    *,
+    enable_raw_video: bool,
+    camera_fps: float | None,
+    video_codec: str,
+    first_frame_timeout_ms: int,
+) -> tuple[Path, int | None, dict[str, Any]]:
+    source_path = Path(source_config_path)
+    target_dir = Path(run_dir)
+    lines = source_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    values = _read_fictrac_config_values(source_path)
+
+    fictrac_camera_index: int | None = None
+    src_fn = values.get("src_fn")
+    if src_fn is not None:
+        try:
+            fictrac_camera_index = int(src_fn)
+        except ValueError:
+            fictrac_camera_index = None
+
+    output_base = (target_dir.resolve() / "fictrac").as_posix()
+    _upsert_fictrac_config_line(lines, "output_fn", output_base)
+    _upsert_fictrac_config_line(lines, "src_first_frame_timeout_ms", str(int(first_frame_timeout_ms)))
+    if enable_raw_video:
+        _upsert_fictrac_config_line(lines, "save_raw", "y")
+        _upsert_fictrac_config_line(lines, "vid_codec", video_codec)
+        if camera_fps is not None and camera_fps > 0:
+            _upsert_fictrac_config_line(lines, "src_fps", f"{camera_fps:.6f}")
+
+    runtime_path = target_dir / "fictrac_runtime_config.txt"
+    runtime_path.write_text("".join(lines), encoding="utf-8")
+
+    return runtime_path, fictrac_camera_index, {
+        "source_config": str(source_path),
+        "runtime_config": str(runtime_path),
+        "output_base": output_base,
+        "save_raw": bool(enable_raw_video),
+        "video_codec": video_codec,
+        "camera_fps": camera_fps,
+        "first_frame_timeout_ms": int(first_frame_timeout_ms),
+        "fictrac_camera_index": fictrac_camera_index,
+    }
+
+
+def _load_yaml_file(path: str | Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    yaml_path = Path(path)
+    if not yaml_path.exists():
+        return {}
+    with open(yaml_path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def _yaml_section(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    value = raw.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _warn_deprecated_experiment_key(
+    key: str,
+    hardware_path: str | Path | None,
+    target_block: str,
+) -> None:
+    target = str(hardware_path) if hardware_path is not None else "config/hardware.yaml"
+    warnings.warn(
+        f"experiment_config key '{key}' is deprecated; move it to the {target_block} block in {target}",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+def load_run_protocol_config(
+    path: str | Path | None,
+    hardware_path: str | Path | None = None,
+) -> RunProtocolConfig:
+    raw = _load_yaml_file(path)
+    hardware = _load_yaml_file(hardware_path)
+    hardware_fictrac = _yaml_section(hardware, "fictrac")
+    hardware_blackfly = _yaml_section(hardware, "blackfly_defaults")
+    hardware_camera_recording = _yaml_section(hardware, "camera_recording")
+    hardware_data_output = _yaml_section(hardware, "data_output")
+
+    cfg = RunProtocolConfig()
+
+    cfg.fictrac_config = str(hardware_fictrac.get("config", cfg.fictrac_config))
+    if "fictrac_config" in raw:
+        _warn_deprecated_experiment_key("fictrac_config", hardware_path, "fictrac")
+        cfg.fictrac_config = str(raw["fictrac_config"])
+
+    cfg.fictrac_bin = str(hardware_fictrac.get("bin", cfg.fictrac_bin))
+    if "fictrac_bin" in raw:
+        _warn_deprecated_experiment_key("fictrac_bin", hardware_path, "fictrac")
+        cfg.fictrac_bin = str(raw["fictrac_bin"])
+
+    cfg.fictrac_console_out = str(hardware_fictrac.get("console_out", cfg.fictrac_console_out))
+    if "fictrac_console_out" in raw:
+        _warn_deprecated_experiment_key("fictrac_console_out", hardware_path, "fictrac")
+        cfg.fictrac_console_out = str(raw["fictrac_console_out"])
+
+    cfg.fictrac_first_frame_timeout_ms = int(
+        hardware_fictrac.get("first_frame_timeout_ms", cfg.fictrac_first_frame_timeout_ms)
+    )
+    if "fictrac_first_frame_timeout_ms" in raw:
+        _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "fictrac")
+        cfg.fictrac_first_frame_timeout_ms = int(raw["fictrac_first_frame_timeout_ms"])
+
+    cfg.fictrac_startup_timeout_s = float(
+        hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s)
+    )
+    if "fictrac_startup_timeout_s" in raw:
+        _warn_deprecated_experiment_key("fictrac_startup_timeout_s", hardware_path, "fictrac")
+        cfg.fictrac_startup_timeout_s = float(raw["fictrac_startup_timeout_s"])
+
+    cfg.fictrac_timeout_s = float(hardware_fictrac.get("timeout_s", cfg.fictrac_timeout_s))
+    if "fictrac_timeout_s" in raw:
+        _warn_deprecated_experiment_key("fictrac_timeout_s", hardware_path, "fictrac")
+        cfg.fictrac_timeout_s = float(raw["fictrac_timeout_s"])
+
+    cfg.save_fictrac_camera_video = bool(
+        hardware_camera_recording.get(
+            "save_fictrac_camera_video",
+            hardware_camera_recording.get("save_camera_raw_video", cfg.save_fictrac_camera_video),
+        )
+    )
+    if "save_fictrac_camera_video" in raw:
+        _warn_deprecated_experiment_key("save_fictrac_camera_video", hardware_path, "camera_recording")
+        cfg.save_fictrac_camera_video = bool(raw["save_fictrac_camera_video"])
+    elif "save_camera_raw_video" in raw:
+        _warn_deprecated_experiment_key("save_camera_raw_video", hardware_path, "camera_recording")
+        cfg.save_fictrac_camera_video = bool(raw["save_camera_raw_video"])
+
+    cfg.fictrac_raw_video_codec = str(
+        hardware_camera_recording.get("fictrac_raw_video_codec", cfg.fictrac_raw_video_codec)
+    )
+    if "fictrac_raw_video_codec" in raw:
+        _warn_deprecated_experiment_key("fictrac_raw_video_codec", hardware_path, "camera_recording")
+        cfg.fictrac_raw_video_codec = str(raw["fictrac_raw_video_codec"])
+
+    cfg.save_second_camera_video = bool(
+        hardware_camera_recording.get("save_second_camera_video", cfg.save_second_camera_video)
+    )
+    if "save_second_camera_video" in raw:
+        _warn_deprecated_experiment_key("save_second_camera_video", hardware_path, "camera_recording")
+        cfg.save_second_camera_video = bool(raw["save_second_camera_video"])
+
+    second_camera_index = hardware_camera_recording.get("second_camera_index", cfg.second_camera_index)
+    cfg.second_camera_index = None if second_camera_index is None else int(second_camera_index)
+    if "second_camera_index" in raw:
+        _warn_deprecated_experiment_key("second_camera_index", hardware_path, "camera_recording")
+        cfg.second_camera_index = int(raw["second_camera_index"])
+
+    cfg.second_camera_timeout_ms = int(
+        hardware_camera_recording.get("second_camera_timeout_ms", cfg.second_camera_timeout_ms)
+    )
+    if "second_camera_timeout_ms" in raw:
+        _warn_deprecated_experiment_key("second_camera_timeout_ms", hardware_path, "camera_recording")
+        cfg.second_camera_timeout_ms = int(raw["second_camera_timeout_ms"])
+    elif "other_camera_timeout_ms" in raw:
+        _warn_deprecated_experiment_key("other_camera_timeout_ms", hardware_path, "camera_recording")
+        cfg.second_camera_timeout_ms = int(raw["other_camera_timeout_ms"])
+
+    cfg.second_camera_queue_size = int(
+        hardware_camera_recording.get("second_camera_queue_size", cfg.second_camera_queue_size)
+    )
+    if "second_camera_queue_size" in raw:
+        _warn_deprecated_experiment_key("second_camera_queue_size", hardware_path, "camera_recording")
+        cfg.second_camera_queue_size = int(raw["second_camera_queue_size"])
+    elif "other_camera_queue_size" in raw:
+        _warn_deprecated_experiment_key("other_camera_queue_size", hardware_path, "camera_recording")
+        cfg.second_camera_queue_size = int(raw["other_camera_queue_size"])
+
+    cfg.second_camera_stream_buffer_count = int(
+        hardware_camera_recording.get(
+            "second_camera_stream_buffer_count",
+            cfg.second_camera_stream_buffer_count,
+        )
+    )
+    if "second_camera_stream_buffer_count" in raw:
+        _warn_deprecated_experiment_key("second_camera_stream_buffer_count", hardware_path, "camera_recording")
+        cfg.second_camera_stream_buffer_count = int(raw["second_camera_stream_buffer_count"])
+    elif "other_camera_stream_buffer_count" in raw:
+        _warn_deprecated_experiment_key("other_camera_stream_buffer_count", hardware_path, "camera_recording")
+        cfg.second_camera_stream_buffer_count = int(raw["other_camera_stream_buffer_count"])
+
+    second_camera_exposure = hardware_camera_recording.get(
+        "second_camera_exposure_us",
+        hardware_blackfly.get("exposure_us", cfg.second_camera_exposure_us),
+    )
+    cfg.second_camera_exposure_us = None if second_camera_exposure is None else float(second_camera_exposure)
+    if "second_camera_exposure_us" in raw:
+        _warn_deprecated_experiment_key("second_camera_exposure_us", hardware_path, "camera_recording")
+        cfg.second_camera_exposure_us = float(raw["second_camera_exposure_us"])
+    elif "other_camera_exposure_us" in raw:
+        _warn_deprecated_experiment_key("other_camera_exposure_us", hardware_path, "camera_recording")
+        cfg.second_camera_exposure_us = float(raw["other_camera_exposure_us"])
+
+    second_camera_roi_width = hardware_camera_recording.get(
+        "second_camera_roi_width",
+        hardware_blackfly.get("roi_width", cfg.second_camera_roi_width),
+    )
+    cfg.second_camera_roi_width = None if second_camera_roi_width is None else int(second_camera_roi_width)
+    if "second_camera_roi_width" in raw:
+        _warn_deprecated_experiment_key("second_camera_roi_width", hardware_path, "camera_recording")
+        cfg.second_camera_roi_width = int(raw["second_camera_roi_width"])
+    elif "other_camera_roi_width" in raw:
+        _warn_deprecated_experiment_key("other_camera_roi_width", hardware_path, "camera_recording")
+        cfg.second_camera_roi_width = int(raw["other_camera_roi_width"])
+
+    second_camera_roi_height = hardware_camera_recording.get(
+        "second_camera_roi_height",
+        hardware_blackfly.get("roi_height", cfg.second_camera_roi_height),
+    )
+    cfg.second_camera_roi_height = None if second_camera_roi_height is None else int(second_camera_roi_height)
+    if "second_camera_roi_height" in raw:
+        _warn_deprecated_experiment_key("second_camera_roi_height", hardware_path, "camera_recording")
+        cfg.second_camera_roi_height = int(raw["second_camera_roi_height"])
+    elif "other_camera_roi_height" in raw:
+        _warn_deprecated_experiment_key("other_camera_roi_height", hardware_path, "camera_recording")
+        cfg.second_camera_roi_height = int(raw["other_camera_roi_height"])
+
+    cfg.second_camera_binning = int(
+        hardware_camera_recording.get(
+            "second_camera_binning",
+            hardware_blackfly.get("binning", cfg.second_camera_binning),
+        )
+    )
+    if "second_camera_binning" in raw:
+        _warn_deprecated_experiment_key("second_camera_binning", hardware_path, "camera_recording")
+        cfg.second_camera_binning = int(raw["second_camera_binning"])
+    elif "other_camera_binning" in raw:
+        _warn_deprecated_experiment_key("other_camera_binning", hardware_path, "camera_recording")
+        cfg.second_camera_binning = int(raw["other_camera_binning"])
+
+    cfg.verify_camera_recording = bool(
+        hardware_camera_recording.get("verify_no_dropped_frames", cfg.verify_camera_recording)
+    )
+    if "verify_camera_recording" in raw:
+        _warn_deprecated_experiment_key("verify_camera_recording", hardware_path, "camera_recording")
+        cfg.verify_camera_recording = bool(raw["verify_camera_recording"])
+
+    cfg.convert_second_camera_bin_to_lossless_mkv = bool(
+        hardware_camera_recording.get(
+            "convert_second_camera_bin_to_lossless_mkv",
+            cfg.convert_second_camera_bin_to_lossless_mkv,
+        )
+    )
+    if "convert_second_camera_bin_to_lossless_mkv" in raw:
+        _warn_deprecated_experiment_key(
+            "convert_second_camera_bin_to_lossless_mkv",
+            hardware_path,
+            "camera_recording",
+        )
+        cfg.convert_second_camera_bin_to_lossless_mkv = bool(raw["convert_second_camera_bin_to_lossless_mkv"])
+
+    cfg.data_dir = str(hardware_data_output.get("data_dir", cfg.data_dir))
+    if "data_dir" in raw:
+        _warn_deprecated_experiment_key("data_dir", hardware_path, "data_output")
+        cfg.data_dir = str(raw["data_dir"])
+
+    return cfg
+
+
+def _count_rising_edges(trace: np.ndarray | None) -> int | None:
+    if trace is None:
+        return None
+    if trace.size == 0:
+        return 0
+    bool_trace = np.asarray(trace, dtype=np.bool_)
+    return int(bool_trace[0]) + int(np.count_nonzero(~bool_trace[:-1] & bool_trace[1:]))
+
+
+def _discover_fictrac_raw_videos(run_dir: Path) -> list[str]:
+    return sorted(str(path) for path in run_dir.glob("fictrac-raw-*"))
+
+
+def _build_fictrac_recording_summary(
+    *,
+    run_dir: Path,
+    runtime_info: dict[str, Any],
+    frame_count: int | None,
+    expected_frame_count: int | None,
+) -> dict[str, Any]:
+    actual_frames = None if frame_count is None else int(frame_count)
+    missing_frames = None
+    no_dropped_frames = None
+    if expected_frame_count is not None and actual_frames is not None:
+        missing_frames = max(int(expected_frame_count) - actual_frames, 0)
+        no_dropped_frames = actual_frames == int(expected_frame_count)
+
+    return {
+        "camera_index": runtime_info.get("fictrac_camera_index"),
+        "save_raw": bool(runtime_info.get("save_raw", False)),
+        "video_codec": runtime_info.get("video_codec"),
+        "camera_fps": runtime_info.get("camera_fps"),
+        "output_base": runtime_info.get("output_base"),
+        "raw_videos": _discover_fictrac_raw_videos(run_dir),
+        "actual_frames": actual_frames,
+        "expected_frames": expected_frame_count,
+        "missing_frames_vs_expected": missing_frames,
+        "no_dropped_frames": no_dropped_frames,
+    }
+
+
+def _run_fictrac(
+    driver: FicTracDriver,
+    callback: ExperimentCallback,
+    state: dict[str, Exception | None],
+    logger: logging.Logger,
+) -> None:
+    try:
+        driver.run()
+        if not callback._stop.is_set():
+            state["error"] = RuntimeError(
+                "FicTrac process exited unexpectedly (no exception)"
+            )
+    except Exception as exc:
+        state["error"] = exc
+        logger.error("FicTrac thread error: %s", exc)
+
+
+def _check_fictrac_health(
+    cfg: RunProtocolConfig,
+    callback: ExperimentCallback | None,
+    fictrac_thread: threading.Thread | None,
+    fictrac_state: dict[str, Exception | None],
+    other_camera_recorder: Any,
+) -> None:
+    if other_camera_recorder is not None:
+        other_camera_recorder.raise_if_failed()
+
+    if callback is None:
+        return
+
+    if fictrac_thread is not None and not fictrac_thread.is_alive():
+        if fictrac_state.get("error") is not None:
+            raise RuntimeError(
+                f"FicTrac thread crashed: {fictrac_state['error']}"
+            ) from fictrac_state["error"]
+        raise RuntimeError("FicTrac thread stopped unexpectedly")
+
+    latest = callback.latest
+    if latest is None:
+        return
+
+    stale_for_s = time.perf_counter() - latest.wall_time
+    if stale_for_s > cfg.fictrac_timeout_s:
+        raise RuntimeError(
+            f"FicTrac stopped producing frames for {stale_for_s:.1f} s "
+            f"(timeout={cfg.fictrac_timeout_s:.1f} s)"
+        )
 
 
 # ----------------------------- progress monitor -----------------------------
@@ -298,6 +752,10 @@ def main():
     ap.add_argument(
         "--hardware", default="config/hardware.yaml", help="Hardware map YAML"
     )
+    ap.add_argument(
+        "--experiment",
+        help="Optional runtime config YAML for FicTrac/camera settings (hardware-owned values preferred in hardware.yaml)",
+    )
     ap.add_argument("--device", help="Override device name (else from hardware.yaml)")
     ap.add_argument("--dry-run", action="store_true", help="Compile only; no hardware")
     ap.add_argument(
@@ -305,7 +763,7 @@ def main():
         action="store_true",
         help="Always save interactive HTML preview",
     )
-    ap.add_argument("--out-root", default="data/runs", help="Run folder root")
+    ap.add_argument("--out-root", help="Run folder root (defaults to hardware data_output.data_dir or data/runs)")
     ap.add_argument(
         "--verbose", "-v", 
         action="store_true", 
@@ -386,6 +844,13 @@ def main():
     if args.device:
         logger.info(f"Overriding device name: {hw.device} -> {args.device}")
         hw.device = args.device
+
+    runtime_cfg = load_run_protocol_config(args.experiment, hardware_path=hw_path)
+    run_root = Path(args.out_root) if args.out_root else Path(runtime_cfg.data_dir)
+    logger.info("Runtime capture settings:")
+    logger.info(f"  Run output root: {run_root}")
+    logger.info(f"  FicTrac enabled: {bool(runtime_cfg.fictrac_config)}")
+    logger.info(f"  Second camera recording: {runtime_cfg.save_second_camera_video}")
 
     # Load and process protocol YAML
     logger.info("Loading protocol configuration...")
@@ -472,7 +937,7 @@ def main():
 
     # Create run directory and save artifacts with detailed logging
     logger.info("=== Creating Run Directory and Artifacts ===")
-    run_dir = ensure_run_dir(Path(args.out_root))
+    run_dir = ensure_run_dir(run_root)
     logger.info(f"✓ Run directory created: {run_dir}")
     logger.info(f"  Run timestamp: {run_dir.name}")
     
@@ -492,14 +957,25 @@ def main():
     logger.info(f"  ✓ Protocol YAML copy: {proto_copy}")
     logger.info(f"  ✓ Hardware YAML copy: {hw_copy}")
     
-    # Save metadata
+    # Save metadata  (t0 anchors start as None; re-written after do_task.start)
     logger.info("Saving run metadata...")
+    t0_utc: float | None = None
+    t0_perf: float | None = None
     meta_data = {
         "device": hw.device,
         "sample_rate": comp.tcfg.sample_rate,
         "duration_ms": comp.N * comp.dt_ms,
         "rng_seed": getattr(comp, 'rng_seed', None),
         "args": vars(args),
+        # Hardware clock anchors —————————————————————————————————————————
+        # t0_utc: Unix timestamp (time.time()) recorded immediately before
+        #   do_task.start().  Convert sample index to wall time:
+        #   wall_time = t0_utc + sample_idx / sample_rate
+        # t0_perf_counter: time.perf_counter() at the same instant, for
+        #   aligning software events (serial, FicTrac) that were also
+        #   stamped with perf_counter in the same process.
+        "t0_utc": t0_utc,
+        "t0_perf_counter": t0_perf,
     }
     meta_file = run_dir / "meta.json"
     meta_file.write_text(json.dumps(meta_data, indent=2))
@@ -565,6 +1041,8 @@ def main():
         logger.debug(f"    {do_names[i]}: {edges} transitions")
     logger.info(f"  Total edge transitions: {total_edges}")
 
+    preview_file = run_dir / "preview.html"
+
     # Generate preview visualization
     if args.interactive:
         logger.info("Generating preview visualization...")
@@ -578,15 +1056,18 @@ def main():
             title="Preview (no DAQ)",
             rck_log=comp.rck_log,
         )
-        preview_file = run_dir / "preview.html"
         fig.write_html(preview_file, include_plotlyjs="cdn")
         logger.info(f"  ✓ Preview visualization: {preview_file}")
 
     if args.dry_run:
         logger.info("=== DRY RUN COMPLETE ===")
         logger.info(f"All artifacts saved to: {run_dir}")
-        logger.info(f"Preview available at: {preview_file}")
-        print(f"Dry-run complete. Preview: {run_dir/'preview.html'}")
+        if args.interactive:
+            logger.info(f"Preview available at: {preview_file}")
+            print(f"Dry-run complete. Preview: {preview_file}")
+        else:
+            logger.info("Preview not generated because --interactive was not requested")
+            print(f"Dry-run complete. Artifacts: {run_dir}")
         return
 
     # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback), DI slave (synchronized DI)
@@ -628,223 +1109,358 @@ def main():
         logger.debug(f"    DI[{i}]: {name} -> {phys}")
 
     logger.info("Creating DAQ tasks...")
-    with (
-        nidaqmx.Task("DO_MASTER") as do_task,
-        nidaqmx.Task("AO_SLAVE") as ao_task,
-        nidaqmx.Task("AI_SLAVE") as ai_task,
-        nidaqmx.Task("DI_READY") as di_task,
-    ):
-        logger.info("✓ DAQ tasks created successfully")
+    fictrac_callback: ExperimentCallback | None = None
+    fictrac_driver: FicTracDriver | None = None
+    fictrac_thread: threading.Thread | None = None
+    fictrac_state: dict[str, Exception | None] = {"error": None}
+    fictrac_runtime_info: dict[str, Any] = {}
+    other_camera_recorder: Any = None
+    other_camera_recording: dict[str, Any] = {}
+    expected_camera_frames: int | None = None
+    nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
 
-        # DO master lines
-        logger.info("Configuring DO master task...")
-        for i, ch in enumerate([hw.digital_outputs[n] for n in do_names]):
-            logger.debug(f"  Adding DO channel {i}: {ch}")
-            do_task.do_channels.add_do_chan(
-                ch, line_grouping=LineGrouping.CHAN_PER_LINE
-            )
-        do_task.timing.cfg_samp_clk_timing(
-            rate=rate,
-            active_edge=Edge.RISING,
-            sample_mode=AcquisitionType.FINITE,
-            samps_per_chan=N,
-        )
-        logger.debug(f"  Writing DO data array shape: {comp.do.shape}")
-        do_task.write(comp.do.astype(np.bool_))
-        logger.info("✓ DO master task configured and data loaded")
+    try:
+        with (
+            nidaqmx.Task("DO_MASTER") as do_task,
+            nidaqmx.Task("AO_SLAVE") as ao_task,
+            nidaqmx.Task("AI_SLAVE") as ai_task,
+            nidaqmx.Task("DI_READY") as di_task,
+        ):
+            logger.info("✓ DAQ tasks created successfully")
 
-        # AO slave
-        if ao_names:
-            logger.info("Configuring AO slave task...")
-            ao_channel_str = ",".join([hw.analog_outputs[n] for n in ao_names])
-            logger.debug(f"  AO channels: {ao_channel_str}")
-            ao_task.ao_channels.add_ao_voltage_chan(
-                ao_channel_str,
-                min_val=0.0,
-                max_val=5.0,
-            )
-            ao_task.timing.cfg_samp_clk_timing(
-                rate=rate,
-                source=f"/{hw.device}/do/SampleClock",
-                active_edge=Edge.RISING,
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=N,
-            )
-            ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                f"/{hw.device}/do/StartTrigger"
-            )
-            logger.debug(f"  Writing AO data array shape: {comp.ao.shape}")
-            AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(
-                comp.ao.astype(np.float64)
-            )
-            logger.info("✓ AO slave task configured and data loaded")
-        else:
-            logger.info("No AO channels configured, skipping AO task")
-
-        # AI slave (MFC feedback)
-        ai_buf = None
-        if ai_phys:
-            logger.info("Configuring AI slave task...")
-            ai_channel_str = ",".join(ai_phys)
-            logger.debug(f"  AI channels: {ai_channel_str}")
-            ai_task.ai_channels.add_ai_voltage_chan(
-                ai_channel_str, min_val=0.0, max_val=10.0
-            )
-            ai_task.timing.cfg_samp_clk_timing(
-                rate=rate,
-                source=f"/{hw.device}/do/SampleClock",
-                active_edge=Edge.RISING,
-                sample_mode=AcquisitionType.FINITE,
-                samps_per_chan=N,
-            )
-            ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                f"/{hw.device}/do/StartTrigger"
-            )
-            ai_reader = AnalogMultiChannelReader(ai_task.in_stream)
-            ai_buf = np.zeros((len(ai_phys), N), dtype=np.float64)
-            logger.debug(f"  AI buffer shape: {ai_buf.shape}")
-            logger.info("✓ AI slave task configured and buffer allocated")
-        else:
-            logger.info("No AI channels configured, skipping AI task")
-
-        # DI slave (synchronized digital inputs such as READY rails and camera returns)
-        if di_phys:
-            logger.info("Configuring DI slave task...")
-            for i, ch in enumerate(di_phys):
-                logger.debug(f"  Adding DI channel {i}: {ch}")
-                di_task.di_channels.add_di_chan(
+            # DO master lines
+            logger.info("Configuring DO master task...")
+            for i, ch in enumerate([hw.digital_outputs[n] for n in do_names]):
+                logger.debug(f"  Adding DO channel {i}: {ch}")
+                do_task.do_channels.add_do_chan(
                     ch, line_grouping=LineGrouping.CHAN_PER_LINE
                 )
-            di_task.timing.cfg_samp_clk_timing(
+            do_task.timing.cfg_samp_clk_timing(
                 rate=rate,
-                source=f"/{hw.device}/do/SampleClock",
                 active_edge=Edge.RISING,
                 sample_mode=AcquisitionType.FINITE,
                 samps_per_chan=N,
             )
-            di_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                f"/{hw.device}/do/StartTrigger"
-            )
-            logger.info("✓ DI slave task configured successfully")
-        else:
-            logger.info("No DI channels configured, skipping DI task")
+            logger.debug(f"  Writing DO data array shape: {comp.do.shape}")
+            do_task.write(comp.do.astype(np.bool_))
+            logger.info("✓ DO master task configured and data loaded")
 
-        # Start tasks in proper sequence
-        logger.info("Starting DAQ tasks...")
-        if ao_names:
-            logger.debug("  Starting AO slave task...")
-            ao_task.start()
-        if ai_phys:
-            logger.debug("  Starting AI slave task...")
-            ai_task.start()
-        if di_phys:
-            logger.debug("  Starting DI slave task...")
-            di_task.start()
-            
-        logger.debug("  Starting DO master task...")
-        start_time = time.time()
-        
-        # Initialize progress monitor if requested
-        progress_monitor = None
-        if args.progress:
-            progress_monitor = ProtocolProgressMonitor(
-                do_data=comp.do,
-                do_names=do_names,
-                ao_data=comp.ao,
-                ao_names=ao_names,
-                dt_ms=comp.dt_ms,
-                sample_rate=comp.tcfg.sample_rate,
-                logger=logger,
-                update_interval_ms=args.progress_interval
-            )
-            progress_monitor.start()
-        
-        do_task.start()
-        logger.info("✓ All DAQ tasks started, protocol execution in progress...")
+            # AO slave
+            if ao_names:
+                logger.info("Configuring AO slave task...")
+                ao_channel_str = ",".join([hw.analog_outputs[n] for n in ao_names])
+                logger.debug(f"  AO channels: {ao_channel_str}")
+                ao_task.ao_channels.add_ao_voltage_chan(
+                    ao_channel_str,
+                    min_val=0.0,
+                    max_val=5.0,
+                )
+                ao_task.timing.cfg_samp_clk_timing(
+                    rate=rate,
+                    source=f"/{hw.device}/do/SampleClock",
+                    active_edge=Edge.RISING,
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=N,
+                )
+                ao_task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    f"/{hw.device}/do/StartTrigger"
+                )
+                logger.debug(f"  Writing AO data array shape: {comp.ao.shape}")
+                AnalogMultiChannelWriter(ao_task.out_stream).write_many_sample(
+                    comp.ao.astype(np.float64)
+                )
+                logger.info("✓ AO slave task configured and data loaded")
+            else:
+                logger.info("No AO channels configured, skipping AO task")
 
-        # Wait for completion with timeout
-        timeout = max(10.0, N / rate + 5.0)
-        logger.info(f"Waiting for protocol completion (timeout: {timeout:.1f}s)...")
-        
-        try:
-            do_task.wait_until_done(timeout=timeout)
-            execution_time = time.time() - start_time
-            logger.info(f"✓ Protocol execution completed in {execution_time:.2f} seconds")
-        except Exception as e:
-            logger.error(f"Protocol execution failed: {e}")
-            raise
-        finally:
-            # Stop progress monitor if it was running
-            if progress_monitor:
-                progress_monitor.stop()
-            
-        # Stop tasks and read data
-        logger.info("Stopping tasks and reading data...")
-        do_task.stop()
-        logger.debug("  DO master task stopped")
-        
-        if ao_names:
-            ao_task.stop()
-            logger.debug("  AO slave task stopped")
+            # AI slave (MFC feedback)
+            ai_buf = None
+            if ai_phys:
+                logger.info("Configuring AI slave task...")
+                ai_channel_str = ",".join(ai_phys)
+                logger.debug(f"  AI channels: {ai_channel_str}")
+                ai_task.ai_channels.add_ai_voltage_chan(
+                    ai_channel_str, min_val=0.0, max_val=10.0
+                )
+                ai_task.timing.cfg_samp_clk_timing(
+                    rate=rate,
+                    source=f"/{hw.device}/do/SampleClock",
+                    active_edge=Edge.RISING,
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=N,
+                )
+                ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    f"/{hw.device}/do/StartTrigger"
+                )
+                ai_reader = AnalogMultiChannelReader(ai_task.in_stream)
+                ai_buf = np.zeros((len(ai_phys), N), dtype=np.float64)
+                logger.debug(f"  AI buffer shape: {ai_buf.shape}")
+                logger.info("✓ AI slave task configured and buffer allocated")
+            else:
+                logger.info("No AI channels configured, skipping AI task")
 
-        if ai_phys:
-            logger.info("Reading AI data...")
+            # DI slave (synchronized digital inputs such as READY rails and camera returns)
+            if di_phys:
+                logger.info("Configuring DI slave task...")
+                for i, ch in enumerate(di_phys):
+                    logger.debug(f"  Adding DI channel {i}: {ch}")
+                    di_task.di_channels.add_di_chan(
+                        ch, line_grouping=LineGrouping.CHAN_PER_LINE
+                    )
+                di_task.timing.cfg_samp_clk_timing(
+                    rate=rate,
+                    source=f"/{hw.device}/do/SampleClock",
+                    active_edge=Edge.RISING,
+                    sample_mode=AcquisitionType.FINITE,
+                    samps_per_chan=N,
+                )
+                di_task.triggers.start_trigger.cfg_dig_edge_start_trig(
+                    f"/{hw.device}/do/StartTrigger"
+                )
+                logger.info("✓ DI slave task configured successfully")
+            else:
+                logger.info("No DI channels configured, skipping DI task")
+
+            if runtime_cfg.fictrac_config:
+                logger.info("Preparing FicTrac runtime configuration...")
+                fictrac_config_path, fictrac_camera_index, fictrac_runtime_info = _prepare_fictrac_runtime_config(
+                    runtime_cfg.fictrac_config,
+                    run_dir,
+                    enable_raw_video=runtime_cfg.save_fictrac_camera_video,
+                    camera_fps=nominal_camera_fps,
+                    video_codec=runtime_cfg.fictrac_raw_video_codec,
+                    first_frame_timeout_ms=runtime_cfg.fictrac_first_frame_timeout_ms,
+                )
+                runtime_dirs = prepare_fictrac_runtime()
+                if runtime_dirs:
+                    logger.info("FicTrac runtime PATH prepared:")
+                    for runtime_dir in runtime_dirs:
+                        logger.info("  %s", runtime_dir)
+                fictrac_callback = ExperimentCallback()
+                fictrac_driver = FicTracDriver(
+                    config_file=str(fictrac_config_path),
+                    console_ouput_file=runtime_cfg.fictrac_console_out,
+                    track_change_callback=fictrac_callback,
+                    plot_on=False,
+                    fic_trac_bin_path=runtime_cfg.fictrac_bin or None,
+                )
+                fictrac_thread = threading.Thread(
+                    target=_run_fictrac,
+                    args=(fictrac_driver, fictrac_callback, fictrac_state, logger),
+                    name="FicTrac",
+                    daemon=True,
+                )
+            else:
+                fictrac_camera_index = None
+
+            if runtime_cfg.save_second_camera_video:
+                second_camera_index = runtime_cfg.second_camera_index
+                if second_camera_index is None and fictrac_camera_index in (0, 1):
+                    second_camera_index = 1 - fictrac_camera_index
+                if second_camera_index is None:
+                    raise RuntimeError(
+                        "save_second_camera_video requires camera_recording.second_camera_index or a numeric FicTrac src_fn camera index of 0 or 1."
+                    )
+                if fictrac_camera_index is not None and second_camera_index == fictrac_camera_index:
+                    raise RuntimeError(
+                        "second_camera_index cannot match FicTrac's live camera index because the same Blackfly cannot be opened twice."
+                    )
+
+                from multibios.blackfly.triggered_camera_record import TriggeredCameraRecorder
+
+                logger.info("Recording Blackfly camera %s into the run directory...", second_camera_index)
+                other_camera_recorder = TriggeredCameraRecorder(
+                    camera_index=second_camera_index,
+                    run_dir=run_dir,
+                    timeout_ms=runtime_cfg.second_camera_timeout_ms,
+                    queue_size=runtime_cfg.second_camera_queue_size,
+                    stream_buffer_count=runtime_cfg.second_camera_stream_buffer_count,
+                    exposure_us=runtime_cfg.second_camera_exposure_us,
+                    roi_width=runtime_cfg.second_camera_roi_width,
+                    roi_height=runtime_cfg.second_camera_roi_height,
+                    binning=runtime_cfg.second_camera_binning,
+                )
+                other_camera_recording = other_camera_recorder.start()
+
+            # Start tasks in proper sequence
+            logger.info("Starting DAQ tasks...")
+            if ao_names:
+                logger.debug("  Starting AO slave task...")
+                ao_task.start()
+            if ai_phys:
+                logger.debug("  Starting AI slave task...")
+                ai_task.start()
+            if di_phys:
+                logger.debug("  Starting DI slave task...")
+                di_task.start()
+
+            logger.debug("  Starting DO master task...")
+            start_time = time.time()
+
+            # Initialize progress monitor if requested
+            progress_monitor = None
+            if args.progress:
+                progress_monitor = ProtocolProgressMonitor(
+                    do_data=comp.do,
+                    do_names=do_names,
+                    ao_data=comp.ao,
+                    ao_names=ao_names,
+                    dt_ms=comp.dt_ms,
+                    sample_rate=comp.tcfg.sample_rate,
+                    logger=logger,
+                    update_interval_ms=args.progress_interval
+                )
+                progress_monitor.start()
+
+            if fictrac_callback is not None:
+                if fictrac_thread is not None:
+                    fictrac_thread.start()
+                startup_timeout_s = runtime_cfg.fictrac_startup_timeout_s
+                if startup_timeout_s <= 0:
+                    logger.info("Waiting indefinitely for FicTrac first frame...")
+                    while fictrac_callback.latest is None:
+                        time.sleep(0.5)
+                        _check_fictrac_health(
+                            runtime_cfg,
+                            fictrac_callback,
+                            fictrac_thread,
+                            fictrac_state,
+                            other_camera_recorder,
+                        )
+                else:
+                    logger.info("Waiting up to %.1f s for FicTrac first frame...", startup_timeout_s)
+                    deadline = time.monotonic() + startup_timeout_s
+                    while fictrac_callback.latest is None and time.monotonic() < deadline:
+                        time.sleep(0.5)
+                        _check_fictrac_health(
+                            runtime_cfg,
+                            fictrac_callback,
+                            fictrac_thread,
+                            fictrac_state,
+                            other_camera_recorder,
+                        )
+                if fictrac_callback.latest is None:
+                    raise RuntimeError(
+                        f"FicTrac did not produce any frames within {startup_timeout_s:.1f} s"
+                    )
+                logger.info("FicTrac connected (frame %s)", fictrac_callback.latest.frame_cnt)
+            elif fictrac_thread is not None:
+                fictrac_thread.start()
+
+            # Capture hardware clock anchor: perf_counter and wall time as close as
+            # possible to the DO start trigger so every sample_idx can be converted to
+            # absolute time via:  t_utc = t0_utc + sample_idx / sample_rate
+            t0_perf = time.perf_counter()
+            t0_utc = time.time()
+            do_task.start()
+
+            # Re-write meta.json now that the real t0 values are known
+            meta_data["t0_utc"] = t0_utc
+            meta_data["t0_perf_counter"] = t0_perf
+            meta_file.write_text(json.dumps(meta_data, indent=2))
+            logger.info("✓ All DAQ tasks started, protocol execution in progress...")
+
+            # Wait for completion with timeout while monitoring FicTrac / camera health
+            timeout = max(10.0, N / rate + 5.0)
+            logger.info(f"Waiting for protocol completion (timeout: {timeout:.1f}s)...")
             try:
-                ai_reader.read_many_sample(
-                    ai_buf,
-                    number_of_samples_per_channel=N,
-                    timeout=max(10.0, N / rate + 5.0),
-                )
-                ai_task.stop()
-                
-                # Save AI data and provide statistics
-                ai_file = run_dir / "capture_ai.npz"
-                np.savez_compressed(
-                    ai_file,
-                    names=np.array(ai_names, dtype=object),
-                    data=ai_buf.astype(np.float32),
-                )
-                logger.info(f"✓ AI data saved: {ai_file}")
-                logger.info(f"  AI data shape: {ai_buf.shape}")
-                for i, name in enumerate(ai_names):
-                    min_val, max_val = ai_buf[i].min(), ai_buf[i].max()
-                    mean_val = ai_buf[i].mean()
-                    logger.debug(f"    {name}: min={min_val:.3f}V, max={max_val:.3f}V, mean={mean_val:.3f}V")
+                deadline = time.monotonic() + timeout
+                while not do_task.is_task_done():
+                    _check_fictrac_health(
+                        runtime_cfg,
+                        fictrac_callback,
+                        fictrac_thread,
+                        fictrac_state,
+                        other_camera_recorder,
+                    )
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"DO task did not finish within {timeout:.1f} s")
+                    time.sleep(0.5)
+                do_task.wait_until_done(timeout=1.0)
+                execution_time = time.time() - start_time
+                logger.info(f"✓ Protocol execution completed in {execution_time:.2f} seconds")
             except Exception as e:
-                logger.error(f"Failed to read AI data: {e}")
+                logger.error(f"Protocol execution failed: {e}")
                 raise
+            finally:
+                if progress_monitor:
+                    progress_monitor.stop()
+            
+            # Stop tasks and read data
+            logger.info("Stopping tasks and reading data...")
+            do_task.stop()
+            logger.debug("  DO master task stopped")
+        
+            if ao_names:
+                ao_task.stop()
+                logger.debug("  AO slave task stopped")
 
-        if di_phys:
-            logger.info("Reading DI data...")
-            try:
-                di_data = di_task.read(
-                    number_of_samples_per_channel=N, 
-                    timeout=max(10.0, N / rate + 5.0)
-                )
-                di_task.stop()
-                
-                # Save the returned DI data and provide statistics
-                di_file = run_dir / "capture_di.npz"
-                np.savez_compressed(
-                    di_file,
-                    names=np.array(di_names, dtype=object),
-                    # The returned data is already boolean, but we cast to be safe
-                    data=np.array(di_data).astype(np.bool_), 
-                )
-                logger.info(f"✓ DI data saved: {di_file}")
-                
-                # Use the new di_data variable for analysis
-                di_bool = np.array(di_data).astype(bool)
-                logger.info(f"  DI data shape: {di_bool.shape}")
-                for i, name in enumerate(di_names):
-                    high_count = np.sum(di_bool[i])
-                    high_pct = high_count / N * 100
-                    logger.debug(f"    {name}: {high_count}/{N} samples high ({high_pct:.1f}%)")
-            except Exception as e:
-                logger.error(f"Failed to read DI data: {e}")
-                raise
+            if ai_phys:
+                logger.info("Reading AI data...")
+                try:
+                    ai_reader.read_many_sample(
+                        ai_buf,
+                        number_of_samples_per_channel=N,
+                        timeout=max(10.0, N / rate + 5.0),
+                    )
+                    ai_task.stop()
 
-    logger.info("✓ All DAQ tasks completed and data acquired")
+                    # Save AI data and provide statistics
+                    ai_file = run_dir / "capture_ai.npz"
+                    np.savez_compressed(
+                        ai_file,
+                        names=np.array(ai_names, dtype=object),
+                        data=ai_buf.astype(np.float32),
+                    )
+                    logger.info(f"✓ AI data saved: {ai_file}")
+                    logger.info(f"  AI data shape: {ai_buf.shape}")
+                    for i, name in enumerate(ai_names):
+                        min_val, max_val = ai_buf[i].min(), ai_buf[i].max()
+                        mean_val = ai_buf[i].mean()
+                        logger.debug(f"    {name}: min={min_val:.3f}V, max={max_val:.3f}V, mean={mean_val:.3f}V")
+                except Exception as e:
+                    logger.error(f"Failed to read AI data: {e}")
+                    raise
+
+            if di_phys:
+                logger.info("Reading DI data...")
+                try:
+                    di_data = di_task.read(
+                        number_of_samples_per_channel=N,
+                        timeout=max(10.0, N / rate + 5.0)
+                    )
+                    di_task.stop()
+
+                    # Save the returned DI data and provide statistics
+                    di_file = run_dir / "capture_di.npz"
+                    np.savez_compressed(
+                        di_file,
+                        names=np.array(di_names, dtype=object),
+                        data=np.array(di_data).astype(np.bool_),
+                    )
+                    logger.info(f"✓ DI data saved: {di_file}")
+
+                    # Use the new di_data variable for analysis
+                    di_bool = np.array(di_data).astype(bool)
+                    logger.info(f"  DI data shape: {di_bool.shape}")
+                    for i, name in enumerate(di_names):
+                        high_count = np.sum(di_bool[i])
+                        high_pct = high_count / N * 100
+                        logger.debug(f"    {name}: {high_count}/{N} samples high ({high_pct:.1f}%)")
+                except Exception as e:
+                    logger.error(f"Failed to read DI data: {e}")
+                    raise
+
+        logger.info("✓ All DAQ tasks completed and data acquired")
+    finally:
+        if fictrac_callback is not None:
+            logger.info("Stopping FicTrac...")
+            fictrac_callback.request_stop()
+        if fictrac_thread is not None:
+            fictrac_thread.join(timeout=10.0)
+        if other_camera_recorder is not None:
+            logger.info("Stopping second Blackfly recorder...")
+            other_camera_recording = other_camera_recorder.stop()
 
     logger.info("✓ All DAQ tasks completed and data acquired")
 
@@ -873,6 +1489,42 @@ def main():
         ai_data_overlay = npz_ai["data"]
         logger.info(f"  ✓ AI overlay data loaded: {len(ai_names_overlay)} channels")
         logger.debug(f"    AI overlay shape: {ai_data_overlay.shape}")
+
+    if fictrac_callback is not None:
+        fictrac_frames_file = run_dir / "fictrac_frames.npz"
+        fictrac_callback.save_npz(fictrac_frames_file)
+        logger.info(f"✓ FicTrac frames saved: {fictrac_frames_file}")
+
+    expected_camera_frames = _count_rising_edges(comp.do[do_names.index("TRIG_CAMERA")]) if "TRIG_CAMERA" in do_names else None
+
+    if fictrac_runtime_info:
+        fictrac_runtime_file = run_dir / "fictrac_runtime.json"
+        fictrac_runtime_file.write_text(json.dumps(fictrac_runtime_info, indent=2), encoding="utf-8")
+        logger.info(f"✓ FicTrac runtime info saved: {fictrac_runtime_file}")
+
+    if fictrac_runtime_info.get("save_raw"):
+        fictrac_recording = _build_fictrac_recording_summary(
+            run_dir=run_dir,
+            runtime_info=fictrac_runtime_info,
+            frame_count=fictrac_callback.frame_count if fictrac_callback is not None else None,
+            expected_frame_count=expected_camera_frames if runtime_cfg.verify_camera_recording else None,
+        )
+        fictrac_recording_file = run_dir / "fictrac_camera_recording.json"
+        fictrac_recording_file.write_text(json.dumps(fictrac_recording, indent=2), encoding="utf-8")
+        logger.info(f"✓ FicTrac recording summary saved: {fictrac_recording_file}")
+
+    if other_camera_recording:
+        from multibios.blackfly.triggered_camera_record import postprocess_triggered_camera_recording
+
+        other_camera_recording = postprocess_triggered_camera_recording(
+            other_camera_recording,
+            expected_frame_count=expected_camera_frames if runtime_cfg.verify_camera_recording else None,
+            nominal_fps=nominal_camera_fps,
+            convert_to_lossless_mkv=runtime_cfg.convert_second_camera_bin_to_lossless_mkv,
+        )
+        blackfly_recording_file = run_dir / "blackfly_recording.json"
+        blackfly_recording_file.write_text(json.dumps(other_camera_recording, indent=2), encoding="utf-8")
+        logger.info(f"✓ Blackfly recording summary saved: {blackfly_recording_file}")
 
     # Generate comprehensive visualization
     if args.interactive:

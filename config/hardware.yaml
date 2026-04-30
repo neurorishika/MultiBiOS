@@ -1,9 +1,14 @@
 device: "Dev1"
 
+teensy:
+  port: "COM4"
+  baud: 115200
+
 fictrac:
   config: "C:/Rishika/fictrac_pybmt/config_camera.txt"
   bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
   console_out: "fictrac_output.txt"
+  first_frame_timeout_ms: 0
   startup_timeout_s: 90.0
   timeout_s: 5.0
 
@@ -11,6 +16,41 @@ blackfly_defaults:
   exposure_us: 4500
   roi_width: 400
   roi_height: 400
+
+camera_recording:
+  save_fictrac_camera_video: false
+  save_second_camera_video: false
+  second_camera_index: 0
+  fictrac_raw_video_codec: "raw"
+  second_camera_timeout_ms: 250
+  second_camera_queue_size: 512
+  second_camera_stream_buffer_count: 256
+  second_camera_exposure_us:
+  second_camera_roi_width: 400
+  second_camera_roi_height: 400
+  second_camera_binning: 1
+  verify_no_dropped_frames: true
+  convert_second_camera_bin_to_lossless_mkv: true
+
+daq:
+  latch_interval_ms: 10.0
+
+mfc:
+  mode: "alicat_serial"
+  device_map:
+    mfc.air_left_setpoint: "A"
+    mfc.air_right_setpoint: "B"
+    mfc.odor_left_setpoint: "C"
+    mfc.odor_right_setpoint: "D"
+  alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
+  alicat_baud: [115200]
+  alicat_expected_ids: []
+  live_interval_s: 1.0
+
+data_output:
+  data_dir: "data/runs"
+  open_explorer: true
+  explorer_port: 8050
 
 digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   OLFACTOMETER_LEFT_S0:        "Dev1/port0/line0" # Pin 65
@@ -39,6 +79,11 @@ digital_inputs:
   READY_SWITCHVALVE_LEFT:        "Dev1/port0/line16" # Pin 105
   READY_OLFACTOMETER_RIGHT:      "Dev1/port0/line17" # Pin 106
   READY_SWITCHVALVE_RIGHT:       "Dev1/port0/line18" # Pin 107
+  # Bruker Prairie View frame clock output — TTL pulse per acquired frame/volume.
+  # Wire from Prairie View's "Frame Clock" (or "Scope") output BNC to a free DI line.
+  # The rising-edge sample index in capture_di.npz gives the hardware timestamp of
+  # every microscope frame:  t_frame = t0_utc + edge_sample / sample_rate
+  MICRO_FRAME_CLOCK:             "Dev1/port0/line14" # Pin 103 — assign free line
   CAMERA_FRONT_O1:               "Dev1/port0/line29" # Pin 125 (front camera white wire)
   CAMERA_SIDE_O1:                "Dev1/port0/line27" # Pin 123 (side/FicTrac camera white wire)
 

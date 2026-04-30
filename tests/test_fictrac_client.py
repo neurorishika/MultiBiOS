@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -11,11 +12,18 @@ from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, FicTracFrame,
                                       FicTracFrameStore, FicTracState,
                                       record_to_frame)
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
+from multibios.fictrac_runtime import build_fictrac_subprocess_env
 
 
-PYBMT_ROOT = Path(__file__).resolve().parents[2] / "pybmt-master"
-if str(PYBMT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PYBMT_ROOT))
+PYBMT_CANDIDATES = [
+    Path(__file__).resolve().parents[2] / "pybmt-master",
+    Path(__file__).resolve().parents[2] / "legacy" / "pybmt-master",
+]
+for candidate in PYBMT_CANDIDATES:
+    if candidate.is_dir():
+        if str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+        break
 
 from pybmt.fictrac.state import FicTracState as PyBMTState  # type: ignore  # noqa: E402
 
@@ -219,3 +227,35 @@ def test_closed_loop_consumer_skips_backlog_and_uses_newest() -> None:
 
     history = consumer.recent_history(max_count=2)
     assert [int(row["frame_cnt"]) for row in history] == [4, 5]
+
+
+def test_build_fictrac_subprocess_env_strips_conda_paths_on_windows(tmp_path: Path) -> None:
+    fictrac_bin = tmp_path / "fictrac-spinnaker" / "fictrac-spinnaker.exe"
+    fictrac_bin.parent.mkdir()
+    fictrac_bin.write_text("", encoding="utf-8")
+
+    env = build_fictrac_subprocess_env(
+        fictrac_bin_path=fictrac_bin,
+        base_env={
+            "PATH": os.pathsep.join(
+                [
+                    r"C:\Users\markd\.conda\envs\multibios-blackfly",
+                    r"C:\Users\markd\.conda\envs\multibios-blackfly\Library\bin",
+                    r"C:\Windows\System32",
+                    r"C:\Tools",
+                ]
+            ),
+            "CONDA_PREFIX": r"C:\Users\markd\.conda\envs\multibios-blackfly",
+            "CONDA_DEFAULT_ENV": "multibios-blackfly",
+            "PYTHONPATH": r"C:\temp\pythonpath",
+        },
+    )
+
+    path_parts = env["PATH"].split(os.pathsep)
+    assert path_parts[0] == str(fictrac_bin.parent)
+    assert r"C:\Windows\System32" in path_parts
+    assert r"C:\Tools" in path_parts
+    assert not any(".conda\\envs\\multibios-blackfly" in part for part in path_parts)
+    assert "CONDA_PREFIX" not in env
+    assert "CONDA_DEFAULT_ENV" not in env
+    assert "PYTHONPATH" not in env

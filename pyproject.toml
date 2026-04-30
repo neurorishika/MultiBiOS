@@ -27,7 +27,8 @@ dependencies = [
 [project.scripts]
 multibios-run-protocol = "multibios.run_protocol:main"
 multibios-viz-protocol = "multibios.viz_protocol:main"
-multibios-experiment = "multibios.experiment:main"
+multibios-experiment = "multibios.serial.experiment:main"
+multibios-serial-experiment = "multibios.serial.experiment:main"
 multibios-explorer = "multibios.apps.explorer:main"
 multibios-blackfly-setup = "multibios.blackfly.setup_daq_mode:main"
 multibios-blackfly-max-freerun = "multibios.blackfly.max_freerun_roi:main"

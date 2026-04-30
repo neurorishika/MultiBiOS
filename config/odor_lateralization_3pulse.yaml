@@ -97,9 +97,6 @@ sequence:
       - device: "switch_valve.right"
         state: "CLEAN"
         timing: 0
-      - device: "triggers.microscope"
-        state: true
-        timing: 60000            # "saturation done, trials starting" marker
 
   # ────────────────────────────────────────────────────────────
   #  TRIAL 1 — BILATERAL  (3-pulse)
@@ -265,15 +262,14 @@ sequence:
   #  Concurrent odor delivery: 10–15 s and 20–25 s = 10 s total
   #
   #  Timeline:
-  #    t= 0 s   SV left -> ODOR            micro trigger (left start)
+  #    t= 0 s   SV left -> ODOR            micro trigger (trial start)
   #    t= 5 s   SV left -> CLEAN
   #    t=10 s   SV left -> ODOR, SV right -> ODOR
-  #                                         micro trigger (overlap begins)
   #    t=15 s   SV left -> CLEAN, SV right -> CLEAN
   #    t=20 s   SV left -> ODOR, SV right -> ODOR
   #    t=25 s   SV left -> CLEAN           (left done)
   #    t=30 s   SV right -> ODOR
-  #    t=35 s   SV right -> CLEAN          micro trigger (all done)
+  #    t=35 s   SV right -> CLEAN          micro trigger (trial end)
   #    t=35–65  ISI (30 s)
   # ────────────────────────────────────────────────────────────
   - phase: "TRIAL 4 - LEFT THEN RIGHT"
@@ -294,9 +290,6 @@ sequence:
         state: "CLEAN"
         timing: 5000
       # --- overlap begins: left pulse 2 + right pulse 1 both open ---
-      - device: "triggers.microscope"
-        state: true
-        timing: 10000            # right opens / overlap begins
       - device: "switch_valve.left"
         state: "ODOR"
         timing: 10000
@@ -344,15 +337,14 @@ sequence:
   #  Concurrent odor delivery: 10–15 s and 20–25 s = 10 s total
   #
   #  Timeline:
-  #    t= 0 s   SV right -> ODOR           micro trigger (right start)
+  #    t= 0 s   SV right -> ODOR           micro trigger (trial start)
   #    t= 5 s   SV right -> CLEAN
   #    t=10 s   SV right -> ODOR, SV left -> ODOR
-  #                                         micro trigger (overlap begins)
   #    t=15 s   SV right -> CLEAN, SV left -> CLEAN
   #    t=20 s   SV right -> ODOR, SV left -> ODOR
   #    t=25 s   SV right -> CLEAN          (right done)
   #    t=30 s   SV left -> ODOR
-  #    t=35 s   SV left -> CLEAN           micro trigger (all done)
+  #    t=35 s   SV left -> CLEAN           micro trigger (trial end)
   #    t=35–65  ISI (30 s)
   # ────────────────────────────────────────────────────────────
   - phase: "TRIAL 5 - RIGHT THEN LEFT"
@@ -373,9 +365,6 @@ sequence:
         state: "CLEAN"
         timing: 5000
       # --- overlap begins: right pulse 2 + left pulse 1 both open ---
-      - device: "triggers.microscope"
-        state: true
-        timing: 10000            # left opens / overlap begins
       - device: "switch_valve.right"
         state: "ODOR"
         timing: 10000
@@ -417,7 +406,6 @@ sequence:
   # ────────────────────────────────────────────────────────────
   #  OLFACTOMETER DESATURATION  —  60 s to clear odor tube
   #  Switch valves stay CLEAN; olfactometers return to AIR.
-  #  Microscope pulse at 60 s marks "desaturation done".
   # ────────────────────────────────────────────────────────────
   - phase: "OLFACTOMETER DESATURATION"
     duration: 65000              # 60 s desaturation + 5 s buffer
@@ -435,9 +423,6 @@ sequence:
       - device: "switch_valve.right"
         state: "CLEAN"
         timing: 0
-      - device: "triggers.microscope"
-        state: true
-        timing: 60000            # "desaturation done" marker
 
   # ────────────────────────────────────────────────────────────
   #  SHUTDOWN  —  zero flows, stop camera, olfactometers OFF

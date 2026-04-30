@@ -344,6 +344,81 @@ Success criterion:
 
 - the actual frame acquisition timing of both cameras is measured on the DAQ clock
 
+### Phase 4.5: Link Bruker microscope data to the hardware clock
+
+Goal:
+
+- give every microscope frame (or z-volume) a hardware timestamp so imaging data
+  and behavioral data share one common timebase with no software jitter
+
+Background:
+
+  The NI-DAQ already sends two 5 V TTL pulses to Bruker Prairie View: one rising
+  edge starts acquisition, one rising edge stops it (toggle mode).  Between those
+  two pulses, Prairie View acquires frames free-running at its configured frame
+  rate.  Because free-running acquisition is not triggered sample-by-sample from
+  the DAQ, the exact hardware time of each individual frame is not otherwise
+  recorded.
+
+  Prairie View exposes a **Frame Clock** TTL output (sometimes labelled "Scope",
+  "Frame Trigger Out", or "Volume Clock" on the I/O panel at the back of the
+  Prairie View hardware) that pulses once per acquired 2D frame, or once per
+  completed z-volume.  Recording that signal back into a DAQ DI line provides a
+  hardware timestamp for every microscope frame at sub-millisecond precision.
+
+Actions:
+
+- wire a BNC cable from the Prairie View **Frame Clock** output to a free DI line
+  on the NI USB-6353.  The line is defined in `hardware.yaml` as `MICRO_FRAME_CLOCK`
+  (currently assigned to `Dev1/port0/line14` — update the pin if the physical
+  wiring differs).
+- the DI task (`DI_READY`) in `run_protocol.py` is already hardware-slaved to the
+  DO sample clock and starts on the DO start trigger, so no code changes are
+  needed once the line is present in `hardware.yaml`.
+- after a run, `capture_di.npz` contains the full `MICRO_FRAME_CLOCK` boolean
+  array sampled at the same rate as every other DAQ channel.
+
+Reading frame timestamps post-hoc:
+
+```python
+import numpy as np, json
+
+meta   = json.load(open("data/runs/<run>/meta.json"))
+di_npz = np.load("data/runs/<run>/capture_di.npz", allow_pickle=True)
+di     = di_npz["data"].astype(bool)
+names  = list(di_npz["names"])
+
+frame_row = names.index("MICRO_FRAME_CLOCK")
+# Rising edges = start of each frame/volume
+edges = np.where(np.diff(di[frame_row].astype(int)) > 0)[0] + 1
+
+sr = meta["sample_rate"]
+t0 = meta["t0_utc"]          # Unix timestamp captured immediately before do_task.start()
+
+frame_times_s   = edges / sr            # seconds from DAQ hardware t0
+frame_times_utc = t0 + frame_times_s    # absolute wall-clock time
+```
+
+  `t0_utc` and `t0_perf_counter` are written to `meta.json` by `run_protocol.py`
+  immediately before `do_task.start()`, so they align software logs (serial, FicTrac
+  perf_counter timestamps) to the same hardware t0.
+
+Validation:
+
+- count rising edges on `MICRO_FRAME_CLOCK` and confirm the count matches the
+  expected number of frames (duration × frame rate).
+- compare the first rising edge time to `t0_utc` plus the start-trigger delay to
+  confirm Prairie View latency is stable.
+- visually overlay `MICRO_FRAME_CLOCK` edges with valve transitions and camera
+  trigger pulses in the preview HTML.
+
+Success criterion:
+
+- every microscope frame has a hardware timestamp with precision equal to one DAQ
+  sample period (1 ms at 1 kHz, 0.1 ms at 10 kHz).
+- the frame count matches the expected number exactly, confirming no frames were
+  dropped or double-counted.
+
 ### Phase 5: Move MFC control from serial to DAQ AO
 
 Goal:
@@ -394,17 +469,27 @@ Goal:
 
 Actions:
 
-- add a DAQ start-sync marker line or explicit start event in the waveform
-- derive exported timestamps from DAQ sample indices wherever possible
-- keep host wall-clock logs only as secondary metadata
+- `run_protocol.py` now records `t0_utc` (`time.time()`) and `t0_perf_counter`
+  (`time.perf_counter()`) into `meta.json` immediately before `do_task.start()`.
+  These are the anchors that connect hardware sample indices to wall time and to
+  any software timestamps (FicTrac arrivals, serial logs) captured in the same
+  process.
+
+  Conversion formulas:
+
+  - **sample index → wall clock**: `t_wall = meta["t0_utc"] + sample_idx / sample_rate`
+  - **perf_counter event → sample index**: `idx = round((t_perf - meta["t0_perf_counter"]) * sample_rate)`
+
+- derive exported timestamps from DAQ sample indices wherever possible.
+- keep host wall-clock logs only as secondary metadata.
 
 Validation:
 
-- confirm exported event tables are reconstructible from DAQ sample indices alone
+- confirm exported event tables are reconstructible from DAQ sample indices alone.
 
 Success criterion:
 
-- the saved analysis data reflects DAQ time first and host time second
+- the saved analysis data reflects DAQ time first and host time second.
 
 ### Phase 8: Quantify transport delays separately from clock synchronization
 
@@ -456,6 +541,7 @@ The strongest version of that design is:
 - DAQ commits valve changes
 - DAQ drives or timestamps camera events
 - DAQ drives MFC setpoints and reads MFC feedback
+- DAQ records Bruker frame clock output to timestamp every microscope frame
 - Teensy only stages data ahead of commit
 - FicTrac is aligned through hardware camera timing, not host callback arrival
 

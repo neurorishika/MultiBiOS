@@ -7,6 +7,42 @@ function Test-UseActiveRigPython {
 }
 
 
+function Resolve-RigPythonExe {
+    param(
+        [string]$CondaEnv,
+        [string]$CondaExe
+    )
+
+    $candidates = @()
+
+    if ($env:CONDA_PREFIX -and $env:CONDA_DEFAULT_ENV -eq $CondaEnv) {
+        $candidates += (Join-Path $env:CONDA_PREFIX "python.exe")
+    }
+
+    if ($CondaExe) {
+        $condaScriptsDir = Split-Path -Parent $CondaExe
+        if ($condaScriptsDir) {
+            $condaRoot = Split-Path -Parent $condaScriptsDir
+            if ($condaRoot) {
+                $candidates += (Join-Path $condaRoot "envs/$CondaEnv/python.exe")
+            }
+        }
+    }
+
+    if ($env:USERPROFILE) {
+        $candidates += (Join-Path $env:USERPROFILE ".conda/envs/$CondaEnv/python.exe")
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+
 function Invoke-RigPython {
     param(
         [string]$CondaEnv,
@@ -16,6 +52,12 @@ function Invoke-RigPython {
 
     if (Test-UseActiveRigPython -CondaEnv $CondaEnv) {
         & python @PythonArgs
+        return
+    }
+
+    $pythonExe = Resolve-RigPythonExe -CondaEnv $CondaEnv -CondaExe $CondaExe
+    if ($pythonExe) {
+        & $pythonExe @PythonArgs
         return
     }
 
@@ -43,6 +85,11 @@ function Start-RigPythonProcess {
 
     if (Test-UseActiveRigPython -CondaEnv $CondaEnv) {
         return Start-Process -FilePath "python" -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
+    }
+
+    $pythonExe = Resolve-RigPythonExe -CondaEnv $CondaEnv -CondaExe $CondaExe
+    if ($pythonExe) {
+        return Start-Process -FilePath $pythonExe -ArgumentList $PythonArgs -WorkingDirectory $RepoRoot -PassThru -WindowStyle Normal
     }
 
     if (-not (Test-Path $CondaExe)) {

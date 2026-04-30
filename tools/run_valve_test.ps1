@@ -2,7 +2,7 @@ param(
     [string]$CondaExe = "C:/ProgramData/miniconda3/Scripts/conda.exe",
     [string]$CondaEnv = "multibios-blackfly",
     [string]$HardwarePath = "config/hardware.yaml",
-    [string]$ProtocolPath = "config/switch_valve_test.yaml",
+    [string]$ProtocolPath = "config/serial_valve_round_independent.yaml",
     [switch]$DryRun,
     [switch]$Interactive,
     [switch]$VerboseOutput,
@@ -42,6 +42,7 @@ if ($PSBoundParameters.ContainsKey("Seed")) {
 }
 
 Write-Host "Running valve protocol test with $ProtocolPath..." -ForegroundColor Yellow
+Write-Host "Default protocol walks ODOR1->ODOR5 while pulsing left and right valves independently." -ForegroundColor DarkYellow
 Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs $pythonArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Valve protocol test failed with exit code $LASTEXITCODE"

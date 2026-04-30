@@ -1,17 +1,8 @@
 # Short validation config for live FicTrac experiment-path checks.
-# Base FicTrac settings now come from config/hardware.yaml. Keep any FicTrac
-# keys here only as temporary deprecated overrides during migration.
-
-teensy_port: "COM4"
-teensy_baud: 115200
-
-other_camera_exposure_us: 4500
-other_camera_roi_width: 400
-other_camera_roi_height: 400
+# All rig and camera-recording settings now come from config/hardware.yaml.
+# Keep values here only as temporary deprecated overrides during migration.
 
 mfc_mode: "none"
-
-latch_interval_ms: 10.0
 
 data_dir: "data/runs"
 open_explorer: false

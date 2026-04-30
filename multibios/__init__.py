@@ -11,6 +11,7 @@ __getattr__, __dir__, __all__ = lazy_loader.attach(
         "daq_triggers",
         "teensy_controller",
         "experiment",
+        "serial",
         "blackfly",
     },
     submod_attrs={
@@ -21,6 +22,11 @@ __getattr__, __dir__, __all__ = lazy_loader.attach(
             "SMALL_STATE_CODE",
             "TimingConfig",
             "schema",
+        ],
+        "run_protocol": [
+            "RunProtocolConfig",
+            "ExperimentCallback",
+            "load_run_protocol_config",
         ],
         "daq_triggers": [
             "DAQTriggerManager",
@@ -56,9 +62,12 @@ __all__ = [
     "DAQTriggerManager",
     "TriggerConfig",
     "build_trigger_waveform",
+    "RunProtocolConfig",
+    "load_run_protocol_config",
     "teensy_controller",
     "TeensyController",
     "experiment",
+    "serial",
     "blackfly",
     "ExperimentRunner",
     "ExperimentConfig",

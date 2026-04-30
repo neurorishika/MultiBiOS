@@ -32,27 +32,16 @@ teensy_baud: 115200
 # The old experiment-level FicTrac keys are deprecated and should only be used
 # as temporary overrides while migrating older configs.
 
-# ─── Raw Camera Recording ────────────────────────────────────────────────
-# When enabled, MultiBiOS writes a run-local FicTrac config that turns on
-# FicTrac's own raw video recording for the live ball camera and sets its
-# output base inside the experiment folder. The non-FicTrac Blackfly camera
-# is recorded separately as a raw Mono8 frame stream with per-frame metadata.
-# Both streams follow the same DAQ trigger train, so their nominal fps is the
-# hardware-triggered camera rate from the protocol timing section.
-save_camera_raw_video: false
-
-# FicTrac output codec for the ball-camera raw video.
-# Valid values come from FicTrac: h264, xvid, mpg4, mjpg, raw.
-fictrac_raw_video_codec: "raw"
-
-# Non-FicTrac camera recorder settings.
-other_camera_timeout_ms: 250
-other_camera_queue_size: 512
-other_camera_stream_buffer_count: 256
-other_camera_exposure_us:
-other_camera_roi_width: 400
-other_camera_roi_height: 400
-other_camera_binning: 1
+# Camera recording settings moved to config/hardware.yaml under:
+#
+#   camera_recording:
+#     save_fictrac_camera_video: ...
+#     save_second_camera_video: ...
+#     second_camera_index: ...
+#     verify_no_dropped_frames: ...
+#     convert_second_camera_bin_to_lossless_mkv: ...
+#
+# Keep deprecated overrides here only while migrating older rig configs.
 
 # ─── Mass Flow Controllers ────────────────────────────────────────────────
 # MFC control mode:

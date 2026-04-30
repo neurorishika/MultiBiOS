@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Optional, Protocol, Tuple
 
 import numpy as np
+
+from multibios.fictrac_runtime import build_fictrac_subprocess_env
 
 
 @dataclass(slots=True)
@@ -399,6 +402,16 @@ class FicTracDriver:
         self._fictrac_terminated_by_driver = False
         self.frame_cnt = 0
         self.skipped_frames = 0
+        self._launch_wall_time: float | None = None
+        self._first_packet_wall_time: float | None = None
+        self._initial_wait_timeout_s: float | None = 60.0
+        self._diagnostics_path: Optional[Path] = None
+        self._diagnostics: dict[str, object] = {
+            "config_file": config_file,
+            "console_output_file": console_ouput_file,
+            "remote_endpoint_url": remote_endpoint_url,
+            "start_fictrac": remote_endpoint_url is None,
+        }
 
         if remote_endpoint_url is not None:
             parts = str(remote_endpoint_url).split(":")
@@ -409,6 +422,70 @@ class FicTracDriver:
             self.start_fictrac = True
             self.udp_port = 5556
             self.fictrac_bin_fullpath = self._resolve_binary(fic_trac_bin_path)
+
+        self._load_runtime_config_diagnostics()
+
+    def _load_runtime_config_diagnostics(self) -> None:
+        if not self.config_file:
+            return
+
+        config_path = Path(self.config_file).expanduser().resolve()
+        self._diagnostics_path = config_path.with_name("fictrac_driver_diagnostics.json")
+        config_values: dict[str, str] = {}
+        try:
+            with open(config_path, encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or ":" not in line:
+                        continue
+                    key, _, value = line.partition(":")
+                    config_values[key.strip()] = value.strip()
+        except OSError as exc:
+            self._diagnostics["config_read_error"] = str(exc)
+            self._write_diagnostics()
+            return
+
+        self._diagnostics["config_values"] = {
+            key: config_values.get(key)
+            for key in (
+                "src_fn",
+                "src_fps",
+                "src_first_frame_timeout_ms",
+                "sock_host",
+                "sock_port",
+                "save_raw",
+                "vid_codec",
+                "output_fn",
+            )
+            if key in config_values
+        }
+
+        timeout_ms_raw = config_values.get("src_first_frame_timeout_ms")
+        if timeout_ms_raw is not None:
+            try:
+                timeout_ms = int(float(timeout_ms_raw))
+            except ValueError:
+                self._diagnostics["src_first_frame_timeout_ms_parse_error"] = timeout_ms_raw
+            else:
+                self._initial_wait_timeout_s = None if timeout_ms <= 0 else timeout_ms / 1000.0
+
+        sock_port_raw = config_values.get("sock_port")
+        if sock_port_raw is not None:
+            try:
+                self.udp_port = int(sock_port_raw)
+            except ValueError:
+                self._diagnostics["sock_port_parse_error"] = sock_port_raw
+
+        self._diagnostics["initial_wait_timeout_s"] = self._initial_wait_timeout_s
+        self._write_diagnostics()
+
+    def _write_diagnostics(self) -> None:
+        if self._diagnostics_path is None:
+            return
+        try:
+            self._diagnostics_path.write_text(json.dumps(self._diagnostics, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def _resolve_binary(self, fic_trac_bin_path: str | None) -> str:
         if fic_trac_bin_path:
@@ -425,6 +502,13 @@ class FicTracDriver:
     def run(self) -> None:
         self.track_change_callback.setup_callback()
         udp_socket = self._setup_udp_socket()
+        self._diagnostics["udp_port"] = self.udp_port
+        self._diagnostics["binary_path"] = self.fictrac_bin_fullpath
+        self._diagnostics["process_cwd"] = os.path.dirname(self.fictrac_bin_fullpath) or None
+        self._diagnostics["pid"] = None
+        self._launch_wall_time = time.monotonic()
+        self._diagnostics["launch_wall_time"] = self._launch_wall_time
+        self._write_diagnostics()
 
         try:
             if self.start_fictrac:
@@ -433,7 +517,9 @@ class FicTracDriver:
 
                 popen_kwargs: dict[str, object] = {
                     "cwd": os.path.dirname(self.fictrac_bin_fullpath) or None,
-                    "env": os.environ.copy(),
+                    "env": build_fictrac_subprocess_env(
+                        fictrac_bin_path=self.fictrac_bin_fullpath,
+                    ),
                     "text": True,
                 }
 
@@ -454,6 +540,9 @@ class FicTracDriver:
                     [self.fictrac_bin_fullpath, os.path.abspath(self.config_file)],
                     **popen_kwargs,
                 )
+                self._diagnostics["pid"] = self.fictrac_process.pid
+                self._diagnostics["spawned"] = True
+                self._write_diagnostics()
 
             self._process_messages(udp_socket)
 
@@ -482,6 +571,13 @@ class FicTracDriver:
                     f"Consult the FicTrac console output file ({self.console_output_file})."
                 )
         finally:
+            if self.fictrac_process is not None:
+                self._diagnostics["final_returncode"] = self.fictrac_process.poll()
+            self._diagnostics["frame_cnt"] = self.frame_cnt
+            self._diagnostics["skipped_frames"] = self.skipped_frames
+            self._diagnostics["first_packet_wall_time"] = self._first_packet_wall_time
+            self._diagnostics["terminated_by_driver"] = self._fictrac_terminated_by_driver
+            self._write_diagnostics()
             if self.fictrac_process is not None and not self._fictrac_terminated_by_driver:
                 self.fictrac_process.terminate()
                 self._fictrac_terminated_by_driver = True
@@ -503,24 +599,33 @@ class FicTracDriver:
         time_history: list[float] = []
         last_packet_wall_time = time.monotonic()
         last_state: Optional[FicTracState] = None
-        connect_retries = 0
+        initial_wait_start = time.monotonic()
 
         while True:
             try:
                 raw, _ = udp_socket.recvfrom(4096)
                 payload = raw.decode("utf-8").strip()
                 last_packet_wall_time = time.monotonic()
-                connect_retries = 0
+                if self._first_packet_wall_time is None:
+                    self._first_packet_wall_time = last_packet_wall_time
+                    self._diagnostics["first_packet_wall_time"] = self._first_packet_wall_time
+                    self._write_diagnostics()
             except socket.timeout:
                 if not self.start_fictrac:
                     raise RuntimeError("Socket timed out. Couldn't reach FicTrac.")
 
                 if self.fictrac_process is not None and self.fictrac_process.poll() is not None:
+                    self._diagnostics["initial_wait_process_exit_returncode"] = self.fictrac_process.returncode
+                    self._write_diagnostics()
                     break
 
                 if self.frame_cnt == 0:
-                    connect_retries += 1
-                    if connect_retries > self.max_num_connect_retries:
+                    if (
+                        self._initial_wait_timeout_s is not None
+                        and time.monotonic() - initial_wait_start >= self._initial_wait_timeout_s
+                    ):
+                        self._diagnostics["initial_wait_timeout_hit"] = self._initial_wait_timeout_s
+                        self._write_diagnostics()
                         break
                     continue
 

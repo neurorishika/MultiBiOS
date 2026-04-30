@@ -8,7 +8,7 @@ For operator-facing hardware checks, use the PowerShell wrappers in [tools](../t
 
 - [tools/run_fictrac_probe.ps1](../tools/run_fictrac_probe.ps1) for a short live FicTrac end-to-end probe with optional trigger train setup
 - [tools/run_mfc_test.ps1](../tools/run_mfc_test.ps1) for the analog MFC monitor and sweep modes
-- [tools/run_valve_test.ps1](../tools/run_valve_test.ps1) for hardware-clocked valve protocol checks, defaulting to [config/switch_valve_test.yaml](../config/switch_valve_test.yaml)
+- [tools/run_valve_test.ps1](../tools/run_valve_test.ps1) for hardware-clocked valve protocol checks, defaulting to an independent left-then-right serial round via [config/serial_valve_round_independent.yaml](../config/serial_valve_round_independent.yaml)
 - [tools/run_fictrac_config_gui.ps1](../tools/run_fictrac_config_gui.ps1) for trigger-aware FicTrac reconfiguration
 
 These wrappers prefer the active `multibios-blackfly` environment when it is already activated and fall back to `conda run` otherwise.

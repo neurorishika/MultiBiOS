@@ -1,8 +1,23 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Mapping, Sequence
+
+
+_CONFLICTING_ENV_VARS = (
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PREFIX",
+    "CONDA_PROMPT_MODIFIER",
+    "CONDA_EXE",
+    "CONDA_PYTHON_EXE",
+    "CONDA_SHLVL",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONEXECUTABLE",
+    "VIRTUAL_ENV",
+)
 
 
 def _split_env_paths(value: str | None) -> List[Path]:
@@ -47,6 +62,60 @@ def _iter_candidate_runtime_dirs() -> List[Path]:
         if candidate.is_dir():
             ordered.append(candidate)
     return ordered
+
+
+def _is_within_root(path_str: str, root: Path) -> bool:
+    try:
+        candidate = Path(path_str).resolve(strict=False)
+        root_resolved = root.resolve(strict=False)
+    except OSError:
+        return False
+
+    try:
+        common = os.path.commonpath([str(candidate), str(root_resolved)])
+    except ValueError:
+        return False
+    return os.path.normcase(common) == os.path.normcase(str(root_resolved))
+
+
+def build_fictrac_subprocess_env(
+    *,
+    fictrac_bin_path: str | Path | None = None,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    if os.name != "nt":
+        return env
+
+    for key in _CONFLICTING_ENV_VARS:
+        env.pop(key, None)
+
+    blocked_roots: list[Path] = []
+    conda_prefix = env.get("CONDA_PREFIX")
+    if conda_prefix:
+        blocked_roots.append(Path(conda_prefix))
+    blocked_roots.append(Path(sys.executable).resolve(strict=False).parent)
+
+    path_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part.strip()]
+    filtered_parts: list[str] = []
+    seen: set[str] = set()
+
+    prepend_candidates: list[str] = []
+    if fictrac_bin_path is not None:
+        prepend_candidates.append(str(Path(fictrac_bin_path).expanduser().resolve().parent))
+    prepend_candidates.extend(str(path) for path in _iter_candidate_runtime_dirs())
+
+    for part in [*prepend_candidates, *path_parts]:
+        normalized = os.path.normcase(part)
+        if normalized in seen:
+            continue
+        if any(_is_within_root(part, root) for root in blocked_roots):
+            continue
+        seen.add(normalized)
+        filtered_parts.append(part)
+
+    env["PATH"] = os.pathsep.join(filtered_parts)
+    return env
 
 
 def prepare_fictrac_runtime() -> List[str]:
