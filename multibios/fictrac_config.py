@@ -21,14 +21,20 @@ def resolve_fictrac_config_path(
     *,
     hardware_path: str | Path | None = None,
 ) -> Path:
+    canonical = default_fictrac_config_path(hardware_path).resolve()
     if config_path is None or str(config_path).strip() == "":
-        return default_fictrac_config_path(hardware_path)
+        return canonical
 
     candidate = Path(str(config_path)).expanduser()
-    if candidate.is_absolute():
-        return candidate
+    if not candidate.is_absolute():
+        if hardware_path is not None:
+            candidate = Path(hardware_path).expanduser().resolve().parent / candidate
+        else:
+            candidate = repo_root() / candidate
 
-    if hardware_path is not None:
-        return (Path(hardware_path).expanduser().resolve().parent / candidate).resolve()
-
-    return (repo_root() / candidate).resolve()
+    resolved = candidate.resolve()
+    if resolved != canonical:
+        raise ValueError(
+            f"FicTrac config override is not allowed. Expected canonical config at {canonical}, got {resolved}."
+        )
+    return canonical

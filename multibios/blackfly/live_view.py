@@ -617,6 +617,22 @@ def _configure_triggered_exposure(nm, exposure_us: float) -> None:
     print("  [warn] Could not set a fixed exposure time for trigger mode.")
 
 
+def _configure_image_tuning(nm, *, gain_db: float | None = None, gamma: float | None = None) -> None:
+    if gain_db is not None:
+        _enum_set(nm, "GainAuto", "Off")
+        if _float_set(nm, "Gain", gain_db) or _float_set(nm, "GainAbs", gain_db):
+            print(f"  Gain fixed at {gain_db:.2f} dB.")
+        else:
+            print("  [warn] Could not set a fixed gain value.")
+
+    if gamma is not None:
+        _bool_set(nm, "GammaEnable", True, silent=True)
+        if _float_set(nm, "Gamma", gamma):
+            print(f"  Gamma fixed at {gamma:.3f}.")
+        else:
+            print("  [warn] Could not set a fixed gamma value.")
+
+
 def configure_camera_software_mode(cam, fps: float) -> None:
     """Free-running software-viewer mode."""
     _configure_common(cam, fps)
@@ -629,7 +645,9 @@ def configure_camera_software_mode(cam, fps: float) -> None:
 def configure_camera_daq_mode(cam, exposure_us: float = None,
                               roi_width: int = None,
                               roi_height: int = None,
-                              binning: int = 1) -> None:
+                              binning: int = 1,
+                              gain_db: float | None = None,
+                              gamma: float | None = None) -> None:
     """DAQ-triggered mode: FrameStart on Line0, ExposureActive on Line2.
 
     Parameters
@@ -682,7 +700,11 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
 
     # Set FOV (full or reduced ROI)
     if roi_width and roi_width > 0 and roi_height and roi_height > 0:
-        _set_centered_roi(cam, roi_width, roi_height)
+        try:
+            _set_centered_roi(cam, roi_width, roi_height)
+        except RuntimeError as exc:
+            print(f"  [warn] Could not apply requested ROI {roi_width}x{roi_height}: {exc}")
+            _set_full_fov(cam)
     elif roi_height and roi_height > 0:
         _set_roi_height(cam, roi_height)
     else:
@@ -691,6 +713,7 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
     _disable_frame_rate_control(nm)
     _maximize_link_throughput(nm)
     _configure_triggered_exposure(nm, exposure_us)
+    _configure_image_tuning(nm, gain_db=gain_db, gamma=gamma)
     _enum_set(nm, "TriggerSelector", "FrameStart")
     _enum_set(nm, "TriggerSource", DAQ_TRIGGER_LINE)
     _enum_set(nm, "TriggerActivation", "RisingEdge")
@@ -725,6 +748,59 @@ def configure_camera_daq_mode(cam, exposure_us: float = None,
     else:
         print(f"  DAQ trigger on {DAQ_TRIGGER_LINE} (rising edge), overlap OFF.")
         print("  Trigger overlap is unavailable; expect the accepted trigger rate to be limited by exposure plus sensor readout.")
+
+
+def configure_camera_index_daq_mode(
+    camera_index: int,
+    *,
+    exposure_us: float | None = None,
+    roi_width: int | None = None,
+    roi_height: int | None = None,
+    binning: int = 1,
+    gain_db: float | None = None,
+    gamma: float | None = None,
+) -> None:
+    """Open one camera by index, apply DAQ-triggered settings, and release it."""
+    system = None
+    cam_list = None
+    cam = None
+
+    try:
+        system = PySpin.System.GetInstance()
+        cam_list = system.GetCameras()
+        camera_count = cam_list.GetSize()
+        if camera_index < 0 or camera_index >= camera_count:
+            raise RuntimeError(
+                f"Requested camera index {camera_index}, but only {camera_count} camera(s) were found."
+            )
+
+        cam = cam_list.GetByIndex(camera_index)
+        cam.Init()
+        configure_camera_daq_mode(
+            cam,
+            exposure_us=exposure_us,
+            roi_width=roi_width,
+            roi_height=roi_height,
+            binning=binning,
+            gain_db=gain_db,
+            gamma=gamma,
+        )
+    finally:
+        if cam is not None:
+            try:
+                cam.DeInit()
+            except Exception:
+                pass
+        if cam_list is not None:
+            try:
+                cam_list.Clear()
+            except Exception:
+                pass
+        if system is not None:
+            try:
+                system.ReleaseInstance()
+            except Exception:
+                pass
 
 
 def configure_camera_daq_freerun_mode(cam, fps: float = 60.0,

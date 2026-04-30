@@ -108,7 +108,7 @@ Always validate the protocol before touching real hardware:
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.run_protocol `
-  --yaml config/odor_lateralization.yaml `
+  --yaml protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --dry-run --interactive
 ```
@@ -150,7 +150,7 @@ Before a long real experiment, run one bounded hardware sanity check on the rig:
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.run_protocol `
-  --yaml config/short_protocol.yaml `
+  --yaml protocols/short_protocol.yaml `
   --hardware config/hardware.yaml `
   --verbose --progress
 ```
@@ -165,7 +165,7 @@ That validated command finishes on its own in a few seconds and confirms the cur
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.run_protocol `
-  --yaml config/odor_lateralization.yaml `
+  --yaml protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --verbose --progress
 ```
@@ -177,7 +177,7 @@ If `config/hardware.yaml` contains a `fictrac:` block, `run_protocol` now also:
 - waits for the first UDP frame using `fictrac.startup_timeout_s`
 - writes run-local FicTrac artifacts into the same `data/runs/<timestamp>/` folder
 
-Use `fictrac.first_frame_timeout_ms: 0` to make the native FicTrac layer wait indefinitely for the first frame, and `fictrac.startup_timeout_s: 0` to make the Python runner wait indefinitely for the first UDP frame.
+The canonical config uses `fictrac.first_frame_timeout_ms: 0`, so the native FicTrac layer waits indefinitely for the first frame by default. Set `fictrac.startup_timeout_s: 0` as well when you want the Python runner to wait indefinitely for the first UDP frame.
 
 The terminal prints a real-time progress bar:
 
@@ -286,7 +286,7 @@ conda run -n multibios-blackfly python -m multibios.run_protocol --yaml config/<
 conda run -n multibios-blackfly python -m multibios.viz_protocol data/runs/<timestamp>/
 
 # Run hardware sanity check (short protocol, no animal needed)
-conda run -n multibios-blackfly python -m multibios.run_protocol --yaml config/short_protocol.yaml --hardware config/hardware.yaml --verbose --progress
+conda run -n multibios-blackfly python -m multibios.run_protocol --yaml protocols/short_protocol.yaml --hardware config/hardware.yaml --verbose --progress
 
 ```
 

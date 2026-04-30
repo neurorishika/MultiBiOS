@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import warnings
 import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from multibios.blackfly.triggered_camera_record import \
     postprocess_triggered_camera_recording
 from multibios.fictrac_client import FicTracState
+from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.protocol.control_plan import compile_control_plan
 from multibios.run_protocol import (ExperimentCallback, _count_rising_edges,
                                     _prepare_fictrac_runtime_config,
-                                    load_run_protocol_config)
+                                    _safe_stop_task, load_run_protocol_config)
 
 
 def _state(frame_cnt: int) -> FicTracState:
@@ -97,6 +98,8 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "  second_camera_roi_width: 512\n"
         "  second_camera_roi_height: 512\n"
         "  second_camera_binning: 2\n"
+        "  second_camera_gain_db: 7.5\n"
+        "  second_camera_gamma: 0.8\n"
         "  verify_no_dropped_frames: true\n"
         "  convert_second_camera_bin_to_lossless_mkv: false\n"
         "mfc:\n"
@@ -111,7 +114,10 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "blackfly_defaults:\n"
         "  exposure_us: 4500\n"
         "  roi_width: 400\n"
-        "  roi_height: 400\n",
+        "  roi_height: 400\n"
+        "  binning: 1\n"
+        "  gain_db: 3.5\n"
+        "  gamma: 1.1\n",
         encoding="utf-8",
     )
 
@@ -123,6 +129,12 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
     assert cfg.save_second_camera_video is True
     assert cfg.second_camera_index == 1
     assert cfg.fictrac_raw_video_codec == "mjpg"
+    assert cfg.blackfly_exposure_us == 4500.0
+    assert cfg.blackfly_roi_width == 400
+    assert cfg.blackfly_roi_height == 400
+    assert cfg.blackfly_binning == 1
+    assert cfg.blackfly_gain_db == 3.5
+    assert cfg.blackfly_gamma == 1.1
     assert cfg.second_camera_timeout_ms == 125
     assert cfg.second_camera_queue_size == 32
     assert cfg.second_camera_stream_buffer_count == 64
@@ -130,6 +142,8 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
     assert cfg.second_camera_roi_width == 512
     assert cfg.second_camera_roi_height == 512
     assert cfg.second_camera_binning == 2
+    assert cfg.second_camera_gain_db == 7.5
+    assert cfg.second_camera_gamma == 0.8
     assert cfg.verify_camera_recording is True
     assert cfg.convert_second_camera_bin_to_lossless_mkv is False
     assert cfg.data_dir == "C:/data/runs"
@@ -157,7 +171,7 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
     assert cfg.fictrac_timeout_s == 7.0
 
 
-def test_load_run_protocol_config_warns_for_deprecated_hardware_keys(tmp_path: Path) -> None:
+def test_load_run_protocol_config_rejects_experiment_hardware_overrides(tmp_path: Path) -> None:
     cfg_path = tmp_path / "experiment_config.yaml"
     cfg_path.write_text(
         "teensy_port: COM7\n"
@@ -172,24 +186,58 @@ def test_load_run_protocol_config_warns_for_deprecated_hardware_keys(tmp_path: P
         encoding="utf-8",
     )
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cfg = load_run_protocol_config(cfg_path, hardware_path=tmp_path / "hardware.yaml")
+    with pytest.raises(ValueError, match="single source of truth"):
+        load_run_protocol_config(cfg_path, hardware_path=tmp_path / "hardware.yaml")
 
-    assert cfg.fictrac_config == "C:/deprecated/config_camera.txt"
-    assert cfg.fictrac_bin == "C:/deprecated/fictrac.exe"
-    assert cfg.fictrac_console_out == "deprecated.txt"
-    assert cfg.fictrac_first_frame_timeout_ms == 0
-    assert cfg.fictrac_startup_timeout_s == 90.0
-    assert cfg.fictrac_timeout_s == 5.0
-    assert cfg.save_fictrac_camera_video is True
-    assert cfg.second_camera_timeout_ms == 99
-    assert len(caught) == 9
+
+def test_resolve_fictrac_config_path_rejects_noncanonical_path(tmp_path: Path) -> None:
+    hardware_path = tmp_path / "hardware.yaml"
+    hardware_path.write_text("fictrac:\n  config: config_camera.txt\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="FicTrac config override is not allowed"):
+        resolve_fictrac_config_path("alt_camera.txt", hardware_path=hardware_path)
+
+
+def test_load_run_protocol_config_rejects_non_mapping_yaml(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "experiment_config.yaml"
+    cfg_path.write_text("- not\n- a mapping\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain a mapping"):
+        load_run_protocol_config(cfg_path, hardware_path=tmp_path / "hardware.yaml")
 
 
 def test_count_rising_edges_matches_camera_pulses() -> None:
     waveform = np.array([False, True, True, False, True, False, False, True], dtype=np.bool_)
     assert _count_rising_edges(waveform) == 3
+
+
+def test_safe_stop_task_stops_without_raising() -> None:
+    class DummyTask:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class DummyLogger:
+        def debug(self, *args, **kwargs) -> None:
+            return None
+
+    task = DummyTask()
+    _safe_stop_task(task, DummyLogger(), "dummy")
+    assert task.stopped is True
+
+
+def test_safe_stop_task_ignores_stop_errors() -> None:
+    class DummyTask:
+        def stop(self) -> None:
+            raise RuntimeError("boom")
+
+    class DummyLogger:
+        def debug(self, *args, **kwargs) -> None:
+            return None
+
+    _safe_stop_task(DummyTask(), DummyLogger(), "dummy")
 
 
 def test_compile_control_plan_expands_states_and_windows() -> None:

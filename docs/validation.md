@@ -3,7 +3,7 @@
 ## Functional tests (no valves)
 
 1. **Preview compile**  
-   `python -m multibios.run_protocol --yaml config/example_protocol.yaml --hardware config/hardware.yaml --dry-run --interactive --seed 1`
+   `python -m multibios.run_protocol --yaml protocols/example_protocol.yaml --hardware config/hardware.yaml --dry-run --interactive --seed 1`
    - Inspect `preview.html`. Confirm state rails read sensibly; RCK markers align to commits.
 
 2. **Guardrail test**  

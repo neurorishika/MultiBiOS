@@ -10,7 +10,7 @@
 #   - an internal MultiBiOS FicTrac client for continuous ball tracking
 #
 # The protocol itself (phases, timing, odor sequences) is still defined in
-# the protocol YAML (e.g. config/example_protocol.yaml).
+# the protocol YAML (e.g. protocols/example_protocol.yaml).
 
 # ─── Teensy v2 Serial Controller ──────────────────────────────────────────
 # The COM port where the Teensy 4.1 running v2_usb_serial_controller is

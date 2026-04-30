@@ -38,7 +38,7 @@ Usage
 ::
 
     python -m multibios.experiment \\
-        --protocol config/example_protocol.yaml \\
+        --protocol protocols/example_protocol.yaml \\
         --hardware config/hardware.yaml \\
         --experiment config/experiment_config.yaml \\
         --dry-run          # preview, no hardware
@@ -258,9 +258,14 @@ def _load_yaml_file(path: str | Path | None) -> dict[str, Any]:
         return {}
     yaml_path = Path(path)
     if not yaml_path.exists():
-        return {}
+        raise FileNotFoundError(f"YAML file not found: {yaml_path}")
     with open(yaml_path, encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+        data = yaml.safe_load(handle)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML file must contain a mapping at top level: {yaml_path}")
+    return data
 
 
 def _yaml_section(raw: dict[str, Any], key: str) -> dict[str, Any]:
@@ -278,6 +283,72 @@ def _warn_deprecated_experiment_key(
         f"experiment_config key '{key}' is deprecated; move it to the {target_block} block in {target}",
         DeprecationWarning,
         stacklevel=3,
+    )
+
+
+_EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
+    "teensy_port": "teensy.port",
+    "teensy_baud": "teensy.baud",
+    "fictrac_config": "fictrac.config",
+    "fictrac_bin": "fictrac.bin",
+    "fictrac_console_out": "fictrac.console_out",
+    "fictrac_first_frame_timeout_ms": "fictrac.first_frame_timeout_ms",
+    "fictrac_startup_timeout_s": "fictrac.startup_timeout_s",
+    "fictrac_timeout_s": "fictrac.timeout_s",
+    "save_fictrac_camera_video": "camera_recording.save_fictrac_camera_video",
+    "save_camera_raw_video": "camera_recording.save_fictrac_camera_video",
+    "fictrac_raw_video_codec": "camera_recording.fictrac_raw_video_codec",
+    "save_second_camera_video": "camera_recording.save_second_camera_video",
+    "second_camera_index": "camera_recording.second_camera_index",
+    "second_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
+    "other_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
+    "second_camera_queue_size": "camera_recording.second_camera_queue_size",
+    "other_camera_queue_size": "camera_recording.second_camera_queue_size",
+    "second_camera_stream_buffer_count": "camera_recording.second_camera_stream_buffer_count",
+    "other_camera_stream_buffer_count": "camera_recording.second_camera_stream_buffer_count",
+    "second_camera_exposure_us": "camera_recording.second_camera_exposure_us or blackfly_defaults.exposure_us",
+    "other_camera_exposure_us": "camera_recording.second_camera_exposure_us or blackfly_defaults.exposure_us",
+    "second_camera_roi_width": "camera_recording.second_camera_roi_width or blackfly_defaults.roi_width",
+    "other_camera_roi_width": "camera_recording.second_camera_roi_width or blackfly_defaults.roi_width",
+    "second_camera_roi_height": "camera_recording.second_camera_roi_height or blackfly_defaults.roi_height",
+    "other_camera_roi_height": "camera_recording.second_camera_roi_height or blackfly_defaults.roi_height",
+    "second_camera_binning": "camera_recording.second_camera_binning or blackfly_defaults.binning",
+    "other_camera_binning": "camera_recording.second_camera_binning or blackfly_defaults.binning",
+    "verify_camera_recording": "camera_recording.verify_no_dropped_frames",
+    "convert_second_camera_bin_to_lossless_mkv": "camera_recording.convert_second_camera_bin_to_lossless_mkv",
+    "mfc_mode": "mfc.mode",
+    "mfc_device_map": "mfc.device_map",
+    "alicat_ports": "mfc.alicat_ports",
+    "alicat_baud": "mfc.alicat_baud",
+    "alicat_expected_ids": "mfc.alicat_expected_ids",
+    "latch_interval_ms": "daq.latch_interval_ms",
+    "data_dir": "data_output.data_dir",
+    "open_explorer": "data_output.open_explorer",
+    "explorer_port": "data_output.explorer_port",
+    "mfc_live_interval_s": "mfc.live_interval_s",
+}
+
+
+def _reject_experiment_hardware_overrides(
+    raw: dict[str, Any],
+    *,
+    config_path: str | Path | None,
+    hardware_path: str | Path | None,
+) -> None:
+    violations = [
+        f"{key} -> {target}"
+        for key, target in _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS.items()
+        if key in raw
+    ]
+    if not violations:
+        return
+
+    config_label = str(config_path) if config_path is not None else "experiment config"
+    hardware_label = str(hardware_path) if hardware_path is not None else "config/hardware.yaml"
+    raise ValueError(
+        f"Experiment-level hardware overrides are not allowed in {config_label}. "
+        f"Use {hardware_label} and config/config_camera.txt as the single source of truth. "
+        f"Invalid keys: {', '.join(sorted(violations))}"
     )
 
 
@@ -1643,6 +1714,7 @@ def load_experiment_config(
 ) -> ExperimentConfig:
     """Load experiment_config.yaml into an ExperimentConfig."""
     raw = _load_yaml_file(path)
+    _reject_experiment_hardware_overrides(raw, config_path=path, hardware_path=hardware_path)
     hardware = _load_yaml_file(hardware_path)
     hardware_teensy = _yaml_section(hardware, "teensy")
     hardware_fictrac = _yaml_section(hardware, "fictrac")
@@ -1893,16 +1965,16 @@ def main():
         epilog="""
 Examples:
   # Dry run (preview timeline, no hardware)
-  python -m multibios.experiment --protocol config/example_protocol.yaml --dry-run
+    python -m multibios.experiment --protocol protocols/example_protocol.yaml --dry-run
 
   # Full run
   python -m multibios.experiment \\
-      --protocol config/example_protocol.yaml \\
+            --protocol protocols/example_protocol.yaml \\
       --hardware config/hardware.yaml \\
       --experiment config/experiment_config.yaml
         """,
     )
-    parser.add_argument("--protocol", default="config/example_protocol.yaml",
+    parser.add_argument("--protocol", default="protocols/example_protocol.yaml",
                         help="Protocol YAML file")
     parser.add_argument("--hardware", default="config/hardware.yaml",
                         help="Hardware mapping YAML")

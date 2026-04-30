@@ -15,7 +15,7 @@ The protocol runner compiles YAML protocol files, generates **hardware-clocked d
 ```bash
 # Generate preview without hardware execution
 conda run -n multibios-blackfly python -m multibios.run_protocol \
-  --yaml config/example_protocol.yaml \
+  --yaml protocols/example_protocol.yaml \
   --hardware config/hardware.yaml \
   --dry-run --seed 42
 ```
@@ -25,7 +25,7 @@ conda run -n multibios-blackfly python -m multibios.run_protocol \
 ```bash
 # Execute protocol on DAQ hardware
 conda run -n multibios-blackfly python -m multibios.run_protocol \
-  --yaml config/example_protocol.yaml \
+  --yaml protocols/example_protocol.yaml \
   --hardware config/hardware.yaml
 ```
 
@@ -35,7 +35,7 @@ If `hardware.yaml` contains a `fictrac:` block, the runner will also launch FicT
 
 ### Core Arguments
 
-- `--yaml <file>`: Protocol YAML file (default: `config/example_protocol.yaml`)
+- `--yaml <file>`: Protocol YAML file (default: `protocols/example_protocol.yaml`)
 - `--hardware <file>`: Hardware mapping YAML (default: `config/hardware.yaml`)
 - `--experiment <file>`: Optional runtime override file for backward-compatible experiment/camera/FicTrac settings
 - `--device <name>`: Override DAQ device name from hardware.yaml
@@ -69,7 +69,7 @@ The protocol runner now supports **real-time progress monitoring** during hardwa
 
 ```bash
 conda run -n multibios-blackfly python -m multibios.run_protocol \
-  --yaml config/example_protocol.yaml \
+  --yaml protocols/example_protocol.yaml \
   --hardware config/hardware.yaml \
   --verbose \
   --progress \

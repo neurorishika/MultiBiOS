@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import math
 import queue
@@ -15,10 +16,13 @@ import numpy as np
 
 
 LOSSLESS_VIDEO_CANDIDATES = [
-    ("FFV1", ".mkv"),
     ("FFV1", ".avi"),
     ("HFYU", ".avi"),
+    ("FFV1", ".mkv"),
 ]
+
+
+_LEAKED_PYSPIN_REFS: list[object] = []
 
 
 class TriggeredCameraRecorder:
@@ -36,6 +40,8 @@ class TriggeredCameraRecorder:
         roi_width: int | None = None,
         roi_height: int | None = None,
         binning: int = 1,
+        gain_db: float | None = None,
+        gamma: float | None = None,
     ) -> None:
         self.camera_index = int(camera_index)
         self.run_dir = Path(run_dir)
@@ -46,6 +52,8 @@ class TriggeredCameraRecorder:
         self.roi_width = roi_width
         self.roi_height = roi_height
         self.binning = max(1, int(binning))
+        self.gain_db = gain_db
+        self.gamma = gamma
 
         stem = f"blackfly_cam{self.camera_index}"
         self._bin_path = self.run_dir / f"{stem}_frames.bin"
@@ -75,6 +83,8 @@ class TriggeredCameraRecorder:
             "requested_exposure_us": self.exposure_us,
             "requested_roi_width": self.roi_width,
             "requested_roi_height": self.roi_height,
+            "requested_gain_db": self.gain_db,
+            "requested_gamma": self.gamma,
             "frame_bin_path": str(self._bin_path),
             "frame_index_path": str(self._csv_path),
             "manifest_path": str(self._manifest_path),
@@ -120,6 +130,8 @@ class TriggeredCameraRecorder:
                 roi_width=self.roi_width,
                 roi_height=self.roi_height,
                 binning=self.binning,
+                gain_db=self.gain_db,
+                gamma=self.gamma,
             )
             self._manifest.update(self._read_camera_geometry())
 
@@ -290,11 +302,15 @@ class TriggeredCameraRecorder:
         height_n = PySpin.CIntegerPtr(nm.GetNode("Height"))
         offset_x_n = PySpin.CIntegerPtr(nm.GetNode("OffsetX"))
         offset_y_n = PySpin.CIntegerPtr(nm.GetNode("OffsetY"))
+        gain_n = PySpin.CFloatPtr(nm.GetNode("Gain"))
+        gamma_n = PySpin.CFloatPtr(nm.GetNode("Gamma"))
         return {
             "configured_width": int(width_n.GetValue()) if PySpin.IsReadable(width_n) else None,
             "configured_height": int(height_n.GetValue()) if PySpin.IsReadable(height_n) else None,
             "configured_offset_x": int(offset_x_n.GetValue()) if PySpin.IsReadable(offset_x_n) else None,
             "configured_offset_y": int(offset_y_n.GetValue()) if PySpin.IsReadable(offset_y_n) else None,
+            "configured_gain_db": float(gain_n.GetValue()) if PySpin.IsReadable(gain_n) else None,
+            "configured_gamma": float(gamma_n.GetValue()) if PySpin.IsReadable(gamma_n) else None,
         }
 
     def _configure_stream_buffer(self, count: int) -> None:
@@ -331,20 +347,23 @@ class TriggeredCameraRecorder:
             except Exception:
                 pass
         self._cam = None
+        if cam is not None:
+            del cam
+        gc.collect()
 
         if self._cam_list is not None:
             try:
                 self._cam_list.Clear()
             except Exception:
                 pass
-        self._cam_list = None
+            _LEAKED_PYSPIN_REFS.append(self._cam_list)
 
+        # Dropping the last references to these PySpin objects can abort the
+        # interpreter on this rig, so keep them alive until process teardown.
         if self._system is not None:
-            try:
-                self._system.ReleaseInstance()
-            except Exception:
-                pass
-        self._system = None
+            _LEAKED_PYSPIN_REFS.append(self._system)
+        if self._PySpin is not None:
+            _LEAKED_PYSPIN_REFS.append(self._PySpin)
 
 
 def _percentile(values: list[float], p: float) -> float | None:
@@ -450,8 +469,22 @@ def _convert_bin_to_lossless_video(
 ) -> dict[str, Any]:
     run_dir = Path(manifest["manifest_path"]).parent
     frame_count = int(manifest.get("saved_frames", 0))
-    width = int(manifest["frame_width"])
-    height = int(manifest["frame_height"])
+    source_width = int(manifest["frame_width"])
+    source_height = int(manifest["frame_height"])
+    requested_width = manifest.get("requested_roi_width")
+    requested_height = manifest.get("requested_roi_height")
+    crop_width = (
+        int(requested_width)
+        if requested_width is not None and 0 < int(requested_width) <= source_width
+        else source_width
+    )
+    crop_height = (
+        int(requested_height)
+        if requested_height is not None and 0 < int(requested_height) <= source_height
+        else source_height
+    )
+    crop_x = max(0, (source_width - crop_width) // 2)
+    crop_y = max(0, (source_height - crop_height) // 2)
     bin_path = Path(manifest["frame_bin_path"])
     if frame_count <= 0 or not bin_path.exists():
         raise RuntimeError(f"Missing raw frame stream for conversion: {bin_path}")
@@ -460,8 +493,15 @@ def _convert_bin_to_lossless_video(
     if not fps or float(fps) <= 0:
         raise RuntimeError("Could not determine fps for second-camera lossless conversion.")
 
-    frames = np.memmap(bin_path, dtype=np.uint8, mode="r", shape=(frame_count, height, width))
-    trial_frame = cv2.cvtColor(np.asarray(frames[0]), cv2.COLOR_GRAY2BGR)
+    frames = np.memmap(bin_path, dtype=np.uint8, mode="r", shape=(frame_count, source_height, source_width))
+
+    def _frame_bgr(index: int) -> np.ndarray:
+        frame = np.asarray(frames[index])
+        if crop_width != source_width or crop_height != source_height:
+            frame = frame[crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+    trial_frame = _frame_bgr(0)
 
     writer = None
     chosen = None
@@ -469,7 +509,7 @@ def _convert_bin_to_lossless_video(
     stem = f"blackfly_cam{manifest['camera_index']}_lossless"
     for fourcc, fourcc_name, suffix in _codec_candidates():
         candidate_path = run_dir / f"{stem}{suffix}"
-        test_writer = cv2.VideoWriter(str(candidate_path), fourcc, float(fps), (width, height), True)
+        test_writer = cv2.VideoWriter(str(candidate_path), fourcc, float(fps), (crop_width, crop_height), True)
         if not test_writer.isOpened():
             test_writer.release()
             continue
@@ -487,7 +527,7 @@ def _convert_bin_to_lossless_video(
 
     try:
         for idx in range(1, frame_count):
-            writer.write(cv2.cvtColor(np.asarray(frames[idx]), cv2.COLOR_GRAY2BGR))
+            writer.write(_frame_bgr(idx))
     finally:
         writer.release()
 
@@ -496,6 +536,10 @@ def _convert_bin_to_lossless_video(
         "codec": chosen,
         "fps": float(fps),
         "frame_count": frame_count,
+        "width": crop_width,
+        "height": crop_height,
+        "cropped_from_width": source_width,
+        "cropped_from_height": source_height,
     }
 
 

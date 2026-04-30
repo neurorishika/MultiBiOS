@@ -16,7 +16,7 @@ Use [../running_experiments.md](../running_experiments.md) and [../runner.md](..
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/odor_lateralization.yaml `
+  --protocol protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --experiment config/experiment_config.yaml `
   --verbose
@@ -28,7 +28,7 @@ Short bounded probe:
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/short_protocol.yaml `
+  --protocol protocols/short_protocol.yaml `
   --hardware config/hardware.yaml `
   --experiment config/experiment_config_probe.yaml
 ```
@@ -39,7 +39,7 @@ Dry run preview:
 cd C:\Rishika\MultiBiOS
 
 conda run -n multibios-blackfly python -m multibios.experiment `
-  --protocol config/odor_lateralization.yaml `
+  --protocol protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --experiment config/experiment_config.yaml `
   --dry-run --verbose

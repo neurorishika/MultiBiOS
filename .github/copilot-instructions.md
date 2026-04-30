@@ -21,15 +21,20 @@ MultiBiOS/
 │   ├── teensy_controller.py
 │   ├── viz_helpers.py / viz_protocol.py
 │   └── __init__.py
-├── config/                 # Protocol and hardware YAML files
+├── config/                 # Hardware and runtime configuration YAML files
 │   ├── hardware.yaml       # NI-DAQ device/line mapping (do not edit casually)
 │   ├── experiment_config.yaml
+│   ├── experiment_config_probe.yaml
+│   └── config_camera.txt
+├── protocols/              # Runnable protocol YAML files
 │   ├── example_protocol.yaml
+│   ├── latcher.yaml
 │   ├── odor_lateralization.yaml
 │   ├── odor_lateralization_3pulse.yaml
+│   ├── run_protocol_fictrac_probe.yaml
+│   ├── serial_valve_round_independent.yaml
 │   ├── short_protocol.yaml
-│   ├── switch_valve_test.yaml
-│   └── latcher.yaml
+│   └── switch_valve_test.yaml
 ├── data/runs/              # Timestamped output directories (auto-created)
 ├── docs/                   # Full documentation (protocol.md, runner.md, timing.md…)
 ├── tests/

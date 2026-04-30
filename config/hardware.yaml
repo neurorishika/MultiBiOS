@@ -9,7 +9,7 @@ fictrac:
   config: "config_camera.txt"
   bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
   console_out: "fictrac_output.txt"
-  first_frame_timeout_ms: 0
+  first_frame_timeout_ms: 0 # Wait indefinitely for first frame (set to nonzero to bound wait time)
   startup_timeout_s: 90.0
   timeout_s: 5.0
 
@@ -17,11 +17,14 @@ blackfly_defaults:
   exposure_us: 4500
   roi_width: 400
   roi_height: 400
+  binning: 1
+  gain_db: 0.0
+  gamma: 1.0
 
 camera_recording:
-  save_fictrac_camera_video: false
-  save_second_camera_video: false
-  second_camera_index: 0
+  save_fictrac_camera_video: true
+  save_second_camera_video: true
+  second_camera_index: 1
   fictrac_raw_video_codec: "raw"
   second_camera_timeout_ms: 250
   second_camera_queue_size: 512
@@ -30,6 +33,8 @@ camera_recording:
   second_camera_roi_width: 400
   second_camera_roi_height: 400
   second_camera_binning: 1
+  second_camera_gain_db:
+  second_camera_gamma:
   verify_no_dropped_frames: true
   convert_second_camera_bin_to_lossless_mkv: true
 

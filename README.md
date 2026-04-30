@@ -109,7 +109,7 @@ FicTrac is treated as vendored source in this repo because MultiBiOS carries sou
 1. **Preview a protocol** (no hardware required):
    ```bash
      python -m multibios.run_protocol \
-       --yaml config/example_protocol.yaml \
+      --yaml protocols/example_protocol.yaml \
        --hardware config/hardware.yaml \
        --dry-run --interactive
    ```
@@ -117,14 +117,14 @@ FicTrac is treated as vendored source in this repo because MultiBiOS carries sou
 2. **Run on hardware** (requires NI-DAQ setup):
    ```bash
      python -m multibios.run_protocol \
-       --yaml config/example_protocol.yaml \
+      --yaml protocols/example_protocol.yaml \
        --hardware config/hardware.yaml
    ```
 
 3. **Run with real-time progress monitoring**:
    ```bash
      python -m multibios.run_protocol \
-       --yaml config/example_protocol.yaml \
+      --yaml protocols/example_protocol.yaml \
        --hardware config/hardware.yaml \
        --verbose --progress
    ```

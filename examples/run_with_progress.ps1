@@ -16,7 +16,7 @@ Write-Host "  - Verbose logging enabled" -ForegroundColor Gray
 Write-Host ""
 
 python multibios/run_protocol.py `
-    --yaml config/example_protocol.yaml `
+    --yaml protocols/example_protocol.yaml `
     --hardware config/hardware.yaml `
     --verbose `
     --progress `

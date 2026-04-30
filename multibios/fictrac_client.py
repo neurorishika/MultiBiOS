@@ -499,6 +499,11 @@ class FicTracDriver:
             raise RuntimeError(f"Could not find {binary_name} on PATH")
         return resolved
 
+    def request_stop(self) -> None:
+        self._fictrac_terminated_by_driver = True
+        if self.fictrac_process is not None and self.fictrac_process.poll() is None:
+            self.fictrac_process.terminate()
+
     def run(self) -> None:
         self.track_change_callback.setup_callback()
         udp_socket = self._setup_udp_socket()
@@ -579,8 +584,7 @@ class FicTracDriver:
             self._diagnostics["terminated_by_driver"] = self._fictrac_terminated_by_driver
             self._write_diagnostics()
             if self.fictrac_process is not None and not self._fictrac_terminated_by_driver:
-                self.fictrac_process.terminate()
-                self._fictrac_terminated_by_driver = True
+                self.request_stop()
             udp_socket.close()
             if self._console_handle is not None:
                 self._console_handle.close()
@@ -667,8 +671,7 @@ class FicTracDriver:
                 avg_fps = 1.0 / (sum(time_history) / len(time_history))
                 if avg_fps < self.average_fps_threshold:
                     if self.fictrac_process is not None:
-                        self.fictrac_process.terminate()
-                        self._fictrac_terminated_by_driver = True
+                        self.request_stop()
                     raise RuntimeError(
                         f"Average FPS fell below avg_fps_threshold ({self.average_fps_threshold})."
                     )
@@ -677,5 +680,4 @@ class FicTracDriver:
                 break
 
         if self.fictrac_process is not None and not self._fictrac_terminated_by_driver:
-            self.fictrac_process.terminate()
-            self._fictrac_terminated_by_driver = True
+            self.request_stop()

@@ -24,7 +24,7 @@ All commands should be run from `c:\Rishika\MultiBiOS\`.
 python -m multibios.run_protocol [OPTIONS]
 
 Required:
-  --yaml PATH           Protocol YAML file (default: config/example_protocol.yaml)
+  --yaml PATH           Protocol YAML file (default: protocols/example_protocol.yaml)
   --hardware PATH       Hardware mapping YAML (default: config/hardware.yaml)
 
 Execution mode:
@@ -66,7 +66,7 @@ cd C:\Rishika\MultiBiOS
 ### 2. Dry-run to validate and preview
 ```powershell
 python -m multibios.run_protocol `
-  --yaml config/odor_lateralization.yaml `
+  --yaml protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --dry-run --interactive
 ```
@@ -81,7 +81,7 @@ The folder also contains `compile_report.json` and `digital_edges.csv`. Verify:
 ### 4. Execute on hardware
 ```powershell
 python -m multibios.run_protocol `
-  --yaml config/odor_lateralization.yaml `
+  --yaml protocols/odor_lateralization.yaml `
   --hardware config/hardware.yaml `
   --verbose --progress
 ```

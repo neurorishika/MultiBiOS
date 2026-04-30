@@ -22,7 +22,7 @@ save_raw         : n
 sock_host        : 127.0.0.1
 sock_port        : 5556
 src_first_frame_timeout_ms : 0
-src_fn           : 1
+src_fn           : 0
 src_fps          : -1.000000
 thr_ratio        : 1.25
 thr_win_pc       : 0.25

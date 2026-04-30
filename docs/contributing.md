@@ -125,7 +125,7 @@ When making changes, update relevant documentation:
 ### Schema Changes
 
 - Update `docs/protocol.md` with new YAML syntax
-- Modify `config/example_protocol.yaml` with examples
+- Modify `protocols/example_protocol.yaml` with examples
 - Update `config/hardware.yaml` if adding new device types
 
 ### Feature Additions

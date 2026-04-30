@@ -50,7 +50,7 @@ The April 2026 blocker on this workstation was not the MultiBiOS-side `fictrac_t
 
 The confirmed failure signature was:
 
-- protocol path: `config/odor_lateralization.yaml`
+- protocol path: `protocols/odor_lateralization.yaml`
 - runtime config path: `C:\Rishika\data\runs\2026-04-29_23-34-01\fictrac_runtime_config.txt`
 - unpatched binary behavior: exits in about 1 s before any UDP frame arrives
 - direct console error:
@@ -147,7 +147,7 @@ Why it exists:
 - subsequent frame waits: unchanged upstream logic (`max(1000, 1000 / fps)`)
 - default when re-running `configGui.exe` on a config that does not already have the key: `0`
 
-For the exact MultiBiOS validation path used in this repo, set `fictrac.startup_timeout_s: 0` in `config/hardware.yaml` if you want the Python runner to wait indefinitely for the first UDP frame.
+For the exact MultiBiOS validation path used in this repo, the canonical config keeps `src_first_frame_timeout_ms: 0` in `config/config_camera.txt`, and `config/hardware.yaml` can independently bound or unbound the Python-side wait with `fictrac.startup_timeout_s`.
 
 ## Exact Rebuild Procedure Used On This Workstation
 
@@ -361,7 +361,7 @@ Short hardware-timed validation:
 ```powershell
 cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python -m multibios.run_protocol `
-  --yaml config/short_protocol.yaml `
+  --yaml protocols/short_protocol.yaml `
   --hardware config/hardware.yaml `
   --verbose --progress
 ```
@@ -379,7 +379,7 @@ After the probe succeeds, use the hardware-timed primary runner with FicTrac ena
 ```powershell
 cd C:\Rishika\MultiBiOS
 conda run -n multibios-blackfly python -m multibios.run_protocol `
-  --yaml config/example_protocol.yaml `
+  --yaml protocols/example_protocol.yaml `
   --hardware config/hardware.yaml `
   --verbose --progress
 ```
@@ -421,7 +421,7 @@ For this specific rig, the safest order is:
 3. Rebuild FicTrac with `PGR_USB3` support if the packaged binary is missing or stale.
 4. If your current camera config expects triggers during probing, run `tests/continuous_camera_trigger.py` to provide a known trigger train.
 5. Run `tests/fictrac_live_probe.py` against `fictrac-spinnaker.exe`.
-6. Run `multibios.run_protocol` with `config/short_protocol.yaml`.
+6. Run `multibios.run_protocol` with `protocols/short_protocol.yaml`.
 7. If you are maintaining the deprecated serial runner, use the bounded legacy procedure in [legacy/serial_experiment_pipeline.md](legacy/serial_experiment_pipeline.md).
 8. Only then switch to a full experimental protocol.
 

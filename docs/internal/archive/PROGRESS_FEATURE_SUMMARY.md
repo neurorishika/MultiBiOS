@@ -25,7 +25,7 @@ A background thread-based monitor that displays expected protocol state during D
 **Usage:**
 ```bash
 python multibios/run_protocol.py \
-    --yaml config/example_protocol.yaml \
+   --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose \
     --progress \
@@ -184,7 +184,7 @@ AO: MFC1=2.500V, ...  ← Analog output voltages (first 2 channels)
 ```bash
 # Test with short protocol
 python multibios/run_protocol.py \
-    --yaml config/short_protocol.yaml \
+   --yaml protocols/short_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose --progress --dry-run
 ```
@@ -211,7 +211,7 @@ python multibios/run_protocol.py \
 ```bash
 # Full hardware run with monitoring
 python multibios/run_protocol.py \
-    --yaml config/example_protocol.yaml \
+   --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose --progress --interactive
 ```

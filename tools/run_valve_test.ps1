@@ -2,7 +2,7 @@ param(
     [string]$CondaExe = "C:/ProgramData/miniconda3/Scripts/conda.exe",
     [string]$CondaEnv = "multibios-blackfly",
     [string]$HardwarePath = "config/hardware.yaml",
-    [string]$ProtocolPath = "config/serial_valve_round_independent.yaml",
+    [string]$ProtocolPath = "protocols/serial_valve_round_independent.yaml",
     [switch]$DryRun,
     [switch]$Interactive,
     [switch]$VerboseOutput,

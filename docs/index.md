@@ -63,7 +63,7 @@ This repository provides:
 ```bash
 # Generate and visualize a protocol without hardware
 poetry run python -m multibios.run_protocol \
-    --yaml config/example_protocol.yaml \
+    --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --dry-run --interactive --seed 42
 ```
@@ -73,7 +73,7 @@ poetry run python -m multibios.run_protocol \
 ```bash
 # Run on actual hardware (requires NI-DAQmx drivers)
 poetry run python -m multibios.run_protocol \
-    --yaml config/example_protocol.yaml \
+    --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml
 ```
 

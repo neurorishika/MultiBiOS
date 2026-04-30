@@ -1,5 +1,5 @@
 param(
-    [string]$ProtocolPath = "config/serial_valve_round_independent.yaml",
+    [string]$ProtocolPath = "protocols/serial_valve_round_independent.yaml",
     [string]$HardwarePath = "config/hardware.yaml",
     [string]$ExperimentPath = "config/experiment_config.yaml",
     [switch]$DryRun,

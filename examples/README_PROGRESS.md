@@ -26,7 +26,7 @@ Enable progress monitoring with the `--progress` flag:
 
 ```bash
 python multibios/run_protocol.py \
-    --yaml config/example_protocol.yaml \
+    --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose \
     --progress
@@ -38,7 +38,7 @@ Control how often progress updates appear (in milliseconds):
 
 ```bash
 python multibios/run_protocol.py \
-    --yaml config/example_protocol.yaml \
+    --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose \
     --progress \
@@ -165,7 +165,7 @@ For maximum visibility, combine progress monitoring with verbose logging:
 
 ```bash
 python multibios/run_protocol.py \
-    --yaml config/example_protocol.yaml \
+    --yaml protocols/example_protocol.yaml \
     --hardware config/hardware.yaml \
     --verbose \
     --progress \
