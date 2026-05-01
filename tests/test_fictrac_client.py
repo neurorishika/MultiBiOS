@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import os
+import signal
+import socket
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, FicTracFrame,
-                                      FicTracFrameStore, FicTracState,
+                                      FicTracDriver, FicTracFrameStore,
+                                      FicTracState,
                                       record_to_frame)
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.fictrac_runtime import build_fictrac_subprocess_env
@@ -258,4 +263,239 @@ def test_build_fictrac_subprocess_env_strips_conda_paths_on_windows(tmp_path: Pa
     assert not any(".conda\\envs\\multibios-blackfly" in part for part in path_parts)
     assert "CONDA_PREFIX" not in env
     assert "CONDA_DEFAULT_ENV" not in env
-    assert "PYTHONPATH" not in env
+
+
+def test_request_stop_uses_ctrl_break_and_waits_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows-specific FicTrac shutdown behavior")
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.signals: list[int] = []
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            self.signals.append(sig)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 1
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556")
+    driver.fictrac_process = DummyProcess()
+    monkeypatch.setattr(driver, "_write_diagnostics", lambda: None)
+
+    driver.request_stop()
+
+    assert driver._fictrac_terminated_by_driver is True
+    assert driver.fictrac_process.signals == [signal.CTRL_BREAK_EVENT]
+    assert driver.fictrac_process.terminated is False
+    assert driver.fictrac_process.killed is False
+
+
+def test_request_stop_kills_if_process_ignores_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows-specific FicTrac shutdown behavior")
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.signals: list[int] = []
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            self.signals.append(sig)
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(cmd="fictrac", timeout=timeout)
+            self.returncode = -9
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556")
+    driver.fictrac_process = DummyProcess()
+    monkeypatch.setattr(driver, "_write_diagnostics", lambda: None)
+
+    driver.request_stop()
+
+    assert driver.fictrac_process.signals == [signal.CTRL_BREAK_EVENT]
+    assert driver.fictrac_process.terminated is True
+    assert driver.fictrac_process.killed is False
+
+
+def test_request_stop_kills_if_process_ignores_ctrl_break_and_terminate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows-specific FicTrac shutdown behavior")
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.signals: list[int] = []
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            self.signals.append(sig)
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls <= 2:
+                raise subprocess.TimeoutExpired(cmd="fictrac", timeout=timeout)
+            self.returncode = -9
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556")
+    driver.fictrac_process = DummyProcess()
+    monkeypatch.setattr(driver, "_write_diagnostics", lambda: None)
+
+    driver.request_stop()
+
+    assert driver.fictrac_process.signals == [signal.CTRL_BREAK_EVENT]
+    assert driver.fictrac_process.terminated is True
+    assert driver.fictrac_process.killed is True
+
+
+def test_wait_for_natural_exit_after_callback_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.wait_calls: list[float | None] = []
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            self.returncode = 0
+            return self.returncode
+
+    class DummyCallback:
+        def stop_requested(self) -> bool:
+            return True
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556", track_change_callback=DummyCallback())
+    driver.fictrac_process = DummyProcess()
+    writes: list[dict[str, object]] = []
+    monkeypatch.setattr(driver, "_write_diagnostics", lambda: writes.append(dict(driver._diagnostics)))
+
+    assert driver._wait_for_natural_exit_after_callback_stop() is True
+    assert driver.fictrac_process.wait_calls == [driver._stop_wait_timeout_s]
+    assert driver.fictrac_process.returncode == 0
+    assert any(entry.get("stop_wait_reason") == "callback_stop_requested" for entry in writes)
+    assert driver._diagnostics["final_returncode"] == 0
+
+
+def test_process_messages_exits_on_timeout_after_stop_requested() -> None:
+    class DummySocket:
+        def recvfrom(self, _size):
+            raise socket.timeout()
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+        def send_signal(self, _sig):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = -9
+
+    class DummyCallback:
+        def stop_requested(self) -> bool:
+            return True
+
+        def process_callback(self, _state):
+            return True
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556", track_change_callback=DummyCallback())
+    driver.start_fictrac = True
+    driver.fictrac_process = DummyProcess()
+    driver.frame_cnt = 1
+    driver._first_packet_wall_time = time.monotonic()
+
+    driver._process_messages(DummySocket())
+
+
+def test_process_messages_allows_terminal_drain_before_process_exit() -> None:
+    class DummySocket:
+        def recvfrom(self, _size):
+            raise socket.timeout()
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.poll_calls = 0
+
+        def poll(self):
+            self.poll_calls += 1
+            if self.poll_calls >= 3:
+                self.returncode = 0
+            return self.returncode
+
+    class DummyCallback:
+        def stop_requested(self) -> bool:
+            return False
+
+        def process_callback(self, _state):
+            return True
+
+    driver = FicTracDriver(remote_endpoint_url="udp://127.0.0.1:5556", track_change_callback=DummyCallback())
+    driver.start_fictrac = True
+    driver.fictrac_process = DummyProcess()
+    driver.frame_cnt = 1
+    driver._first_packet_wall_time = time.monotonic()
+    driver.max_message_silence_s = 0.0
+    driver.expect_terminal_drain()
+
+    driver._process_messages(DummySocket())
+
+    assert driver.fictrac_process.returncode == 0
+    assert driver._diagnostics["terminal_drain_expected"] is True

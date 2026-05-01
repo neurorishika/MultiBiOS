@@ -48,6 +48,7 @@ from multibios.fictrac_client import (FICTRAC_FRAME_DTYPE, BaseFicTracCallback,
                                       FicTracFrameStore)
 from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
+from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording
 from multibios.fictrac_runtime import prepare_fictrac_runtime
 from multibios.protocol.control_plan import (compile_control_plan,
                                              write_control_plan_csv)
@@ -67,7 +68,10 @@ class RunProtocolConfig:
     fictrac_config: str = ""
     fictrac_bin: str = ""
     fictrac_console_out: str = "fictrac_output.txt"
+    fictrac_camera_serial: str = ""
     fictrac_first_frame_timeout_ms: int = 0
+    fictrac_target_fps: float | None = None
+    fictrac_arm_delay_s: float = 0.5
     fictrac_startup_timeout_s: float = 90.0
     fictrac_timeout_s: float = 5.0
     blackfly_exposure_us: float | None = None
@@ -79,7 +83,10 @@ class RunProtocolConfig:
     save_fictrac_camera_video: bool = False
     fictrac_raw_video_codec: str = "raw"
     save_second_camera_video: bool = False
+    camera_trigger_fps_hz: float | None = None
+    camera_trigger_pulse_ms: int | None = None
     second_camera_index: int | None = None
+    second_camera_serial: str = ""
     second_camera_timeout_ms: int = 250
     second_camera_queue_size: int = 512
     second_camera_stream_buffer_count: int = 256
@@ -136,6 +143,9 @@ class ExperimentCallback(BaseFicTracCallback):
     def request_stop(self) -> None:
         self._stop.set()
 
+    def stop_requested(self) -> bool:
+        return self._stop.is_set()
+
 
 def _read_fictrac_config_values(path: str | Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -170,6 +180,7 @@ def _prepare_fictrac_runtime_config(
     camera_fps: float | None,
     video_codec: str,
     first_frame_timeout_ms: int,
+    camera_index_override: int | None = None,
 ) -> tuple[Path, int | None, dict[str, Any]]:
     source_path = Path(source_config_path)
     target_dir = Path(run_dir)
@@ -183,6 +194,10 @@ def _prepare_fictrac_runtime_config(
             fictrac_camera_index = int(src_fn)
         except ValueError:
             fictrac_camera_index = None
+
+    if camera_index_override is not None:
+        fictrac_camera_index = int(camera_index_override)
+        _upsert_fictrac_config_line(lines, "src_fn", str(fictrac_camera_index))
 
     output_base = (target_dir.resolve() / "fictrac").as_posix()
     _upsert_fictrac_config_line(lines, "output_fn", output_base)
@@ -228,6 +243,10 @@ def _yaml_section(raw: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _value_or_fallback(primary: Any, fallback: Any) -> Any:
+    return fallback if primary is None else primary
+
+
 def _warn_deprecated_experiment_key(
     key: str,
     hardware_path: str | Path | None,
@@ -248,7 +267,10 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "fictrac_config": "fictrac.config",
     "fictrac_bin": "fictrac.bin",
     "fictrac_console_out": "fictrac.console_out",
+    "fictrac_camera_serial": "fictrac.camera_serial",
     "fictrac_first_frame_timeout_ms": "fictrac.first_frame_timeout_ms",
+    "fictrac_target_fps": "fictrac.target_fps",
+    "fictrac_arm_delay_s": "fictrac.arm_delay_s",
     "fictrac_startup_timeout_s": "fictrac.startup_timeout_s",
     "fictrac_timeout_s": "fictrac.timeout_s",
     "blackfly_exposure_us": "blackfly_defaults.exposure_us",
@@ -261,7 +283,10 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "save_camera_raw_video": "camera_recording.save_fictrac_camera_video",
     "fictrac_raw_video_codec": "camera_recording.fictrac_raw_video_codec",
     "save_second_camera_video": "camera_recording.save_second_camera_video",
+    "camera_trigger_fps_hz": "camera_recording.trigger_fps_hz",
+    "camera_trigger_pulse_ms": "camera_recording.trigger_pulse_ms",
     "second_camera_index": "camera_recording.second_camera_index",
+    "second_camera_serial": "camera_recording.second_camera_serial",
     "second_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
     "other_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
     "second_camera_queue_size": "camera_recording.second_camera_queue_size",
@@ -355,12 +380,28 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("fictrac_console_out", hardware_path, "fictrac")
         cfg.fictrac_console_out = str(raw["fictrac_console_out"])
 
+    cfg.fictrac_camera_serial = str(hardware_fictrac.get("camera_serial", cfg.fictrac_camera_serial) or "")
+    if "fictrac_camera_serial" in raw:
+        _warn_deprecated_experiment_key("fictrac_camera_serial", hardware_path, "fictrac")
+        cfg.fictrac_camera_serial = str(raw["fictrac_camera_serial"])
+
     cfg.fictrac_first_frame_timeout_ms = int(
         hardware_fictrac.get("first_frame_timeout_ms", cfg.fictrac_first_frame_timeout_ms)
     )
     if "fictrac_first_frame_timeout_ms" in raw:
         _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "fictrac")
         cfg.fictrac_first_frame_timeout_ms = int(raw["fictrac_first_frame_timeout_ms"])
+
+    fictrac_target_fps = hardware_fictrac.get("target_fps", cfg.fictrac_target_fps)
+    cfg.fictrac_target_fps = None if fictrac_target_fps is None else float(fictrac_target_fps)
+    if "fictrac_target_fps" in raw:
+        _warn_deprecated_experiment_key("fictrac_target_fps", hardware_path, "fictrac")
+        cfg.fictrac_target_fps = float(raw["fictrac_target_fps"])
+
+    cfg.fictrac_arm_delay_s = float(hardware_fictrac.get("arm_delay_s", cfg.fictrac_arm_delay_s))
+    if "fictrac_arm_delay_s" in raw:
+        _warn_deprecated_experiment_key("fictrac_arm_delay_s", hardware_path, "fictrac")
+        cfg.fictrac_arm_delay_s = float(raw["fictrac_arm_delay_s"])
 
     cfg.fictrac_startup_timeout_s = float(
         hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s)
@@ -436,11 +477,28 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("save_second_camera_video", hardware_path, "camera_recording")
         cfg.save_second_camera_video = bool(raw["save_second_camera_video"])
 
+    camera_trigger_fps_hz = hardware_camera_recording.get("trigger_fps_hz", cfg.camera_trigger_fps_hz)
+    cfg.camera_trigger_fps_hz = None if camera_trigger_fps_hz is None else float(camera_trigger_fps_hz)
+    if "camera_trigger_fps_hz" in raw:
+        _warn_deprecated_experiment_key("camera_trigger_fps_hz", hardware_path, "camera_recording")
+        cfg.camera_trigger_fps_hz = float(raw["camera_trigger_fps_hz"])
+
+    camera_trigger_pulse_ms = hardware_camera_recording.get("trigger_pulse_ms", cfg.camera_trigger_pulse_ms)
+    cfg.camera_trigger_pulse_ms = None if camera_trigger_pulse_ms is None else int(camera_trigger_pulse_ms)
+    if "camera_trigger_pulse_ms" in raw:
+        _warn_deprecated_experiment_key("camera_trigger_pulse_ms", hardware_path, "camera_recording")
+        cfg.camera_trigger_pulse_ms = int(raw["camera_trigger_pulse_ms"])
+
     second_camera_index = hardware_camera_recording.get("second_camera_index", cfg.second_camera_index)
     cfg.second_camera_index = None if second_camera_index is None else int(second_camera_index)
     if "second_camera_index" in raw:
         _warn_deprecated_experiment_key("second_camera_index", hardware_path, "camera_recording")
         cfg.second_camera_index = int(raw["second_camera_index"])
+
+    cfg.second_camera_serial = str(hardware_camera_recording.get("second_camera_serial", cfg.second_camera_serial) or "")
+    if "second_camera_serial" in raw:
+        _warn_deprecated_experiment_key("second_camera_serial", hardware_path, "camera_recording")
+        cfg.second_camera_serial = str(raw["second_camera_serial"])
 
     cfg.second_camera_timeout_ms = int(
         hardware_camera_recording.get("second_camera_timeout_ms", cfg.second_camera_timeout_ms)
@@ -475,8 +533,8 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("other_camera_stream_buffer_count", hardware_path, "camera_recording")
         cfg.second_camera_stream_buffer_count = int(raw["other_camera_stream_buffer_count"])
 
-    second_camera_exposure = hardware_camera_recording.get(
-        "second_camera_exposure_us",
+    second_camera_exposure = _value_or_fallback(
+        hardware_camera_recording.get("second_camera_exposure_us"),
         hardware_blackfly.get("exposure_us", cfg.second_camera_exposure_us),
     )
     cfg.second_camera_exposure_us = None if second_camera_exposure is None else float(second_camera_exposure)
@@ -487,8 +545,8 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("other_camera_exposure_us", hardware_path, "camera_recording")
         cfg.second_camera_exposure_us = float(raw["other_camera_exposure_us"])
 
-    second_camera_roi_width = hardware_camera_recording.get(
-        "second_camera_roi_width",
+    second_camera_roi_width = _value_or_fallback(
+        hardware_camera_recording.get("second_camera_roi_width"),
         hardware_blackfly.get("roi_width", cfg.second_camera_roi_width),
     )
     cfg.second_camera_roi_width = None if second_camera_roi_width is None else int(second_camera_roi_width)
@@ -499,8 +557,8 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("other_camera_roi_width", hardware_path, "camera_recording")
         cfg.second_camera_roi_width = int(raw["other_camera_roi_width"])
 
-    second_camera_roi_height = hardware_camera_recording.get(
-        "second_camera_roi_height",
+    second_camera_roi_height = _value_or_fallback(
+        hardware_camera_recording.get("second_camera_roi_height"),
         hardware_blackfly.get("roi_height", cfg.second_camera_roi_height),
     )
     cfg.second_camera_roi_height = None if second_camera_roi_height is None else int(second_camera_roi_height)
@@ -524,8 +582,8 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("other_camera_binning", hardware_path, "camera_recording")
         cfg.second_camera_binning = int(raw["other_camera_binning"])
 
-    second_camera_gain = hardware_camera_recording.get(
-        "second_camera_gain_db",
+    second_camera_gain = _value_or_fallback(
+        hardware_camera_recording.get("second_camera_gain_db"),
         hardware_blackfly.get("gain_db", cfg.second_camera_gain_db),
     )
     cfg.second_camera_gain_db = None if second_camera_gain is None else float(second_camera_gain)
@@ -536,8 +594,8 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("other_camera_gain_db", hardware_path, "camera_recording")
         cfg.second_camera_gain_db = float(raw["other_camera_gain_db"])
 
-    second_camera_gamma = hardware_camera_recording.get(
-        "second_camera_gamma",
+    second_camera_gamma = _value_or_fallback(
+        hardware_camera_recording.get("second_camera_gamma"),
         hardware_blackfly.get("gamma", cfg.second_camera_gamma),
     )
     cfg.second_camera_gamma = None if second_camera_gamma is None else float(second_camera_gamma)
@@ -606,29 +664,14 @@ def _build_fictrac_recording_summary(
     frame_count: int | None,
     expected_frame_count: int | None,
 ) -> dict[str, Any]:
-    callback_frames = None if frame_count is None else int(frame_count)
-    saved_raw_frames = _count_fictrac_saved_raw_frames(run_dir)
-    actual_frames = saved_raw_frames if saved_raw_frames is not None else callback_frames
-    missing_frames = None
-    no_dropped_frames = None
-    if expected_frame_count is not None and actual_frames is not None:
-        missing_frames = max(int(expected_frame_count) - actual_frames, 0)
-        no_dropped_frames = actual_frames == int(expected_frame_count)
-
-    return {
-        "camera_index": runtime_info.get("fictrac_camera_index"),
-        "save_raw": bool(runtime_info.get("save_raw", False)),
-        "video_codec": runtime_info.get("video_codec"),
-        "camera_fps": runtime_info.get("camera_fps"),
-        "output_base": runtime_info.get("output_base"),
-        "raw_videos": _discover_fictrac_raw_videos(run_dir),
-        "callback_frames": callback_frames,
-        "saved_raw_frames": saved_raw_frames,
-        "actual_frames": actual_frames,
-        "expected_frames": expected_frame_count,
-        "missing_frames_vs_expected": missing_frames,
-        "no_dropped_frames": no_dropped_frames,
-    }
+    return postprocess_fictrac_raw_recording(
+        run_dir=run_dir,
+        runtime_info=runtime_info,
+        frame_count=frame_count,
+        expected_frame_count=expected_frame_count,
+        legacy_raw_videos=_discover_fictrac_raw_videos(run_dir),
+        legacy_saved_raw_frames=_count_fictrac_saved_raw_frames(run_dir),
+    )
 
 
 def _run_fictrac(
@@ -736,6 +779,113 @@ def _preconfigure_fictrac_camera_external(
             )
 
 
+def _list_blackfly_cameras_external() -> list[dict[str, Any]]:
+    command = [
+        sys.executable,
+        "-m",
+        "multibios.blackfly.preconfigure_camera",
+        "--list-cameras",
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    if completed.returncode != 0:
+        detail = stderr or stdout or f"return code {completed.returncode}"
+        raise RuntimeError(f"camera enumeration helper failed: {detail}")
+    if not stdout:
+        raise RuntimeError("camera enumeration helper produced no output")
+    payload = json.loads(stdout.splitlines()[-1])
+    cameras = payload.get("cameras")
+    if not isinstance(cameras, list):
+        raise RuntimeError("camera enumeration helper returned no camera list")
+    return [camera for camera in cameras if isinstance(camera, dict)]
+
+
+def _resolve_camera_roles(runtime_cfg: RunProtocolConfig, logger: logging.Logger) -> dict[str, dict[str, Any] | None]:
+    cameras = _list_blackfly_cameras_external()
+    cameras_by_serial = {
+        str(camera.get("serial")): camera
+        for camera in cameras
+        if camera.get("serial")
+    }
+
+    def _resolve(label: str, *, serial: str, index: int | None) -> dict[str, Any] | None:
+        if serial:
+            camera = cameras_by_serial.get(serial)
+            if camera is None:
+                raise RuntimeError(f"Configured {label} serial {serial} was not found among connected cameras.")
+            return camera
+        if index is None:
+            return None
+        for camera in cameras:
+            if int(camera.get("camera_index", -1)) == int(index):
+                return camera
+        raise RuntimeError(f"Configured {label} index {index} was not found among connected cameras.")
+
+    fictrac_camera = _resolve("FicTrac camera", serial=runtime_cfg.fictrac_camera_serial, index=None)
+    second_camera = _resolve(
+        "second camera",
+        serial=runtime_cfg.second_camera_serial,
+        index=runtime_cfg.second_camera_index,
+    )
+
+    if fictrac_camera is not None:
+        logger.info(
+            "Resolved FicTrac camera: index=%s serial=%s model=%s",
+            fictrac_camera.get("camera_index"),
+            fictrac_camera.get("serial"),
+            fictrac_camera.get("model"),
+        )
+    if second_camera is not None:
+        logger.info(
+            "Resolved second camera: index=%s serial=%s model=%s",
+            second_camera.get("camera_index"),
+            second_camera.get("serial"),
+            second_camera.get("model"),
+        )
+    if fictrac_camera is not None and second_camera is not None and fictrac_camera.get("serial") == second_camera.get("serial"):
+        raise RuntimeError("FicTrac camera and second camera resolve to the same serial; roles must point to different cameras.")
+
+    return {"fictrac": fictrac_camera, "second": second_camera}
+
+
+def _reset_fictrac_camera_external(*, camera_index: int, logger: logging.Logger) -> None:
+    command = [
+        sys.executable,
+        "-m",
+        "multibios.blackfly.preconfigure_camera",
+        "--camera-index",
+        str(camera_index),
+        "--reset-editable",
+    ]
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    stdout = completed.stdout.strip()
+    stderr = completed.stderr.strip()
+    if completed.returncode != 0:
+        detail = stderr or stdout or f"return code {completed.returncode}"
+        raise RuntimeError(f"external reset helper failed: {detail}")
+    if stdout:
+        last_line = stdout.splitlines()[-1]
+        try:
+            payload = json.loads(last_line)
+        except json.JSONDecodeError:
+            logger.info("FicTrac camera reset helper output:\n%s", stdout)
+            return
+        logger.info("FicTrac camera %s reset externally to editable mode.", payload.get("camera_index", camera_index))
+
+
 def _safe_stop_task(task: Any, logger: logging.Logger, label: str) -> None:
     if task is None:
         return
@@ -769,27 +919,66 @@ def _stop_fictrac(
     fictrac_camera_index: int | None,
     logger: logging.Logger,
 ) -> None:
-    if fictrac_callback is not None:
-        logger.info("Stopping FicTrac...")
-        fictrac_callback.request_stop()
-    if fictrac_driver is not None:
-        fictrac_driver.request_stop()
+    thread_exited_cleanly = True
     if fictrac_thread is not None:
-        fictrac_thread.join(timeout=10.0)
+        if fictrac_driver is not None and hasattr(fictrac_driver, "expect_terminal_drain"):
+            fictrac_driver.expect_terminal_drain()
+        if fictrac_thread.ident is None:
+            logger.info("FicTrac thread was never started; skipping join.")
+        else:
+            logger.info("Waiting briefly for FicTrac to exit naturally...")
+            fictrac_thread.join(timeout=15.0)
+        if fictrac_thread.is_alive() and fictrac_callback is not None:
+            logger.info("Stopping FicTrac...")
+            fictrac_callback.request_stop()
+            fictrac_thread.join(timeout=10.0)
         if fictrac_thread.is_alive():
+            if fictrac_driver is not None:
+                logger.warning("FicTrac thread did not exit after cooperative stop; requesting driver stop.")
+                fictrac_driver.request_stop()
+                fictrac_thread.join(timeout=10.0)
+        if fictrac_thread.is_alive():
+            thread_exited_cleanly = False
             logger.warning("FicTrac thread did not exit cleanly; skipping camera reset")
-        elif fictrac_camera_index is not None:
-            try:
-                from multibios.blackfly.live_view import reset_camera_to_editable_mode
+    elif fictrac_driver is not None:
+        if fictrac_callback is not None:
+            logger.info("Stopping FicTrac...")
+            fictrac_callback.request_stop()
+        fictrac_driver.request_stop()
+    if thread_exited_cleanly and fictrac_camera_index is not None:
+        try:
+            logger.info("Resetting FicTrac camera %s to editable mode...", fictrac_camera_index)
+            _reset_fictrac_camera_external(camera_index=fictrac_camera_index, logger=logger)
+        except Exception as exc:
+            logger.warning(
+                "Failed to reset FicTrac camera %s after shutdown: %s",
+                fictrac_camera_index,
+                exc,
+            )
 
-                logger.info("Resetting FicTrac camera %s to editable mode...", fictrac_camera_index)
-                reset_camera_to_editable_mode(fictrac_camera_index)
-            except Exception as exc:
+
+def _stop_other_camera_recorder(
+    *,
+    recorder: Any,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    logger.info("Stopping second Blackfly recorder...")
+    try:
+        return recorder.stop()
+    except Exception as exc:
+        logger.warning(f"Second Blackfly recorder reported an error during stop: {exc}")
+        manifest_path = recorder.manifest_path
+        if manifest_path.exists():
+            try:
+                recovered = json.loads(manifest_path.read_text(encoding="utf-8"))
+                recovered["stop_warning"] = str(exc)
                 logger.warning(
-                    "Failed to reset FicTrac camera %s after shutdown: %s",
-                    fictrac_camera_index,
-                    exc,
+                    "Recovered second-camera recording metadata from manifest; continuing postprocess."
                 )
+                return recovered
+            except Exception:
+                raise exc
+        raise exc
 
 
 # ----------------------------- progress monitor -----------------------------
@@ -1157,14 +1346,26 @@ def main():
         
     # Process timing configuration with detailed logging
     logger.info("Processing timing configuration...")
-    t = y.get("protocol", {}).get("timing", {})
+    protocol_block = y.setdefault("protocol", {})
+    if not isinstance(protocol_block, dict):
+        raise ValueError("protocol YAML must contain a mapping under 'protocol'")
+    timing_block = protocol_block.setdefault("timing", {})
+    if not isinstance(timing_block, dict):
+        raise ValueError("protocol YAML must contain a mapping under 'protocol.timing'")
+
+    if runtime_cfg.camera_trigger_fps_hz is not None and runtime_cfg.camera_trigger_fps_hz > 0:
+        timing_block["camera_interval"] = 1000.0 / runtime_cfg.camera_trigger_fps_hz
+    if runtime_cfg.camera_trigger_pulse_ms is not None and runtime_cfg.camera_trigger_pulse_ms > 0:
+        timing_block["camera_pulse_duration"] = float(runtime_cfg.camera_trigger_pulse_ms)
+
+    t = timing_block
     logger.debug(f"Raw timing config: {t}")
     
     tcfg = TimingConfig(
         base_unit=t.get("base_unit", "ms"),
         sample_rate=int(t.get("sample_rate", 1000)),
-        camera_interval_ms=int(t.get("camera_interval", 0)),
-        camera_pulse_ms=int(t.get("camera_pulse_duration", 5)),
+        camera_interval_ms=float(t.get("camera_interval", 0.0)),
+        camera_pulse_ms=float(t.get("camera_pulse_duration", 5.0)),
         preload_lead_ms=int(
             args.preload_lead_ms
             if args.preload_lead_ms is not None
@@ -1188,6 +1389,10 @@ def main():
     logger.info(f"  Sample rate: {tcfg.sample_rate} Hz")
     logger.info(f"  Base unit: {tcfg.base_unit}")
     logger.info(f"  Camera interval: {tcfg.camera_interval_ms} ms")
+    if runtime_cfg.camera_trigger_fps_hz is not None:
+        logger.info(f"  Camera trigger FPS (hardware-owned): {runtime_cfg.camera_trigger_fps_hz:.3f} Hz")
+    if runtime_cfg.camera_trigger_pulse_ms is not None:
+        logger.info(f"  Camera trigger pulse (hardware-owned): {runtime_cfg.camera_trigger_pulse_ms} ms")
     logger.info(f"  Camera pulse: {tcfg.camera_pulse_ms} ms")
     logger.info(f"  Preload lead: {tcfg.preload_lead_ms} ms")
     logger.info(f"  Load request: {tcfg.load_req_ms} ms")
@@ -1412,6 +1617,7 @@ def main():
     fictrac_state: dict[str, Exception | None] = {"error": None}
     fictrac_runtime_info: dict[str, Any] = {}
     fictrac_camera_index: int | None = None
+    fictrac_camera_serial: str | None = None
     other_camera_recorder: Any = None
     other_camera_recording: dict[str, Any] = {}
     teensy_serial_monitor: SerialLineMonitor | None = None
@@ -1419,6 +1625,10 @@ def main():
     expected_camera_frames: int | None = None
     nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
     run_interrupted = False
+    resolved_camera_roles: dict[str, dict[str, Any] | None] = {"fictrac": None, "second": None}
+
+    if runtime_cfg.fictrac_camera_serial or runtime_cfg.second_camera_serial:
+        resolved_camera_roles = _resolve_camera_roles(runtime_cfg, logger)
 
     if runtime_cfg.capture_teensy_serial:
         if not runtime_cfg.teensy_port:
@@ -1542,10 +1752,22 @@ def main():
                     runtime_cfg.fictrac_config,
                     run_dir,
                     enable_raw_video=runtime_cfg.save_fictrac_camera_video,
-                    camera_fps=nominal_camera_fps,
+                    camera_fps=runtime_cfg.fictrac_target_fps,
                     video_codec=runtime_cfg.fictrac_raw_video_codec,
                     first_frame_timeout_ms=runtime_cfg.fictrac_first_frame_timeout_ms,
+                    camera_index_override=(
+                        int(resolved_camera_roles["fictrac"]["camera_index"])
+                        if resolved_camera_roles["fictrac"] is not None
+                        else None
+                    ),
                 )
+                fictrac_camera_serial = (
+                    str(resolved_camera_roles["fictrac"].get("serial"))
+                    if resolved_camera_roles["fictrac"] is not None
+                    else None
+                )
+                if fictrac_camera_serial:
+                    fictrac_runtime_info["fictrac_camera_serial"] = fictrac_camera_serial
                 if fictrac_camera_index is not None:
                     logger.info(
                         "FicTrac camera %s should use hardware.yaml image settings (ROI=%sx%s, exposure=%s us, binning=%s, gain=%s dB, gamma=%s).",
@@ -1592,12 +1814,16 @@ def main():
                 fictrac_camera_index = None
 
             if runtime_cfg.save_second_camera_video:
-                second_camera_index = runtime_cfg.second_camera_index
+                second_camera_index = (
+                    int(resolved_camera_roles["second"]["camera_index"])
+                    if resolved_camera_roles["second"] is not None
+                    else runtime_cfg.second_camera_index
+                )
                 if second_camera_index is None and fictrac_camera_index in (0, 1):
                     second_camera_index = 1 - fictrac_camera_index
                 if second_camera_index is None:
                     raise RuntimeError(
-                        "save_second_camera_video requires camera_recording.second_camera_index or a numeric FicTrac src_fn camera index of 0 or 1."
+                        "save_second_camera_video requires camera_recording.second_camera_serial, camera_recording.second_camera_index, or a numeric FicTrac src_fn camera index of 0 or 1."
                     )
                 if fictrac_camera_index is not None and second_camera_index == fictrac_camera_index:
                     raise RuntimeError(
@@ -1606,11 +1832,15 @@ def main():
 
                 from multibios.blackfly.triggered_camera_record import TriggeredCameraRecorder
 
+                second_camera_timeout_ms = runtime_cfg.second_camera_timeout_ms
+                if fictrac_thread is not None and runtime_cfg.fictrac_arm_delay_s > 0:
+                    second_camera_timeout_ms += int(runtime_cfg.fictrac_arm_delay_s * 1000) + 100
+
                 logger.info("Recording Blackfly camera %s into the run directory...", second_camera_index)
                 other_camera_recorder = TriggeredCameraRecorder(
                     camera_index=second_camera_index,
                     run_dir=run_dir,
-                    timeout_ms=runtime_cfg.second_camera_timeout_ms,
+                    timeout_ms=second_camera_timeout_ms,
                     queue_size=runtime_cfg.second_camera_queue_size,
                     stream_buffer_count=runtime_cfg.second_camera_stream_buffer_count,
                     exposure_us=runtime_cfg.second_camera_exposure_us,
@@ -1654,6 +1884,19 @@ def main():
 
                 if fictrac_thread is not None:
                     fictrac_thread.start()
+                    if runtime_cfg.fictrac_arm_delay_s > 0:
+                        logger.info(
+                            "Waiting %.3f s for FicTrac camera arm before starting DO...",
+                            runtime_cfg.fictrac_arm_delay_s,
+                        )
+                        time.sleep(runtime_cfg.fictrac_arm_delay_s)
+                        _check_fictrac_health(
+                            runtime_cfg,
+                            fictrac_callback,
+                            fictrac_thread,
+                            fictrac_state,
+                            other_camera_recorder,
+                        )
 
                 # Capture hardware clock anchor: perf_counter and wall time as close as
                 # possible to the DO start trigger so every sample_idx can be converted to
@@ -1716,6 +1959,13 @@ def main():
                 execution_time = time.time() - start_time
                 logger.info(f"✓ Protocol execution completed in {execution_time:.2f} seconds")
 
+                if other_camera_recorder is not None:
+                    other_camera_recording = _stop_other_camera_recorder(
+                        recorder=other_camera_recorder,
+                        logger=logger,
+                    )
+                    other_camera_recorder = None
+
                 _stop_fictrac(
                     fictrac_driver=fictrac_driver,
                     fictrac_callback=fictrac_callback,
@@ -1724,7 +1974,6 @@ def main():
                     logger=logger,
                 )
                 fictrac_driver = None
-                fictrac_callback = None
                 fictrac_thread = None
 
                 logger.info("Stopping tasks and reading data...")
@@ -1815,23 +2064,10 @@ def main():
             logger=logger,
         )
         if other_camera_recorder is not None:
-            logger.info("Stopping second Blackfly recorder...")
-            try:
-                other_camera_recording = other_camera_recorder.stop()
-            except Exception as exc:
-                logger.warning(f"Second Blackfly recorder reported an error during stop: {exc}")
-                manifest_path = other_camera_recorder.manifest_path
-                if manifest_path.exists():
-                    try:
-                        other_camera_recording = json.loads(manifest_path.read_text(encoding="utf-8"))
-                        other_camera_recording["stop_warning"] = str(exc)
-                        logger.warning(
-                            "Recovered second-camera recording metadata from manifest; continuing postprocess."
-                        )
-                    except Exception:
-                        raise exc
-                else:
-                    raise exc
+            other_camera_recording = _stop_other_camera_recorder(
+                recorder=other_camera_recorder,
+                logger=logger,
+            )
         if teensy_serial_monitor is not None:
             teensy_serial_transcript = teensy_serial_monitor.get_transcript()
             teensy_serial_monitor.close()

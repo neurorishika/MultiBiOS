@@ -199,6 +199,9 @@ class TriggeredCameraRecorder:
                 message = str(exc).lower()
                 if "timeout" in message:
                     continue
+                if "new_buffer_data" in message or "gentl error code: -1011" in message:
+                    self._manifest["stop_reason"] = "trigger_stream_ended"
+                    break
                 self._capture_error = exc
                 return
 

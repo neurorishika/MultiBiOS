@@ -90,6 +90,17 @@ Important for BFS-U3-13Y3M wiring:
 
 When `--arm-cameras` is used, the script also reports how many frames PySpin actually acquired during the trigger train. That is the most direct acceptance check for overlap-capable cameras.
 
+## Camera ROI Sweep
+
+Use [tests/camera_roi_sweep.py](../tests/camera_roi_sweep.py) to sweep a list of requested ROI sizes against one Blackfly camera.
+
+Typical flow:
+
+1. Run `python tests/camera_roi_sweep.py --camera-index 0` from the MultiBiOS root.
+2. If you want a narrower sweep, run `python tests/camera_roi_sweep.py --camera-index 1 --sizes 400x400 512x512 640x640`.
+
+Each ROI attempt runs in its own subprocess so a PySpin teardown abort does not kill the whole sweep. The summary reports ROI node writability before configuration and the actual width, height, and offsets after the attempt.
+
 ## Hardware Test Script
 
 The `hardware_test.py` script generates synchronized square waves on all digital and analog outputs to test hardware connectivity and configuration.

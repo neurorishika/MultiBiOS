@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
@@ -251,6 +252,9 @@ class FicTracCallback(Protocol):
     def shutdown_callback(self) -> None:
         ...
 
+    def stop_requested(self) -> bool:
+        ...
+
 
 class BaseFicTracCallback:
     def setup_callback(self) -> None:
@@ -261,6 +265,9 @@ class BaseFicTracCallback:
 
     def shutdown_callback(self) -> None:
         pass
+
+    def stop_requested(self) -> bool:
+        return False
 
 
 class FicTracFrameStore:
@@ -405,6 +412,8 @@ class FicTracDriver:
         self._launch_wall_time: float | None = None
         self._first_packet_wall_time: float | None = None
         self._initial_wait_timeout_s: float | None = 60.0
+        self._stop_wait_timeout_s: float = 5.0
+        self._terminal_drain_expected = False
         self._diagnostics_path: Optional[Path] = None
         self._diagnostics: dict[str, object] = {
             "config_file": config_file,
@@ -501,8 +510,84 @@ class FicTracDriver:
 
     def request_stop(self) -> None:
         self._fictrac_terminated_by_driver = True
-        if self.fictrac_process is not None and self.fictrac_process.poll() is None:
+        self._stop_fictrac_process()
+
+    def expect_terminal_drain(self) -> None:
+        self._terminal_drain_expected = True
+        self._diagnostics["terminal_drain_expected"] = True
+        self._diagnostics["terminal_drain_expected_wall_time"] = time.monotonic()
+        self._write_diagnostics()
+
+    def _wait_for_process_exit(self, timeout_s: float) -> bool:
+        if self.fictrac_process is None:
+            return True
+        try:
+            self.fictrac_process.wait(timeout=timeout_s)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def _stop_fictrac_process(self) -> None:
+        if self.fictrac_process is None:
+            return
+        if self.fictrac_process.poll() is not None:
+            self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+            self._write_diagnostics()
+            return
+
+        stop_method = "terminate"
+        if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            try:
+                self.fictrac_process.send_signal(signal.CTRL_BREAK_EVENT)
+                stop_method = "ctrl_break"
+            except OSError:
+                self.fictrac_process.terminate()
+        else:
             self.fictrac_process.terminate()
+
+        self._diagnostics["stop_method"] = stop_method
+        self._write_diagnostics()
+
+        if self._wait_for_process_exit(self._stop_wait_timeout_s):
+            self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+            self._write_diagnostics()
+            return
+
+        if stop_method == "ctrl_break":
+            self._diagnostics["stop_fallback"] = "terminate"
+            self._write_diagnostics()
+            self.fictrac_process.terminate()
+            if self._wait_for_process_exit(2.0):
+                self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+                self._write_diagnostics()
+                return
+
+        self._diagnostics["stop_fallback"] = "kill"
+        self._write_diagnostics()
+        self.fictrac_process.kill()
+        self._wait_for_process_exit(2.0)
+        self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+        self._write_diagnostics()
+
+    def _wait_for_natural_exit_after_callback_stop(self) -> bool:
+        if self.fictrac_process is None:
+            return True
+        if self.fictrac_process.poll() is not None:
+            self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+            self._write_diagnostics()
+            return True
+        if not self.track_change_callback.stop_requested():
+            return False
+
+        self._diagnostics["stop_wait_reason"] = "callback_stop_requested"
+        self._diagnostics["stop_wait_timeout_s"] = self._stop_wait_timeout_s
+        self._write_diagnostics()
+        if not self._wait_for_process_exit(self._stop_wait_timeout_s):
+            return False
+
+        self._diagnostics["final_returncode"] = self.fictrac_process.returncode
+        self._write_diagnostics()
+        return True
 
     def run(self) -> None:
         self.track_change_callback.setup_callback()
@@ -532,6 +617,7 @@ class FicTracDriver:
                     # FicTrac's Windows camera path runs when attached to a real console,
                     # but exits immediately when stdout/stderr are redirected.
                     self._console_handle = None
+                    popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
                 else:
                     console_path = Path(self.console_output_file).expanduser()
                     if not console_path.is_absolute():
@@ -583,8 +669,12 @@ class FicTracDriver:
             self._diagnostics["first_packet_wall_time"] = self._first_packet_wall_time
             self._diagnostics["terminated_by_driver"] = self._fictrac_terminated_by_driver
             self._write_diagnostics()
-            if self.fictrac_process is not None and not self._fictrac_terminated_by_driver:
+            if self._wait_for_natural_exit_after_callback_stop():
+                pass
+            elif self.fictrac_process is not None and not self._fictrac_terminated_by_driver:
                 self.request_stop()
+            elif self.fictrac_process is not None:
+                self._stop_fictrac_process()
             udp_socket.close()
             if self._console_handle is not None:
                 self._console_handle.close()
@@ -633,8 +723,17 @@ class FicTracDriver:
                         break
                     continue
 
+                if self.track_change_callback.stop_requested():
+                    break
+
                 silent_for_s = time.monotonic() - last_packet_wall_time
                 if silent_for_s >= self.max_message_silence_s:
+                    if self._terminal_drain_expected:
+                        self._diagnostics["terminal_drain_last_silence_s"] = silent_for_s
+                        self._write_diagnostics()
+                        continue
+                    if self.track_change_callback.stop_requested():
+                        break
                     raise RuntimeError(
                         f"FicTrac UDP stream stalled for {silent_for_s:.1f} s while the process was still running."
                     )
@@ -645,6 +744,11 @@ class FicTracDriver:
 
             t0 = time.perf_counter()
             state = FicTracState.from_udp_message(payload)
+            if self.frame_cnt == 0:
+                self._diagnostics["first_callback_frame_cnt"] = state.frame_cnt
+                self._diagnostics["first_callback_timestamp"] = state.timestamp
+                self._diagnostics["first_callback_seq_num"] = state.seq_num
+                self._diagnostics["first_callback_alt_timestamp"] = state.alt_timestamp
             if last_state is not None and state.frame_cnt - last_state.frame_cnt != 1:
                 skipped = state.frame_cnt - last_state.frame_cnt - 1
                 if skipped > 0:
@@ -658,6 +762,10 @@ class FicTracDriver:
                         )
                     )
             last_state = state
+            self._diagnostics["last_callback_frame_cnt"] = state.frame_cnt
+            self._diagnostics["last_callback_timestamp"] = state.timestamp
+            self._diagnostics["last_callback_seq_num"] = state.seq_num
+            self._diagnostics["last_callback_alt_timestamp"] = state.alt_timestamp
 
             should_continue = self.track_change_callback.process_callback(state)
             self.frame_cnt += 1

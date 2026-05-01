@@ -160,6 +160,18 @@ def _int_node_max(nodemap, node_name: str) -> int:
     return int(node.GetMax()) if PySpin.IsReadable(node) else 0
 
 
+def _sensor_span(nodemap, *, size_name: str, sensor_name: str, offset_name: str) -> int:
+    """Best-effort full sensor span even when the camera boots with a saved ROI."""
+    sensor_span = _int_node_value(nodemap, sensor_name)
+    if sensor_span:
+        return sensor_span
+
+    size_max = _int_node_max(nodemap, size_name)
+    current_size = _int_node_value(nodemap, size_name)
+    offset_max = _int_node_max(nodemap, offset_name)
+    return max(size_max, current_size + offset_max)
+
+
 def _int_node_set(nodemap, node_name: str, value: int) -> bool:
     node = PySpin.CIntegerPtr(nodemap.GetNode(node_name))
     if not PySpin.IsReadable(node) or not PySpin.IsWritable(node):
@@ -235,9 +247,19 @@ def _set_centered_roi(cam, width: int, height: int) -> tuple[int, int, int, int]
     _int_node_set(nm, "OffsetX", 0)
     _int_node_set(nm, "OffsetY", 0)
 
-    width_max = _int_node_max(nm, "Width")
-    height_max = _int_node_max(nm, "Height")
-    if not width_max or not height_max:
+    sensor_width = _sensor_span(
+        nm,
+        size_name="Width",
+        sensor_name="SensorWidth",
+        offset_name="OffsetX",
+    )
+    sensor_height = _sensor_span(
+        nm,
+        size_name="Height",
+        sensor_name="SensorHeight",
+        offset_name="OffsetY",
+    )
+    if not sensor_width or not sensor_height:
         raise RuntimeError("Could not read maximum Width/Height from camera.")
 
     width_node = PySpin.CIntegerPtr(nm.GetNode("Width"))
@@ -251,8 +273,8 @@ def _set_centered_roi(cam, width: int, height: int) -> tuple[int, int, int, int]
     width_inc = int(width_node.GetInc()) or 1
     height_inc = int(height_node.GetInc()) or 1
 
-    width = max(int(width_node.GetMin()), min(width_max, int(width)))
-    height = max(int(height_node.GetMin()), min(height_max, int(height)))
+    width = max(int(width_node.GetMin()), min(sensor_width, int(width)))
+    height = max(int(height_node.GetMin()), min(sensor_height, int(height)))
     width = max(width_inc, (width // width_inc) * width_inc)
     height = max(height_inc, (height // height_inc) * height_inc)
 
@@ -264,8 +286,8 @@ def _set_centered_roi(cam, width: int, height: int) -> tuple[int, int, int, int]
     offset_x_inc = offset_x_inc or 1
     offset_y_inc = offset_y_inc or 1
 
-    offset_x = ((width_max - width) // 2 // offset_x_inc) * offset_x_inc
-    offset_y = ((height_max - height) // 2 // offset_y_inc) * offset_y_inc
+    offset_x = ((sensor_width - width) // 2 // offset_x_inc) * offset_x_inc
+    offset_y = ((sensor_height - height) // 2 // offset_y_inc) * offset_y_inc
 
     _int_node_set(nm, "OffsetX", offset_x)
     _int_node_set(nm, "OffsetY", offset_y)
@@ -276,7 +298,7 @@ def _set_centered_roi(cam, width: int, height: int) -> tuple[int, int, int, int]
     actual_offset_y = int(offset_y_node.GetValue()) if PySpin.IsReadable(offset_y_node) else offset_y
     print(
         f"  ROI: {actual_width} x {actual_height} px  "
-        f"(offset_x={actual_offset_x}, offset_y={actual_offset_y}, full={width_max}x{height_max})"
+        f"(offset_x={actual_offset_x}, offset_y={actual_offset_y}, full={sensor_width}x{sensor_height})"
     )
     return actual_width, actual_height, actual_offset_x, actual_offset_y
 
@@ -558,6 +580,12 @@ def _command_execute(nodemap, node_name: str) -> bool:
     return True
 
 
+def _roi_nodes_writable(nodemap) -> bool:
+    width_node = PySpin.CIntegerPtr(nodemap.GetNode("Width"))
+    height_node = PySpin.CIntegerPtr(nodemap.GetNode("Height"))
+    return bool(PySpin.IsWritable(width_node) and PySpin.IsWritable(height_node))
+
+
 def _load_default_userset(cam) -> bool:
     nm = cam.GetNodeMap()
     if not _enum_set(nm, "UserSetSelector", "Default"):
@@ -596,13 +624,13 @@ def _report_trigger_overlap(nm, overlap_ok: bool) -> None:
                 entries.append(entry.GetSymbolic())
         print(f"  TriggerOverlap = {current_name}  (available: {entries})")
         if current_name in ("ReadOut", "PreviousFrame"):
-            print("  >>> Overlap ENABLED — max rate ≈ free-run rate <<<")
+            print("  >>> Overlap ENABLED - max rate ~= free-run rate <<<")
         else:
-            print("  [info] Overlap OFF — frame time = exposure + readout.")
+            print("  [info] Overlap OFF - frame time = exposure + readout.")
     else:
         print("  [info] TriggerOverlap node not readable on this camera.")
         if not overlap_ok:
-            print("  [info] Overlap not available — frame time = exposure + readout.")
+            print("  [info] Overlap not available - frame time = exposure + readout.")
 
 
 def _configure_triggered_exposure(nm, exposure_us: float) -> None:
@@ -890,7 +918,7 @@ def reset_camera_to_editable_mode(camera_index: int, load_default_userset: bool 
     cam_list = None
     cam = None
 
-    try:
+    def _open_camera() -> tuple[object, object, object]:
         system = PySpin.System.GetInstance()
         cam_list = system.GetCameras()
         camera_count = cam_list.GetSize()
@@ -901,6 +929,27 @@ def reset_camera_to_editable_mode(camera_index: int, load_default_userset: bool 
 
         cam = cam_list.GetByIndex(camera_index)
         cam.Init()
+        return system, cam_list, cam
+
+    def _close_camera(current_system, current_cam_list, current_cam) -> None:
+        if current_cam is not None:
+            try:
+                current_cam.DeInit()
+            except Exception:
+                pass
+        if current_cam_list is not None:
+            try:
+                current_cam_list.Clear()
+            except Exception:
+                pass
+        if current_system is not None:
+            try:
+                current_system.ReleaseInstance()
+            except Exception as exc:
+                print(f"  [warn] Failed to release Spinnaker system: {exc}")
+
+    try:
+        system, cam_list, cam = _open_camera()
         nm = cam.GetNodeMap()
 
         _command_execute(nm, "AcquisitionAbort")
@@ -915,24 +964,40 @@ def reset_camera_to_editable_mode(camera_index: int, load_default_userset: bool 
         _enum_set(nm, "TriggerMode", "Off")
         _enum_set(nm, "AcquisitionMode", "Continuous")
         _set_buffer_newest_only(cam)
+
+        if _roi_nodes_writable(nm):
+            return
+
+        device_reset_ok = _command_execute(nm, "DeviceReset")
+        if not device_reset_ok:
+            raise RuntimeError(
+                f"Camera {camera_index} ROI nodes remain locked and DeviceReset is unavailable. "
+                "Manual camera reset or power-cycle is required."
+            )
+
+        _close_camera(system, cam_list, cam)
+        system = cam_list = cam = None
+        time.sleep(2.0)
+
+        system, cam_list, cam = _open_camera()
+        nm = cam.GetNodeMap()
+        _command_execute(nm, "AcquisitionAbort")
+        _command_execute(nm, "AcquisitionStop")
+        _enum_set(nm, "TriggerMode", "Off")
+        _enum_set(nm, "AcquisitionMode", "Continuous")
+        _disable_frame_rate_control(nm)
+        if load_default_userset and _load_default_userset(cam):
+            nm = cam.GetNodeMap()
+        _enum_set(nm, "TriggerMode", "Off")
+        _enum_set(nm, "AcquisitionMode", "Continuous")
+        _set_buffer_newest_only(cam)
+        if not _roi_nodes_writable(nm):
+            raise RuntimeError(
+                f"Camera {camera_index} ROI nodes remain locked after DeviceReset. "
+                "Manual camera reset or power-cycle is required."
+            )
     finally:
-        if cam is not None:
-            try:
-                cam.DeInit()
-            except Exception:
-                pass
-            cam = None
-        if cam_list is not None:
-            try:
-                cam_list.Clear()
-            except Exception:
-                pass
-            cam_list = None
-        if system is not None:
-            try:
-                system.ReleaseInstance()
-            except Exception as exc:
-                print(f"  [warn] Failed to release Spinnaker system: {exc}")
+        _close_camera(system, cam_list, cam)
 
 
 def release_cameras(system, cam_list, cams, restore_daq: bool = False) -> None:

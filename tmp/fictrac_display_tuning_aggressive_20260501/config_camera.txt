@@ -8,11 +8,11 @@ do_shmem         : n
 do_socket        : y
 max_bad_frames   : 20
 opt_bound        : 0.40
-opt_do_global    : y
+opt_do_global    : n
 opt_max_err      : 35000.000000
-opt_max_evals    : 100
+opt_max_evals    : 25
 opt_tol          : 0.001
-q_factor         : 9
+q_factor         : 4
 roi_c            : { -0.001512, 0.013255, 0.999911 }
 roi_circ         : { 148, 147, 324, 222, 342, 327, 42, 345, 70, 196 }
 roi_ignr         : { { 59, 177, 134, 185, 221, 183, 308, 168, 240, 131, 120, 131 } }

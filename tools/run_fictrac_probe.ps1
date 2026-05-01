@@ -60,6 +60,7 @@ try {
     Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs @(
         (Join-Path $repoRoot "tests/fictrac_live_probe.py"),
         "--config", $resolvedConfigPath,
+        "--hardware", $resolvedHardwarePath,
         "--fictrac-bin", $FicTracBin,
         "--console-output", $ConsoleOutput,
         "--frames", $Frames.ToString()

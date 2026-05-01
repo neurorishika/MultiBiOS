@@ -139,6 +139,87 @@ Why it exists:
 - the real reconfiguration workflow is still the upstream `configGui.exe` UI
 - when that UI is re-run on this rig, it should preserve the rig-safe default of waiting indefinitely for the first trigger unless the user chooses a different value
 
+### 5. Windows shutdown now uses a real graceful-stop path
+
+Files:
+
+- `assets/third_party/FicTrac/exec/fictrac.cpp`
+- `assets/third_party/FicTrac/include/PGRSource.h`
+- `assets/third_party/FicTrac/src/PGRSource.cpp`
+- `assets/third_party/FicTrac/src/FrameGrabber.cpp`
+- `multibios/fictrac_client.py`
+- `multibios/run_protocol.py`
+- `multibios/blackfly/triggered_camera_record.py`
+
+Edits made:
+
+- the Windows FicTrac entrypoint now handles `SIGBREAK` in addition to `SIGINT`
+- `PGRSource::~PGRSource()` now calls `DeInit()` before the camera list and Spinnaker system are released
+- the Spinnaker `NEW_BUFFER_DATA` / `GenTL error code: -1011` condition at end-of-trigger is now treated as a clean stream end rather than a fatal grab failure
+- `FrameGrabber` now logs a normal input-stream end when the source closed itself cleanly
+- the MultiBiOS driver still uses `CTRL_BREAK_EVENT` first on Windows, but that signal now lands in FicTrac's own shutdown path instead of hard-killing the process
+- `run_protocol` now stops the second triggered Blackfly recorder before the generic DAQ teardown path finishes unwinding
+
+Why it exists:
+
+- a hard Windows console break or process termination can bypass the cleanup path that releases the Spinnaker camera cleanly
+- this rig uses externally triggered Blackfly cameras, so a finite trigger train can end before the parent process explicitly asks FicTrac to stop
+- on this rig, treating end-of-trigger as a fatal camera error left the FicTrac camera in a non-editable ROI state after otherwise successful runs
+
+## The Right Way To Kill FicTrac On This Rig
+
+Use a graceful stop, not a hard kill.
+
+Validated shutdown contract:
+
+- on Windows, MultiBiOS should request shutdown with `CTRL_BREAK_EVENT`
+- the FicTrac executable must handle that as `SIGBREAK` and unwind normally through `Trackball`, `FrameGrabber`, and `PGRSource`
+- the Spinnaker camera path must reach `EndAcquisition()` and `DeInit()` before process exit
+- if the finite NI-DAQ trigger train ends first, the Spinnaker `NEW_BUFFER_DATA` / `-1011` condition should be treated as end-of-stream, not as a fatal crash
+- the second triggered Blackfly recorder should be asked to stop before late generic task cleanup, so its capture loop sees shutdown intent instead of an unexplained trigger disappearance
+
+Do not rely on these as the primary shutdown path:
+
+- `TerminateProcess`
+- `kill()`
+- `Popen.terminate()` on Windows as the first stop attempt
+- assuming that a finite hardware trigger train ending by itself is equivalent to a clean FicTrac shutdown
+
+Those paths are still acceptable only as last-resort fallbacks when the process is already unresponsive.
+
+Healthy shutdown signatures validated on this workstation:
+
+- probe path: `fictrac_driver_diagnostics.json` ends with `stop_method: "ctrl_break"` and `final_returncode: 0`
+- maintained protocol path: FicTrac logs `PGR trigger stream ended; closing camera cleanly.` followed by `Input stream ended.`
+- post-run camera inspection reports writable ROI nodes again (`width_writable=true`, `height_writable=true`)
+
+## Raw Recording Format
+
+FicTrac raw camera recording in this repo no longer depends on a single native `VideoWriter` AVI flush during shutdown.
+
+The native path now writes a chunked raw frame stream:
+
+- `fictrac-raw-<timestamp>.json`: manifest with geometry, fps, and chunk paths
+- `fictrac-raw-<timestamp>-index.csv`: per-frame index aligned to FicTrac `log_frame`
+- `fictrac-raw-<timestamp>-chunkNNNNNN.bin`: BGR8 frame chunks
+
+After the run, MultiBiOS reconstructs those chunks into a lossless review video and includes the result in `fictrac_camera_recording.json`.
+
+Implementation detail that matters on this rig:
+
+- raw frames are now written on FicTrac's main tracking loop, not on the optional draw/debug queue, so debug backpressure cannot silently drop saved raw frames
+- MultiBiOS treats the CSV index as the authoritative saved-frame record and ignores an incomplete trailing CSV row if shutdown interrupts the last buffered line write
+
+Why this exists:
+
+- shutdown is no longer blocked on native AVI finalization
+- long triggered experiments can stream frames incrementally to disk
+- frame-count validation now comes from the CSV index instead of inferring success from an AVI container flush
+
+Backward compatibility:
+
+- older runs that only contain `fictrac-vidLogFrames-*.txt` are still summarized by the Python postprocess path as a fallback
+
 ### Effective behavior after these edits
 
 - first frame wait default in tracking path: `30000` ms
@@ -458,6 +539,13 @@ Before a triggered FicTrac run will work reliably:
 - The FicTrac binary must tolerate a delayed first trigger pulse.
 
 The supported runner now follows that startup requirement before protocol execution and waits up to `hardware.yaml -> fictrac.startup_timeout_s` for the first UDP frame.
+
+For focused trigger acceptance checks, run `tests/verify_camera_trigger_path.py --arm-cameras ...`.
+It now reports three things that matter for 200 Hz debugging:
+
+- aggregate trigger acceptance on the DAQ return lines and in direct PySpin acquisition
+- missing-edge classification (`exact`, `missing_internal`, or `missing_boundary` when first-vs-last cannot be proven from timing alone)
+- timing budget readback from the armed camera state, including actual exposure, actual trigger delay, overlap mode, and remaining slack versus the trigger period
 
 ## What MultiBiOS Can Trust Today
 

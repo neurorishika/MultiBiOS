@@ -58,8 +58,8 @@ SMALL_STATE_CODE: Dict[SmallStateName, int] = {"CLEAN": 0, "ODOR": 1}
 class TimingConfig:
     base_unit: str = "ms"
     sample_rate: int = 1000
-    camera_interval_ms: int = 100
-    camera_pulse_ms: int = 5
+    camera_interval_ms: float = 100.0
+    camera_pulse_ms: float = 5.0
     preload_lead_ms: int = 10
     load_req_ms: int = 5
     rck_pulse_ms: int = 1
@@ -296,14 +296,16 @@ class ProtocolCompiler:
         start = self._time_to_idx(start_ms)
         self.camera_enabled[start:] = enabled
 
-    def finalize_camera_wave(self, interval_ms: int, pulse_ms: int) -> None:
+    def finalize_camera_wave(self, interval_ms: float, pulse_ms: float) -> None:
         if interval_ms <= 0:
             return
         w = max(1, self._time_to_idx(pulse_ms) - self._time_to_idx(0))
         li = self.line_to_idx["TRIG_CAMERA"]
         period = self._time_to_idx(interval_ms)
         if period <= 0:
-            raise CompileError("camera_interval must be >= 1 ms at current sample rate")
+            raise CompileError(
+                f"camera_interval must resolve to at least one sample at {self.tcfg.sample_rate} Hz"
+            )
         enabled = False
         next_tick = 0
         if self.do is not None:
@@ -357,8 +359,8 @@ class ProtocolCompiler:
         self.rng = np.random.default_rng(self.rng_seed)
 
         # camera
-        camera_interval = int(timing.get("camera_interval", 0))
-        camera_pulse = int(timing.get("camera_pulse_duration", 5))
+        camera_interval = float(timing.get("camera_interval", 0.0))
+        camera_pulse = float(timing.get("camera_pulse_duration", 5.0))
 
         # sanity for global mode
         if self.load_mode == "global":

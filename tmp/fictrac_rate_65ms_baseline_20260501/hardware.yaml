@@ -1,0 +1,103 @@
+device: "Dev1"
+
+teensy:
+  port: "COM4"
+  baud: 115200
+  capture_serial: true
+
+fictrac:
+  config: "config_camera.txt"
+  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  console_out: "fictrac_output.txt"
+  camera_serial: "26048173"
+  first_frame_timeout_ms: 0
+  target_fps: 153.846154
+  arm_delay_s: 0.5
+  startup_timeout_s: 90.0
+  timeout_s: 5.0
+
+blackfly_defaults:
+  exposure_us: 4500
+  roi_width: 400
+  roi_height: 400
+  binning: 1
+  gain_db: 0.0
+  gamma: 1.0
+
+camera_recording:
+  trigger_fps_hz: 153.846154
+  trigger_pulse_ms: 1
+  save_fictrac_camera_video: true
+  save_second_camera_video: false
+  second_camera_serial: "26021184"
+  second_camera_index: 1
+  fictrac_raw_video_codec: "raw"
+  second_camera_timeout_ms: 250
+  second_camera_queue_size: 512
+  second_camera_stream_buffer_count: 256
+  second_camera_exposure_us:
+  second_camera_roi_width: 400
+  second_camera_roi_height: 400
+  second_camera_binning: 1
+  second_camera_gain_db:
+  second_camera_gamma:
+  verify_no_dropped_frames: true
+  convert_second_camera_bin_to_lossless_mkv: true
+
+daq:
+  latch_interval_ms: 10.0
+
+mfc:
+  mode: "alicat_serial"
+  device_map:
+    mfc.air_left_setpoint: "A"
+    mfc.air_right_setpoint: "B"
+    mfc.odor_left_setpoint: "C"
+    mfc.odor_right_setpoint: "D"
+  alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
+  alicat_baud: [115200]
+  alicat_expected_ids: []
+  live_interval_s: 1.0
+
+data_output:
+  data_dir: "data/runs"
+  open_explorer: true
+  explorer_port: 8050
+
+digital_outputs:
+  OLFACTOMETER_LEFT_S0: "Dev1/port0/line0"
+  OLFACTOMETER_LEFT_S1: "Dev1/port0/line1"
+  OLFACTOMETER_LEFT_S2: "Dev1/port0/line2"
+  SWITCHVALVE_LEFT_S: "Dev1/port0/line3"
+  OLFACTOMETER_RIGHT_S0: "Dev1/port0/line4"
+  OLFACTOMETER_RIGHT_S1: "Dev1/port0/line5"
+  OLFACTOMETER_RIGHT_S2: "Dev1/port0/line6"
+  SWITCHVALVE_RIGHT_S: "Dev1/port0/line7"
+  RCK_OLFACTOMETER_LEFT: "Dev1/port0/line8"
+  RCK_SWITCHVALVE_LEFT: "Dev1/port0/line9"
+  RCK_OLFACTOMETER_RIGHT: "Dev1/port0/line10"
+  RCK_SWITCHVALVE_RIGHT: "Dev1/port0/line11"
+  GLOBAL_LOAD_REQ: "Dev1/port0/line12"
+  TRIG_MICRO: "Dev1/port0/line13"
+  TRIG_CAMERA: "Dev1/port0/line31"
+
+digital_inputs:
+  READY_OLFACTOMETER_LEFT: "Dev1/port0/line15"
+  READY_SWITCHVALVE_LEFT: "Dev1/port0/line16"
+  READY_OLFACTOMETER_RIGHT: "Dev1/port0/line17"
+  READY_SWITCHVALVE_RIGHT: "Dev1/port0/line18"
+  MICRO_FRAME_CLOCK: "Dev1/port0/line14"
+  CAMERA_FRONT_O1: "Dev1/port0/line29"
+  CAMERA_SIDE_O1: "Dev1/port0/line27"
+
+analog_outputs:
+  mfc.air_left_setpoint: "Dev1/ao0"
+  mfc.air_right_setpoint: "Dev1/ao1"
+  mfc.odor_left_setpoint: "Dev1/ao2"
+  mfc.odor_right_setpoint: "Dev1/ao3"
+
+analog_inputs:
+  mfc.air_left_flowrate: "Dev1/ai0"
+  mfc.air_right_flowrate: "Dev1/ai1"
+  mfc.odor_left_flowrate: "Dev1/ai2"
+  mfc.odor_right_flowrate: "Dev1/ai3"
