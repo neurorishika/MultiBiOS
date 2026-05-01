@@ -11,6 +11,29 @@ For the internal client architecture, full-state storage model, closed-loop cons
 - `multibios.run_protocol` has been validated against live FicTrac on this rig.
 - MultiBiOS now sanitizes the Windows child-process environment before launching FicTrac, which avoids the conda/Python DLL path conflict that previously caused native startup crashes.
 
+## Validated Operating Point
+
+The canonical rig configuration now uses the highest display-on rate that has passed repeated artifact-level parity checks on this workstation.
+
+Canonical values in `config/hardware.yaml`:
+
+- `fictrac.target_fps: 142.857143`
+- `camera_recording.trigger_fps_hz: 142.857143`
+- effective shared camera interval: `7.0 ms`
+
+Why this is the canonical setting:
+
+- `5.5 ms` failed twice at `999 / 1000` FicTrac frames
+- `6.5 ms` failed at `845 / 847` FicTrac frames
+- `7.0 ms` passed repeatedly in both FicTrac-only and dual-camera runs with exact parity
+
+Most recent repeatability evidence:
+
+- dual-camera exact parity: `data/runs/2026-05-01_10-27-45`
+- dual-camera exact parity: `data/runs/2026-05-01_10-32-14`
+- dual-camera exact parity: `data/runs/2026-05-01_10-32-33`
+- dual-camera exact parity: `data/runs/2026-05-01_10-32-53`
+
 ## Why A Custom Build Is Needed
 
 Upstream FicTrac supports Point Grey / FLIR industrial cameras through two distinct compile-time paths:
@@ -41,8 +64,40 @@ Practical consequences:
 - `assets/third_party/FicTrac` is the source of truth and may contain local MultiBiOS-specific patches
 - `assets/third_party/FicTrac-build` is only a local build directory and should stay untracked
 - `assets/fictrac-spinnaker` is a packaged runtime output, not the editable source tree
+- `assets/third_party/FicTrac/MULTIBIOS_PATCHSET.md` is the source-adjacent manifest for the maintained native fork
 
 The build helper no longer silently fetches upstream and checks out `master`. That behavior was unsafe once local patches became part of the rig setup.
+
+## Publication Status
+
+The FicTrac changes are now documented in two layers inside this repo:
+
+- this page documents the full integration behavior and validation history
+- `assets/third_party/FicTrac/MULTIBIOS_PATCHSET.md` documents the native fork boundary next to the vendored source tree
+
+Preferred publication model for the lab organization:
+
+1. Create a standalone lab-owned fork repository for the native FicTrac patch set.
+2. Publish the full patched source tree there, preserving upstream license and attribution.
+3. Keep MultiBiOS as the downstream consumer that pins a known commit or release from that fork.
+
+Why that split is cleaner:
+
+- the native patch set and the Python integration have different maintenance boundaries
+- native camera fixes should be versioned independently from experiment-runner changes
+- it avoids treating a packaged executable in this repo as the only durable record of the fork
+
+What this repo now contains to make that publication straightforward:
+
+- a source-adjacent native patch manifest
+- rebuild instructions for the validated Windows Spinnaker toolchain
+- a validated operating point in the canonical hardware config
+
+What is still missing for an actual external publication:
+
+- creation of the remote lab-owned repository
+- import of the patched FicTrac source history or an initial fork snapshot
+- release tags that map packaged binaries to published source commits
 
 ## First-Frame Trigger Failure On This Rig
 

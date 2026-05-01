@@ -11,7 +11,7 @@ fictrac:
   console_out: "fictrac_output.txt"
   camera_serial: "26048173"
   first_frame_timeout_ms: 0 # Wait indefinitely for first frame (set to nonzero to bound wait time)
-  target_fps: 200.0
+  target_fps: 142.857143 # Verified display-on repeatability point (7.0 ms interval)
   arm_delay_s: 0.5
   startup_timeout_s: 90.0
   timeout_s: 5.0
@@ -25,7 +25,7 @@ blackfly_defaults:
   gamma: 1.0
 
 camera_recording:
-  trigger_fps_hz: 200.0
+  trigger_fps_hz: 142.857143 # Keep shared trigger train aligned with the verified 7.0 ms FicTrac rate
   trigger_pulse_ms: 1
   save_fictrac_camera_video: true
   save_second_camera_video: true
