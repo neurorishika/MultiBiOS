@@ -21,7 +21,7 @@ $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 $fictracRuntimeDir = Join-Path $repoRoot "assets/fictrac-spinnaker"
 $configGuiExe = Join-Path $fictracRuntimeDir "configGui.exe"
 $setupScript = "-m multibios.blackfly.setup_daq_mode"
-$triggerScript = Join-Path $repoRoot "tests/continuous_camera_trigger.py"
+$triggerScript = Join-Path $repoRoot "tools/manual_checks/continuous_camera_trigger.py"
 $runtimePathPrefix = @(
     $fictracRuntimeDir,
     "C:/Program Files/Teledyne/Spinnaker/bin64/vs2015",

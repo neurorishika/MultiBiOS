@@ -7,7 +7,7 @@ you whether the cameras are actually accepting each commanded trigger.
 
 Typical usage from the MultiBiOS root:
 
-    python tests/verify_camera_trigger_path.py --fps 60 --duration 3
+    python tools/manual_checks/verify_camera_trigger_path.py --fps 60 --duration 3
 
 Optional:
     --trigger-monitor Dev1/port0/line28

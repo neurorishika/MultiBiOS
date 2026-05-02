@@ -2,8 +2,8 @@
 """Send a single trigger pulse to start cameras in AcquisitionStart mode.
 
 Usage:
-    python tests/start_camera_trigger.py                # single start pulse
-    python tests/start_camera_trigger.py --stop         # send stop pulse
+    python tools/manual_checks/start_camera_trigger.py                # single start pulse
+    python tools/manual_checks/start_camera_trigger.py --stop         # send stop pulse
 
 In AcquisitionStart mode the cameras free-run at their configured fps
 after receiving one rising edge.  This script sends that single pulse.

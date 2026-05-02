@@ -21,7 +21,7 @@ $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 } else {
     Join-Path $repoRoot $ConfigPath
 }
-$triggerScript = Join-Path $repoRoot "tests/continuous_camera_trigger.py"
+$triggerScript = Join-Path $repoRoot "tools/manual_checks/continuous_camera_trigger.py"
 . (Join-Path $PSScriptRoot "_rig_python.ps1")
 
 $triggerProcess = $null
@@ -58,7 +58,7 @@ try {
 
     Write-Host "Running FicTrac live probe..." -ForegroundColor Yellow
     Invoke-RigPython -CondaEnv $CondaEnv -CondaExe $CondaExe -PythonArgs @(
-        (Join-Path $repoRoot "tests/fictrac_live_probe.py"),
+        (Join-Path $repoRoot "tools/manual_checks/fictrac_live_probe.py"),
         "--config", $resolvedConfigPath,
         "--hardware", $resolvedHardwarePath,
         "--fictrac-bin", $FicTracBin,

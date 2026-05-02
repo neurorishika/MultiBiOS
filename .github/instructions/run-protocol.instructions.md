@@ -134,7 +134,7 @@ python -m multibios.viz_protocol data/runs/<timestamp>/
 ## Running Tests (No Hardware Needed)
 ```powershell
 # Quick functional validation
-python tests/simple_test.py
+python tools/manual_checks/simple_test.py
 
 # Full test suite
 python -m pytest tests/

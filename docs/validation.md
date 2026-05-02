@@ -21,13 +21,13 @@
    Quick pre-session sweep (all four channels, ±0.1 V tolerance):
 
    ```bash
-   python tests/mfc_analog_test.py sweep
+   python tools/manual_checks/mfc_analog_test.py sweep
    ```
 
    Live monitor while setting setpoints manually:
 
    ```bash
-   python tests/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
+   python tools/manual_checks/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
    ```
 
    Exit code 0 = PASS.  Exit code 1 = one or more channels outside tolerance — investigate before running an experiment.

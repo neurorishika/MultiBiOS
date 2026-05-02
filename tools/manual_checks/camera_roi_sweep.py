@@ -6,8 +6,8 @@ can abort the interpreter after a successful configuration attempt.
 
 Typical usage from the MultiBiOS root:
 
-    python tests/camera_roi_sweep.py --camera-index 0
-    python tests/camera_roi_sweep.py --camera-index 1 --sizes 400x400 512x512 640x640
+    python tools/manual_checks/camera_roi_sweep.py --camera-index 0
+    python tools/manual_checks/camera_roi_sweep.py --camera-index 1 --sizes 400x400 512x512 640x640
 """
 
 from __future__ import annotations

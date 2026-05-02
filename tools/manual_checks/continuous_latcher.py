@@ -6,7 +6,7 @@ Continuously sends latch signals (GLOBAL_LOAD_REQ + RCK_*) at a specified interv
 Useful for testing Teensy/Shift Register responsiveness without running a full protocol.
 
 Usage:
-    python tests/continuous_latcher.py --interval 100
+    python tools/manual_checks/continuous_latcher.py --interval 100
 """
 
 import argparse
@@ -48,7 +48,7 @@ def main():
             hw_path = candidate
         else:
             # Try assuming args.hardware was relative to root, but we are in tests/
-            # and user ran python tests/continuous_latcher.py
+            # and user ran python tools/manual_checks/continuous_latcher.py
             # If user ran from root, hw_path (config/hardware.yaml) should exist.
             # If user ran from tests/, hw_path (config/hardware.yaml) might not exist.
             pass

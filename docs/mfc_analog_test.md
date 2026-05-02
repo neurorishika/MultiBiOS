@@ -1,6 +1,6 @@
 # MFC Analog Test Interface
 
-`tests/mfc_analog_test.py` is the primary tool for verifying and monitoring
+`tools/manual_checks/mfc_analog_test.py` is the primary tool for verifying and monitoring
 the four mass-flow controller (MFC) channels.  It replaces the legacy
 serial-based `flow_monitor` and talks directly to the NI-DAQ board — the same
 hardware path used during live experiments.
@@ -35,13 +35,13 @@ on `Ctrl+C` (pass `--no-zero-on-exit` to suppress).
 
 ```bash
 # Watch current flow with all channels at 0 V
-python tests/mfc_analog_test.py monitor
+python tools/manual_checks/mfc_analog_test.py monitor
 
 # Apply setpoints before monitoring
-python tests/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
+python tools/manual_checks/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
 
 # Faster poll, no auto-zero on exit
-python tests/mfc_analog_test.py monitor --interval 0.2 --no-zero-on-exit
+python tools/manual_checks/mfc_analog_test.py monitor --interval 0.2 --no-zero-on-exit
 ```
 
 **Display columns:**
@@ -65,16 +65,16 @@ fails, making it usable in CI.
 
 ```bash
 # Default sweep: 0 → 1 → 2 → 3 → 4 → 5 → 0 V, 0.5 s dwell, ±0.1 V tolerance
-python tests/mfc_analog_test.py sweep
+python tools/manual_checks/mfc_analog_test.py sweep
 
 # Tighter tolerance, longer dwell
-python tests/mfc_analog_test.py sweep --tolerance 0.05 --dwell 1.0
+python tools/manual_checks/mfc_analog_test.py sweep --tolerance 0.05 --dwell 1.0
 
 # Sweep a subset of channels only
-python tests/mfc_analog_test.py sweep --channels air_left odor_left
+python tools/manual_checks/mfc_analog_test.py sweep --channels air_left odor_left
 
 # Custom voltage steps
-python tests/mfc_analog_test.py sweep --levels 0 2.5 5 0
+python tools/manual_checks/mfc_analog_test.py sweep --levels 0 2.5 5 0
 ```
 
 **Example output:**
@@ -105,7 +105,7 @@ Prints the resolved channel map without touching hardware.  Use this to
 confirm `hardware.yaml` is being parsed correctly before connecting devices.
 
 ```bash
-python tests/mfc_analog_test.py --dry-run monitor
+python tools/manual_checks/mfc_analog_test.py --dry-run monitor
 ```
 
 ```
@@ -124,7 +124,7 @@ MFC AO channels:
 ## Custom hardware config
 
 ```bash
-python tests/mfc_analog_test.py --hardware path/to/other_hardware.yaml sweep
+python tools/manual_checks/mfc_analog_test.py --hardware path/to/other_hardware.yaml sweep
 ```
 
 The `--hardware` flag defaults to `config/hardware.yaml` relative to the
@@ -177,7 +177,7 @@ correctly before starting an experiment session.
 
 ```bash
 # Recommended pre-session check
-python tests/mfc_analog_test.py sweep --dwell 1.0
+python tools/manual_checks/mfc_analog_test.py sweep --dwell 1.0
 ```
 
 Exit code 0 = all channels within tolerance.  Exit code 1 = investigate before

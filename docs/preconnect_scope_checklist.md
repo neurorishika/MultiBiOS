@@ -83,8 +83,8 @@ Do not mix analog and digital grounds casually on the bench just because they ar
 
 ### Test script
 
-- [tests/preconnect_scope_test.py](../tests/preconnect_scope_test.py)
-- [tests/verify_camera_return_line.py](../tests/verify_camera_return_line.py)
+- [tools/manual_checks/preconnect_scope_test.py](../tools/manual_checks/preconnect_scope_test.py)
+- [tools/manual_checks/verify_camera_return_line.py](../tools/manual_checks/verify_camera_return_line.py)
 
 ## Test 1: Verify the camera trigger output unloaded
 
@@ -104,7 +104,7 @@ Do not mix analog and digital grounds casually on the bench just because they ar
 ### Test 1 command to run
 
 ```powershell
-python tests/preconnect_scope_test.py trigger --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --sample-rate 10000
+python tools/manual_checks/preconnect_scope_test.py trigger --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --sample-rate 10000
 ```
 
 ### Test 1 expected result
@@ -167,7 +167,7 @@ Suggested order:
 ### Test 2 command to run
 
 ```powershell
-python tests/preconnect_scope_test.py analog --hardware config/hardware.yaml --dwell 1.0 --sample-rate 2000
+python tools/manual_checks/preconnect_scope_test.py analog --hardware config/hardware.yaml --dwell 1.0 --sample-rate 2000
 ```
 
 ### Test 2 expected result
@@ -261,13 +261,13 @@ Check whether the specific line under test is:
 ### Test 5 command to run
 
 ```powershell
-python tests/verify_camera_return_line.py --line line1 --hardware config/hardware.yaml
+python tools/manual_checks/verify_camera_return_line.py --line line1 --hardware config/hardware.yaml
 ```
 
 If you are intentionally testing the red wire instead of the white wire:
 
 ```powershell
-python tests/verify_camera_return_line.py --line line2 --hardware config/hardware.yaml
+python tools/manual_checks/verify_camera_return_line.py --line line2 --hardware config/hardware.yaml
 ```
 
 ## Test 6: Connect one MFC only
@@ -299,13 +299,13 @@ Use this order exactly:
 ## Quick commands summary
 
 ```powershell
-python tests/preconnect_scope_test.py trigger --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --sample-rate 10000
+python tools/manual_checks/preconnect_scope_test.py trigger --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --sample-rate 10000
 
-python tests/preconnect_scope_test.py analog --hardware config/hardware.yaml --dwell 1.0 --sample-rate 2000
+python tools/manual_checks/preconnect_scope_test.py analog --hardware config/hardware.yaml --dwell 1.0 --sample-rate 2000
 
-python tests/preconnect_scope_test.py both --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --dwell 1.0 --sample-rate 10000
+python tools/manual_checks/preconnect_scope_test.py both --hardware config/hardware.yaml --period-ms 1000 --pulse-ms 10 --duration 5 --dwell 1.0 --sample-rate 10000
 
-python tests/verify_camera_return_line.py --line line1 --hardware config/hardware.yaml
+python tools/manual_checks/verify_camera_return_line.py --line line1 --hardware config/hardware.yaml
 ```
 
 ## Safety stop conditions

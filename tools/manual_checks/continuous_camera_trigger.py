@@ -2,7 +2,7 @@
 """Continuously output camera trigger pulses on TRIG_CAMERA for Blackfly trigger testing.
 
 Usage:
-    python tests/continuous_camera_trigger.py --fps 30
+    python tools/manual_checks/continuous_camera_trigger.py --fps 30
 
 This script continuously regenerates a single-period pulse train on the
 TRIG_CAMERA digital output line defined in config/hardware.yaml.

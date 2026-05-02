@@ -46,7 +46,7 @@ If only the white wire is connected to the NI-DAQ DI and the blue wire is left f
 Run this from the `multibios-blackfly` environment:
 
 ```powershell
-python tests/verify_camera_return_line.py --line line1
+python tools/manual_checks/verify_camera_return_line.py --line line1
 ```
 
 This drives `Line1` through `UserOutput1` and checks whether either DAQ return line changes state.
@@ -61,7 +61,7 @@ Interpretation:
 If you intentionally wired the red wire instead of the white wire, test `Line2` instead:
 
 ```powershell
-python tests/verify_camera_return_line.py --line line2
+python tools/manual_checks/verify_camera_return_line.py --line line2
 ```
 
 Interpretation:
@@ -98,7 +98,7 @@ Interpretation:
 
 ## Practical next bench order
 
-1. Verify the white-wire path with `python tests/verify_camera_return_line.py --line line1`.
+1. Verify the white-wire path with `python tools/manual_checks/verify_camera_return_line.py --line line1`.
 2. If it stays flat, confirm the blue `Opto GND` is actually tied into the DAQ/scope reference.
 3. If it still stays flat, repeat the test with a controlled external pull-up or bias path.
 4. Only test `Line2` if you are intentionally using the red wire and have provided an external pull-up.

@@ -11,19 +11,19 @@ Voltage–flow mapping (Alicat default 0–5 V full-scale):
 
 Usage:
     # Live monitor (read current flow, set setpoints interactively):
-    python tests/mfc_analog_test.py monitor
+    python tools/manual_checks/mfc_analog_test.py monitor
 
     # Set specific channels then monitor:
-    python tests/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
+    python tools/manual_checks/mfc_analog_test.py monitor --set air_left=2.5 odor_right=1.0
 
     # Step sweep — verify linearity, prints pass/fail:
-    python tests/mfc_analog_test.py sweep
+    python tools/manual_checks/mfc_analog_test.py sweep
 
     # Set then immediately zero on exit (same pattern as flow_monitor):
-    python tests/mfc_analog_test.py monitor --set air_left=3.0 --zero-on-exit
+    python tools/manual_checks/mfc_analog_test.py monitor --set air_left=3.0 --zero-on-exit
 
     # Dry-run: print config and exit without touching hardware:
-    python tests/mfc_analog_test.py monitor --dry-run
+    python tools/manual_checks/mfc_analog_test.py monitor --dry-run
 
 All modes accept --hardware <path> (default: config/hardware.yaml relative to
 the MultiBiOS repo root).

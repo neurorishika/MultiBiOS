@@ -664,8 +664,8 @@ def main():
     ap.add_argument(
         "--output-dir",
         type=Path,
-        default="tests/results",
-        help="Output directory for results (default: tests/results)"
+        default="tools/manual_checks/results",
+        help="Output directory for results (default: tools/manual_checks/results)"
     )
     ap.add_argument(
         "--verbose", "-v",

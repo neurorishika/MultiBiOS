@@ -20,7 +20,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "_rig_python.ps1")
 
 $pythonArgs = @(
-    (Join-Path $repoRoot "tests/mfc_analog_test.py"),
+    (Join-Path $repoRoot "tools/manual_checks/mfc_analog_test.py"),
     "--hardware", $HardwarePath
 )
 
