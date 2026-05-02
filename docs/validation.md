@@ -16,6 +16,45 @@
 
 ## Hardware tests (with MFC loopback or live MFCs)
 
+### Protocol parity checks
+
+Use the dedicated tool entry points when you want an end-to-end frame-count parity check across:
+
+- trigger rising edges
+- FicTrac raw saved frames
+- FicTrac UDP frame count
+- FicTrac callback frame count
+- second-camera saved frames
+
+Short-run smoke test:
+
+```powershell
+.\tools\run_short_frame_parity_test.ps1 -VerboseOutput -Progress
+```
+
+Long-run parity test:
+
+```powershell
+.\tools\run_long_frame_parity_test.ps1 -VerboseOutput -Progress
+```
+
+Behavior:
+
+- both scripts run `multibios.run_protocol`
+- both then run `multibios.parity_audit` on the newly created run directory
+- nonzero exit means either the protocol run itself failed or trigger/frame parity failed
+- the detailed audit is written to `parity_audit.json` inside the run directory
+
+Defaults:
+
+- short-run test uses `protocols/short_protocol.yaml`
+- long-run test uses `protocols/odor_lateralization.yaml`
+- both use `config/hardware.yaml` unless you override `-HardwarePath`
+
+Optional debugging aid:
+
+- pass `-KeepRawChunks` if you want the parity test to temporarily force `raw_chunk_retention_policy: keep` for that run so the raw `.bin` chunks remain available for manual inspection even when the main hardware config is set to `delete_after_parity`
+
 1. **MFC AO/AI tracking** — see [MFC Analog Test](mfc_analog_test.md) for the full reference.
 
    Quick pre-session sweep (all four channels, ±0.1 V tolerance):

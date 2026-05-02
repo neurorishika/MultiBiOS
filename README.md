@@ -337,6 +337,18 @@ poetry run black multibios/
 poetry run ruff check multibios/
 ```
 
+### Test And Tool Layout
+
+- `tests/` is reserved for automated `pytest` coverage.
+- `tools/manual_checks/` is for operator-facing hardware checks, probes, and bench scripts that are meant to be run directly.
+- When adding new validation code, put reusable automated assertions under `tests/` and keep live camera, DAQ, MFC, or FicTrac helpers under `tools/manual_checks/`.
+
+For a quick automated smoke pass from the repo root, run:
+
+```bash
+pytest tests/
+```
+
 📖 **[Full contributing guide →](https://neurorishika.github.io/MultiBiOS/contributing/)**
 
 ## 📄 License

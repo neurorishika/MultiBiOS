@@ -19,10 +19,16 @@ $resolvedConfigPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     Join-Path $repoRoot $ConfigPath
 }
 $fictracRuntimeDir = Join-Path $repoRoot "assets/fictrac-spinnaker"
-$configGuiExe = Join-Path $fictracRuntimeDir "configGui.exe"
+$fictracBuildDir = Join-Path $repoRoot "assets/third_party/FicTrac/bin/Release"
+$configGuiCandidates = @(
+    (Join-Path $fictracBuildDir "configGui.exe"),
+    (Join-Path $fictracRuntimeDir "configGui.exe")
+)
+$configGuiExe = $configGuiCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 $setupScript = "-m multibios.blackfly.setup_daq_mode"
 $triggerScript = Join-Path $repoRoot "tools/manual_checks/continuous_camera_trigger.py"
 $runtimePathPrefix = @(
+    $fictracBuildDir,
     $fictracRuntimeDir,
     "C:/Program Files/Teledyne/Spinnaker/bin64/vs2015",
     "C:/Program Files/Point Grey Research/FlyCapture2/bin64/vs2015"
@@ -34,7 +40,7 @@ if (-not (Test-Path $resolvedConfigPath)) {
 }
 
 if (-not (Test-Path $configGuiExe)) {
-    throw "configGui.exe not found: $configGuiExe"
+    throw "configGui.exe not found in any expected location: $($configGuiCandidates -join ', ')"
 }
 
 $triggerProcess = $null
@@ -78,7 +84,8 @@ try {
 
     Write-Host "Launching FicTrac config UI..." -ForegroundColor Yellow
     Write-Host "  Config: $resolvedConfigPath" -ForegroundColor Gray
-    Write-Host "  configGui is interactive. Prompts such as 'keep existing sphere ROI configuration' are expected." -ForegroundColor Gray
+    Write-Host "  Binary: $configGuiExe" -ForegroundColor Gray
+    Write-Host "  configGui is interactive. Instructions and confirmations are shown in the config window; the terminal is logs only." -ForegroundColor Gray
     if (-not $NoTriggerTrain) {
         Write-Host "  Trigger train PID: $($triggerProcess.Id)" -ForegroundColor Gray
         Write-Host "  Hardware defaults: $resolvedHardwarePath" -ForegroundColor Gray

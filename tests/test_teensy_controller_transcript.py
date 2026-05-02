@@ -6,8 +6,8 @@ import time
 
 import serial
 
+from legacy.multibios.serial.teensy_controller import TeensyController
 from multibios.serial_line_monitor import SerialLineMonitor
-from MultiBiOS.legacy.multibios.serial.teensy_controller import TeensyController
 
 
 class _FakeSerial:
