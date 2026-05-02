@@ -96,6 +96,8 @@ class ExperimentConfig:
     save_fictrac_camera_video: bool = False
     fictrac_raw_video_codec: str = "raw"
     save_second_camera_video: bool = False
+    camera_trigger_fps_hz: float | None = None
+    camera_trigger_pulse_ms: int | None = None
     second_camera_index: int | None = None
     second_camera_timeout_ms: int = 250
     second_camera_queue_size: int = 512
@@ -286,6 +288,14 @@ def _warn_deprecated_experiment_key(
     )
 
 
+def _warn_ignored_protocol_timing_key(key: str, hardware_key: str) -> None:
+    warnings.warn(
+        f"protocol.timing.{key} is ignored; use {hardware_key} in config/hardware.yaml",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
 _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "teensy_port": "teensy.port",
     "teensy_baud": "teensy.baud",
@@ -293,12 +303,15 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "fictrac_bin": "fictrac.bin",
     "fictrac_console_out": "fictrac.console_out",
     "fictrac_first_frame_timeout_ms": "fictrac.first_frame_timeout_ms",
+    "fictrac_target_fps": "camera_recording.trigger_fps_hz",
     "fictrac_startup_timeout_s": "fictrac.startup_timeout_s",
     "fictrac_timeout_s": "fictrac.timeout_s",
     "save_fictrac_camera_video": "camera_recording.save_fictrac_camera_video",
     "save_camera_raw_video": "camera_recording.save_fictrac_camera_video",
     "fictrac_raw_video_codec": "camera_recording.fictrac_raw_video_codec",
     "save_second_camera_video": "camera_recording.save_second_camera_video",
+    "camera_trigger_fps_hz": "camera_recording.trigger_fps_hz",
+    "camera_trigger_pulse_ms": "camera_recording.trigger_pulse_ms",
     "second_camera_index": "camera_recording.second_camera_index",
     "second_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
     "other_camera_timeout_ms": "camera_recording.second_camera_timeout_ms",
@@ -761,10 +774,18 @@ class ExperimentRunner:
 
         # Build trigger config from protocol timing section
         timing = self.protocol_yaml.get("protocol", {}).get("timing", {})
+        if "camera_interval" in timing:
+            _warn_ignored_protocol_timing_key("camera_interval", "camera_recording.trigger_fps_hz")
+        if "camera_pulse_duration" in timing:
+            _warn_ignored_protocol_timing_key("camera_pulse_duration", "camera_recording.trigger_pulse_ms")
         self.trigger_cfg = TriggerConfig(
             sample_rate=int(timing.get("sample_rate", 2000)),
-            camera_interval_ms=float(timing.get("camera_interval", 100)),
-            camera_pulse_ms=float(timing.get("camera_pulse_duration", 5)),
+            camera_interval_ms=(1000.0 / self.cfg.camera_trigger_fps_hz)
+            if self.cfg.camera_trigger_fps_hz is not None and self.cfg.camera_trigger_fps_hz > 0
+            else 0.0,
+            camera_pulse_ms=float(self.cfg.camera_trigger_pulse_ms)
+            if self.cfg.camera_trigger_pulse_ms is not None and self.cfg.camera_trigger_pulse_ms > 0
+            else 5.0,
             trig_pulse_ms=float(timing.get("trig_pulse_ms", 5)),
             latch_interval_ms=self.cfg.latch_interval_ms,
             preload_lead_ms=float(timing.get("preload_lead_ms", 2)),
@@ -894,9 +915,7 @@ class ExperimentRunner:
                 raise RuntimeError("Run directory was not prepared before starting FicTrac.")
 
             print("Starting FicTrac...")
-            nominal_camera_fps = None
-            if self.trigger_cfg is not None and self.trigger_cfg.camera_interval_ms > 0:
-                nominal_camera_fps = 1000.0 / self.trigger_cfg.camera_interval_ms
+            nominal_camera_fps = self.cfg.camera_trigger_fps_hz
 
             fictrac_config_path, fictrac_camera_index, self._fictrac_runtime_info = _prepare_fictrac_runtime_config(
                 self.cfg.fictrac_config,
@@ -1414,9 +1433,7 @@ class ExperimentRunner:
             self._other_camera_recording = postprocess_triggered_camera_recording(
                 self._other_camera_recording,
                 expected_frame_count=expected_camera_frames if self.cfg.verify_camera_recording else None,
-                nominal_fps=(1000.0 / self.trigger_cfg.camera_interval_ms)
-                if self.trigger_cfg is not None and self.trigger_cfg.camera_interval_ms > 0
-                else None,
+                nominal_fps=self.cfg.camera_trigger_fps_hz,
                 convert_to_lossless_mkv=self.cfg.convert_second_camera_bin_to_lossless_mkv,
             )
             with open(self._run_dir / "blackfly_recording.json", "w", encoding="utf-8") as f:
@@ -1758,6 +1775,12 @@ def load_experiment_config(
         _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "fictrac")
         cfg.fictrac_first_frame_timeout_ms = int(raw["fictrac_first_frame_timeout_ms"])
 
+    if "target_fps" in hardware_fictrac:
+        raise ValueError(
+            f"fictrac.target_fps is no longer supported in {hardware_path}; "
+            "use camera_recording.trigger_fps_hz as the single source of truth"
+        )
+
     cfg.fictrac_startup_timeout_s = float(
         hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s)
     )
@@ -1796,6 +1819,18 @@ def load_experiment_config(
     if "save_second_camera_video" in raw:
         _warn_deprecated_experiment_key("save_second_camera_video", hardware_path, "camera_recording")
         cfg.save_second_camera_video = bool(raw["save_second_camera_video"])
+
+    camera_trigger_fps_hz = hardware_camera_recording.get("trigger_fps_hz", cfg.camera_trigger_fps_hz)
+    cfg.camera_trigger_fps_hz = None if camera_trigger_fps_hz is None else float(camera_trigger_fps_hz)
+    if "camera_trigger_fps_hz" in raw:
+        _warn_deprecated_experiment_key("camera_trigger_fps_hz", hardware_path, "camera_recording")
+        cfg.camera_trigger_fps_hz = float(raw["camera_trigger_fps_hz"])
+
+    camera_trigger_pulse_ms = hardware_camera_recording.get("trigger_pulse_ms", cfg.camera_trigger_pulse_ms)
+    cfg.camera_trigger_pulse_ms = None if camera_trigger_pulse_ms is None else int(camera_trigger_pulse_ms)
+    if "camera_trigger_pulse_ms" in raw:
+        _warn_deprecated_experiment_key("camera_trigger_pulse_ms", hardware_path, "camera_recording")
+        cfg.camera_trigger_pulse_ms = int(raw["camera_trigger_pulse_ms"])
 
     second_camera_index = hardware_camera_recording.get("second_camera_index", cfg.second_camera_index)
     cfg.second_camera_index = None if second_camera_index is None else int(second_camera_index)

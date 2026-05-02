@@ -17,8 +17,8 @@ The canonical rig configuration now uses the highest display-on rate that has pa
 
 Canonical values in `config/hardware.yaml`:
 
-- `fictrac.target_fps: 142.857143`
 - `camera_recording.trigger_fps_hz: 142.857143`
+- FicTrac `src_fps` is generated from `camera_recording.trigger_fps_hz` at runtime
 - effective shared camera interval: `7.0 ms`
 
 Why this is the canonical setting:

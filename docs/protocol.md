@@ -20,8 +20,6 @@ protocol:
   timing:
     base_unit: "ms"                    # Time unit for all timing values
     sample_rate: 1000                  # Hz - 1000=1ms precision, 10000=0.1ms precision
-    camera_interval: 100               # ms - interval between camera pulses (0=disabled)
-    camera_pulse_duration: 5           # ms - duration of camera trigger pulses
     preload_lead_ms: 2                 # ms - S-bits switch before LOAD_REQ pulse
     load_req_ms: 1                     # ms - duration of LOAD_REQ pulses
     rck_pulse_ms: 1                    # ms - duration of register clock (RCK) pulses
@@ -60,8 +58,7 @@ sequence:
 
 ### Camera & Trigger Timing  
 
-- **camera_interval**: Interval between continuous camera pulses (0 = disabled)
-- **camera_pulse_duration**: Width of camera trigger pulses
+- Camera trigger cadence and pulse width are hardware-owned and come from `camera_recording.trigger_fps_hz` and `camera_recording.trigger_pulse_ms` in `config/hardware.yaml`
 - **trig_pulse_ms**: Width of microscope trigger pulses
 
 ## Device Types & States

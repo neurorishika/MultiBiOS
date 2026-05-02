@@ -23,8 +23,6 @@ protocol:
   timing:
     base_unit: "ms"
     sample_rate: 1000            # Hz  (1 ms precision)
-    camera_interval: 100         # ms  (10 Hz camera trigger)
-    camera_pulse_duration: 5     # ms
     preload_lead_ms: 2
     load_req_ms: 1
     rck_pulse_ms: 1

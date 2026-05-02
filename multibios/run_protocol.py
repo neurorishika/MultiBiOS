@@ -66,6 +66,35 @@ from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 RAW_CHUNK_RETENTION_POLICIES = {"keep", "delete_after_parity"}
 
 
+def _read_yaml_text(path: Path) -> Any:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _warn_ignored_protocol_timing_key(key: str, hardware_key: str) -> None:
+    warnings.warn(
+        f"protocol.timing.{key} is ignored; use {hardware_key} in config/hardware.yaml",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+def _apply_hardware_owned_camera_timing(timing_block: dict[str, Any], cfg: RunProtocolConfig) -> None:
+    if "camera_interval" in timing_block:
+        _warn_ignored_protocol_timing_key("camera_interval", "camera_recording.trigger_fps_hz")
+        timing_block.pop("camera_interval", None)
+    if "camera_pulse_duration" in timing_block:
+        _warn_ignored_protocol_timing_key("camera_pulse_duration", "camera_recording.trigger_pulse_ms")
+        timing_block.pop("camera_pulse_duration", None)
+
+    if cfg.camera_trigger_fps_hz is not None and cfg.camera_trigger_fps_hz > 0:
+        timing_block["camera_interval"] = 1000.0 / cfg.camera_trigger_fps_hz
+    else:
+        timing_block["camera_interval"] = 0.0
+
+    if cfg.camera_trigger_pulse_ms is not None and cfg.camera_trigger_pulse_ms > 0:
+        timing_block["camera_pulse_duration"] = float(cfg.camera_trigger_pulse_ms)
+
+
 @dataclass
 class RunProtocolConfig:
     teensy_port: str = ""
@@ -76,7 +105,6 @@ class RunProtocolConfig:
     fictrac_console_out: str = "fictrac_output.txt"
     fictrac_camera_serial: str = ""
     fictrac_first_frame_timeout_ms: int = 0
-    fictrac_target_fps: float | None = None
     fictrac_arm_delay_s: float = 0.5
     fictrac_startup_timeout_s: float = 90.0
     fictrac_timeout_s: float = 5.0
@@ -280,7 +308,7 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "fictrac_console_out": "fictrac.console_out",
     "fictrac_camera_serial": "fictrac.camera_serial",
     "fictrac_first_frame_timeout_ms": "fictrac.first_frame_timeout_ms",
-    "fictrac_target_fps": "fictrac.target_fps",
+    "fictrac_target_fps": "camera_recording.trigger_fps_hz",
     "fictrac_arm_delay_s": "fictrac.arm_delay_s",
     "fictrac_startup_timeout_s": "fictrac.startup_timeout_s",
     "fictrac_timeout_s": "fictrac.timeout_s",
@@ -405,11 +433,11 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "fictrac")
         cfg.fictrac_first_frame_timeout_ms = int(raw["fictrac_first_frame_timeout_ms"])
 
-    fictrac_target_fps = hardware_fictrac.get("target_fps", cfg.fictrac_target_fps)
-    cfg.fictrac_target_fps = None if fictrac_target_fps is None else float(fictrac_target_fps)
-    if "fictrac_target_fps" in raw:
-        _warn_deprecated_experiment_key("fictrac_target_fps", hardware_path, "fictrac")
-        cfg.fictrac_target_fps = float(raw["fictrac_target_fps"])
+    if "target_fps" in hardware_fictrac:
+        raise ValueError(
+            f"fictrac.target_fps is no longer supported in {hardware_path}; "
+            "use camera_recording.trigger_fps_hz as the single source of truth"
+        )
 
     cfg.fictrac_arm_delay_s = float(hardware_fictrac.get("arm_delay_s", cfg.fictrac_arm_delay_s))
     if "fictrac_arm_delay_s" in raw:
@@ -1561,7 +1589,7 @@ def load_hardware(path: Path) -> HardwareMap:
     logger.debug(f"Loading hardware YAML from: {path}")
     
     try:
-        y = yaml.safe_load(path.read_text())
+        y = _read_yaml_text(path)
         logger.debug(f"YAML keys found: {list(y.keys()) if isinstance(y, dict) else 'Not a dict'}")
         
         # Validate required fields
@@ -1764,7 +1792,7 @@ def main():
     logger.info("Loading protocol configuration...")
     logger.debug(f"Reading protocol YAML from: {proto_path}")
     
-    y = yaml.safe_load(proto_path.read_text())
+    y = _read_yaml_text(proto_path)
     logger.info("✓ Protocol YAML loaded successfully")
     logger.debug(f"Protocol keys: {list(y.keys()) if isinstance(y, dict) else 'Not a dict'}")
     
@@ -1781,10 +1809,7 @@ def main():
     if not isinstance(timing_block, dict):
         raise ValueError("protocol YAML must contain a mapping under 'protocol.timing'")
 
-    if runtime_cfg.camera_trigger_fps_hz is not None and runtime_cfg.camera_trigger_fps_hz > 0:
-        timing_block["camera_interval"] = 1000.0 / runtime_cfg.camera_trigger_fps_hz
-    if runtime_cfg.camera_trigger_pulse_ms is not None and runtime_cfg.camera_trigger_pulse_ms > 0:
-        timing_block["camera_pulse_duration"] = float(runtime_cfg.camera_trigger_pulse_ms)
+    _apply_hardware_owned_camera_timing(timing_block, runtime_cfg)
 
     t = timing_block
     logger.debug(f"Raw timing config: {t}")
@@ -1878,8 +1903,8 @@ def main():
     logger.info("Saving input files for reproducibility...")
     proto_copy = run_dir / "protocol.yaml"
     hw_copy = run_dir / "hardware.yaml"
-    proto_copy.write_text(proto_path.read_text())
-    hw_copy.write_text(hw_path.read_text())
+    proto_copy.write_text(proto_path.read_text(encoding="utf-8"), encoding="utf-8")
+    hw_copy.write_text(hw_path.read_text(encoding="utf-8"), encoding="utf-8")
     logger.info(f"  ✓ Protocol YAML copy: {proto_copy}")
     logger.info(f"  ✓ Hardware YAML copy: {hw_copy}")
     
@@ -2055,8 +2080,8 @@ def main():
     first_camera_trigger_sample = _first_rising_edge_sample(camera_trigger_trace)
     nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
     long_high_rate_fictrac_run = bool(
-        runtime_cfg.fictrac_target_fps is not None
-        and runtime_cfg.fictrac_target_fps >= 120.0
+        runtime_cfg.camera_trigger_fps_hz is not None
+        and runtime_cfg.camera_trigger_fps_hz >= 120.0
         and expected_camera_frames is not None
         and expected_camera_frames >= 10_000
     )
@@ -2188,13 +2213,13 @@ def main():
                     logger.info(
                         "Long high-rate FicTrac run detected (%s expected camera frames at %.3f Hz); forcing headless runtime config.",
                         expected_camera_frames,
-                        runtime_cfg.fictrac_target_fps,
+                        runtime_cfg.camera_trigger_fps_hz,
                     )
                 fictrac_config_path, fictrac_camera_index, fictrac_runtime_info = _prepare_fictrac_runtime_config(
                     runtime_cfg.fictrac_config,
                     run_dir,
                     enable_raw_video=runtime_cfg.save_fictrac_camera_video,
-                    camera_fps=runtime_cfg.fictrac_target_fps,
+                    camera_fps=runtime_cfg.camera_trigger_fps_hz,
                     video_codec=runtime_cfg.fictrac_raw_video_codec,
                     first_frame_timeout_ms=runtime_cfg.fictrac_first_frame_timeout_ms,
                     force_headless=long_high_rate_fictrac_run,

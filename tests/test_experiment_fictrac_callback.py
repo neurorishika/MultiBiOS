@@ -25,6 +25,7 @@ from multibios.run_protocol import (ExperimentCallback,
                                     _count_rising_edges,
                                     _first_rising_edge_sample,
                                     _prepare_fictrac_runtime_config,
+                                    _read_yaml_text,
                                     _safe_stop_task, _stop_fictrac,
                                     _wait_for_fictrac_frame_drain,
                                     load_run_protocol_config)
@@ -91,6 +92,24 @@ def test_prepare_fictrac_runtime_config_enables_raw_video(tmp_path: Path) -> Non
     assert f"output_fn        : {(tmp_path / 'fictrac').as_posix()}" in runtime_text
     assert info["save_raw"] is True
     assert info["first_frame_timeout_ms"] == 0
+
+
+def test_read_yaml_text_reads_utf8_protocol_comments(tmp_path: Path) -> None:
+    protocol_path = tmp_path / "odor_lateralization.yaml"
+    protocol_path.write_text(
+        "# Unicode box: ┌───┐\n"
+        "protocol:\n"
+        "  name: utf8 protocol\n"
+        "  timing:\n"
+        "    base_unit: ms\n"
+        "    sample_rate: 1000\n"
+        "sequence: []\n",
+        encoding="utf-8",
+    )
+
+    loaded = _read_yaml_text(protocol_path)
+
+    assert loaded["protocol"]["name"] == "utf8 protocol"
 
 
 def test_prepare_fictrac_runtime_config_overrides_src_fn(tmp_path: Path) -> None:
@@ -336,7 +355,6 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
         "  bin: C:/rig/fictrac-spinnaker.exe\n"
         "  console_out: fictrac_hw.txt\n"
         "  first_frame_timeout_ms: 0\n"
-        "  target_fps: 200\n"
         "  arm_delay_s: 0.5\n"
         "  startup_timeout_s: 0\n"
         "  timeout_s: 7\n",
@@ -349,10 +367,21 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
     assert cfg.fictrac_bin == "C:/rig/fictrac-spinnaker.exe"
     assert cfg.fictrac_console_out == "fictrac_hw.txt"
     assert cfg.fictrac_first_frame_timeout_ms == 0
-    assert cfg.fictrac_target_fps == 200.0
     assert cfg.fictrac_arm_delay_s == 0.5
     assert cfg.fictrac_startup_timeout_s == 0.0
     assert cfg.fictrac_timeout_s == 7.0
+
+
+def test_load_run_protocol_config_rejects_fictrac_target_fps(tmp_path: Path) -> None:
+    hw_path = tmp_path / "hardware.yaml"
+    hw_path.write_text(
+        "fictrac:\n"
+        "  target_fps: 200\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="single source of truth"):
+        load_run_protocol_config(None, hardware_path=hw_path)
 
 
 def test_load_run_protocol_config_rejects_experiment_hardware_overrides(tmp_path: Path) -> None:

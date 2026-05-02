@@ -9,8 +9,6 @@ protocol:
   timing:
     base_unit: "ms"
     sample_rate: 2000
-    camera_interval: 100
-    camera_pulse_duration: 5
     preload_lead_ms: 5
     load_req_ms: 1
     rck_pulse_ms: 1
