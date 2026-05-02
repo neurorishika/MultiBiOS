@@ -21,6 +21,7 @@ Artifacts are written to data/runs/YYYY-MM-DD_HH-MM-SS/
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import subprocess
@@ -30,8 +31,9 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
+import cv2
 import nidaqmx
 import numpy as np
 # Plotly
@@ -50,6 +52,7 @@ from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording
 from multibios.fictrac_runtime import prepare_fictrac_runtime
+from multibios.parity_audit import summarize_run_parity
 from multibios.protocol.control_plan import (compile_control_plan,
                                              write_control_plan_csv)
 # Compiler
@@ -58,6 +61,9 @@ from multibios.protocol.schema import (CompileError, ProtocolCompiler,
 from multibios.serial_line_monitor import SerialLineMonitor
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
+
+
+RAW_CHUNK_RETENTION_POLICIES = {"keep", "delete_after_parity"}
 
 
 @dataclass
@@ -98,6 +104,7 @@ class RunProtocolConfig:
     second_camera_gamma: float | None = None
     verify_camera_recording: bool = True
     convert_second_camera_bin_to_lossless_mkv: bool = True
+    raw_chunk_retention_policy: str = "keep"
     data_dir: str = "data/runs"
 
 
@@ -180,6 +187,7 @@ def _prepare_fictrac_runtime_config(
     camera_fps: float | None,
     video_codec: str,
     first_frame_timeout_ms: int,
+    force_headless: bool = False,
     camera_index_override: int | None = None,
 ) -> tuple[Path, int | None, dict[str, Any]]:
     source_path = Path(source_config_path)
@@ -207,6 +215,8 @@ def _prepare_fictrac_runtime_config(
         _upsert_fictrac_config_line(lines, "vid_codec", video_codec)
         if camera_fps is not None and camera_fps > 0:
             _upsert_fictrac_config_line(lines, "src_fps", f"{camera_fps:.6f}")
+    if force_headless:
+        _upsert_fictrac_config_line(lines, "do_display", "n")
 
     runtime_path = target_dir / "fictrac_runtime_config.txt"
     runtime_path.write_text("".join(lines), encoding="utf-8")
@@ -219,6 +229,7 @@ def _prepare_fictrac_runtime_config(
         "video_codec": video_codec,
         "camera_fps": camera_fps,
         "first_frame_timeout_ms": int(first_frame_timeout_ms),
+        "force_headless": bool(force_headless),
         "fictrac_camera_index": fictrac_camera_index,
     }
 
@@ -307,6 +318,8 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "other_camera_gamma": "camera_recording.second_camera_gamma or blackfly_defaults.gamma",
     "verify_camera_recording": "camera_recording.verify_no_dropped_frames",
     "convert_second_camera_bin_to_lossless_mkv": "camera_recording.convert_second_camera_bin_to_lossless_mkv",
+    "raw_chunk_retention_policy": "camera_recording.raw_chunk_retention_policy",
+    "delete_raw_chunks_after_parity": "camera_recording.raw_chunk_retention_policy",
     "data_dir": "data_output.data_dir",
 }
 
@@ -627,6 +640,22 @@ def load_run_protocol_config(
         )
         cfg.convert_second_camera_bin_to_lossless_mkv = bool(raw["convert_second_camera_bin_to_lossless_mkv"])
 
+    raw_chunk_retention_policy = str(
+        hardware_camera_recording.get("raw_chunk_retention_policy", cfg.raw_chunk_retention_policy) or cfg.raw_chunk_retention_policy
+    ).strip().lower()
+    if raw_chunk_retention_policy not in RAW_CHUNK_RETENTION_POLICIES:
+        allowed = ", ".join(sorted(RAW_CHUNK_RETENTION_POLICIES))
+        raise ValueError(
+            f"camera_recording.raw_chunk_retention_policy must be one of: {allowed}; got {raw_chunk_retention_policy!r}"
+        )
+    cfg.raw_chunk_retention_policy = raw_chunk_retention_policy
+    if "raw_chunk_retention_policy" in raw:
+        _warn_deprecated_experiment_key("raw_chunk_retention_policy", hardware_path, "camera_recording")
+        cfg.raw_chunk_retention_policy = str(raw["raw_chunk_retention_policy"]).strip().lower()
+    if "delete_raw_chunks_after_parity" in raw:
+        _warn_deprecated_experiment_key("delete_raw_chunks_after_parity", hardware_path, "camera_recording")
+        cfg.raw_chunk_retention_policy = "delete_after_parity" if bool(raw["delete_raw_chunks_after_parity"]) else "keep"
+
     cfg.data_dir = str(hardware_data_output.get("data_dir", cfg.data_dir))
     if "data_dir" in raw:
         _warn_deprecated_experiment_key("data_dir", hardware_path, "data_output")
@@ -642,6 +671,52 @@ def _count_rising_edges(trace: np.ndarray | None) -> int | None:
         return 0
     bool_trace = np.asarray(trace, dtype=np.bool_)
     return int(bool_trace[0]) + int(np.count_nonzero(~bool_trace[:-1] & bool_trace[1:]))
+
+
+def _first_rising_edge_sample(trace: np.ndarray | None) -> int | None:
+    if trace is None:
+        return None
+    if trace.size == 0:
+        return None
+    bool_trace = np.asarray(trace, dtype=np.bool_)
+    if bool_trace[0]:
+        return 0
+    rising = np.flatnonzero(~bool_trace[:-1] & bool_trace[1:])
+    if rising.size == 0:
+        return None
+    return int(rising[0] + 1)
+
+
+def _compute_second_camera_startup_timeout_s(
+    *,
+    first_trigger_sample: int | None,
+    sample_rate: int,
+    arm_delay_s: float,
+    recorder_timeout_ms: int,
+) -> float:
+    first_trigger_s = 0.0
+    if first_trigger_sample is not None and sample_rate > 0:
+        first_trigger_s = float(first_trigger_sample) / float(sample_rate)
+    return max(
+        2.0,
+        float(arm_delay_s) + first_trigger_s + (float(recorder_timeout_ms) / 1000.0) + 0.5,
+    )
+
+
+def _compute_fictrac_drain_timeout_s(
+    *,
+    expected_frame_count: int | None,
+    observed_frame_count: int,
+    camera_fps: float | None,
+) -> float:
+    if expected_frame_count is None or expected_frame_count <= observed_frame_count:
+        return 0.5
+
+    remaining_frames = expected_frame_count - observed_frame_count
+    if camera_fps is None or camera_fps <= 0:
+        return max(1.0, 0.05 * remaining_frames)
+
+    return max(0.5, remaining_frames / camera_fps + max(0.25, 8.0 / camera_fps))
 
 
 def _discover_fictrac_raw_videos(run_dir: Path) -> list[str]:
@@ -671,6 +746,266 @@ def _build_fictrac_recording_summary(
         expected_frame_count=expected_frame_count,
         legacy_raw_videos=_discover_fictrac_raw_videos(run_dir),
         legacy_saved_raw_frames=_count_fictrac_saved_raw_frames(run_dir),
+    )
+
+
+def _write_parity_summary(run_dir: Path) -> tuple[dict[str, Any], Path]:
+    summary = summarize_run_parity(run_dir)
+    parity_path = run_dir / "parity_audit.json"
+    parity_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary, parity_path
+
+
+def _resolve_run_artifact_path(run_dir: Path, path_value: Any) -> Path | None:
+    if not path_value:
+        return None
+
+    path = Path(str(path_value))
+    candidates: list[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.extend([path, run_dir / path.name, run_dir / path])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _video_reaches_frame(video_path: Path, frame_index: int) -> bool:
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        capture.release()
+        return False
+
+    try:
+        reported_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if reported_frames > 0 and reported_frames <= frame_index:
+            return False
+        if frame_index > 0 and not capture.set(cv2.CAP_PROP_POS_FRAMES, float(frame_index)):
+            return False
+        ok, _ = capture.read()
+        return bool(ok)
+    finally:
+        capture.release()
+
+
+def _recording_chunk_field_names(recording: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    if recording.get("raw_stream_chunks") is not None:
+        names.append("raw_stream_chunks")
+    if recording.get("chunk_paths") is not None:
+        names.append("chunk_paths")
+    return names
+
+
+def _recording_chunk_paths(run_dir: Path, recording: dict[str, Any]) -> list[Path]:
+    raw_paths: list[Any] = []
+    raw_paths.extend(recording.get("raw_stream_chunks", []) or [])
+    raw_paths.extend(recording.get("chunk_paths", []) or [])
+    if not raw_paths and recording.get("frame_bin_path"):
+        raw_paths.append(recording["frame_bin_path"])
+
+    resolved: list[Path] = []
+    seen: set[Path] = set()
+    for path_value in raw_paths:
+        resolved_path = _resolve_run_artifact_path(run_dir, path_value)
+        if resolved_path is None or resolved_path in seen:
+            continue
+        seen.add(resolved_path)
+        resolved.append(resolved_path)
+    return resolved
+
+
+def _recording_saved_frame_count(recording: dict[str, Any]) -> int | None:
+    for key in ("saved_raw_frames", "saved_frames"):
+        value = recording.get(key)
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _recording_lossless_video_path(run_dir: Path, recording: dict[str, Any]) -> Path | None:
+    lossless_video = recording.get("lossless_video") or {}
+    return _resolve_run_artifact_path(run_dir, lossless_video.get("path"))
+
+
+def _parity_summary_allows_chunk_cleanup(
+    parity_summary: dict[str, Any],
+    *,
+    fictrac_recording: dict[str, Any] | None,
+    blackfly_recording: dict[str, Any] | None,
+) -> tuple[bool, str | None]:
+    counts = parity_summary.get("counts", {})
+    trigger_count = counts.get("trigger_rising_edges")
+    if trigger_count is None:
+        return False, "missing_trigger_count"
+
+    required_keys: list[str] = []
+    if fictrac_recording:
+        required_keys.extend([
+            "fictrac_saved_raw_frames",
+            "fictrac_udp_frame_cnt",
+            "fictrac_callback_frames",
+        ])
+    if blackfly_recording:
+        required_keys.append("second_camera_saved_frames")
+
+    for key in required_keys:
+        value = counts.get(key)
+        if value is None:
+            return False, f"missing_{key}"
+        if int(value) != int(trigger_count):
+            return False, f"parity_mismatch_{key}"
+
+    return True, None
+
+
+def _build_chunk_cleanup_metadata(
+    *,
+    policy: str,
+    parity_path: Path,
+    applied: bool,
+    reason: str | None,
+    chunk_paths: list[Path],
+    deleted_chunk_bytes: int,
+    validated_video_path: Path | None,
+    validated_frame_count: int | None,
+) -> dict[str, Any]:
+    return {
+        "policy": policy,
+        "applied": applied,
+        "reason": reason,
+        "deleted_chunk_count": len(chunk_paths) if applied else 0,
+        "deleted_chunk_bytes": int(deleted_chunk_bytes) if applied else 0,
+        "deleted_chunk_paths": [str(path) for path in chunk_paths] if applied else [],
+        "parity_summary_path": str(parity_path),
+        "validated_video_path": None if validated_video_path is None else str(validated_video_path),
+        "validated_frame_count": validated_frame_count,
+    }
+
+
+def _annotate_recording_after_chunk_cleanup(
+    recording: dict[str, Any],
+    *,
+    cleanup_info: dict[str, Any],
+    applied: bool,
+) -> dict[str, Any]:
+    updated = dict(recording)
+    updated["raw_chunk_cleanup"] = cleanup_info
+    updated["raw_chunks_retained"] = not applied
+    if applied:
+        for field_name in _recording_chunk_field_names(updated):
+            updated[field_name] = []
+        if "frame_bin_path" in updated:
+            updated["frame_bin_path"] = None
+    return updated
+
+
+def _annotate_manifest_after_chunk_cleanup(
+    run_dir: Path,
+    manifest_path_value: Any,
+    *,
+    cleanup_info: dict[str, Any],
+    applied: bool,
+) -> None:
+    manifest_path = _resolve_run_artifact_path(run_dir, manifest_path_value)
+    if manifest_path is None or not manifest_path.exists():
+        return
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["raw_chunk_cleanup"] = cleanup_info
+    manifest["raw_chunks_retained"] = not applied
+    if applied:
+        if "chunk_paths" in manifest:
+            manifest["chunk_paths"] = []
+        if "frame_bin_path" in manifest:
+            manifest["frame_bin_path"] = None
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def _finalize_raw_chunk_retention(
+    *,
+    run_dir: Path,
+    policy: str,
+    parity_summary: dict[str, Any],
+    parity_path: Path,
+    fictrac_recording: dict[str, Any] | None,
+    blackfly_recording: dict[str, Any] | None,
+    logger: logging.Logger,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if policy == "keep":
+        return fictrac_recording, blackfly_recording
+
+    parity_ok, parity_reason = _parity_summary_allows_chunk_cleanup(
+        parity_summary,
+        fictrac_recording=fictrac_recording,
+        blackfly_recording=blackfly_recording,
+    )
+
+    def _finalize_one(
+        recording: dict[str, Any] | None,
+        *,
+        system_name: str,
+        manifest_key: str,
+    ) -> dict[str, Any] | None:
+        if recording is None:
+            return None
+
+        chunk_paths = _recording_chunk_paths(run_dir, recording)
+        saved_frames = _recording_saved_frame_count(recording)
+        video_path = _recording_lossless_video_path(run_dir, recording)
+        chunk_bytes_before_delete = sum(path.stat().st_size for path in chunk_paths if path.exists())
+        applied = False
+        if not parity_ok:
+            reason = parity_reason
+        elif not chunk_paths:
+            reason = "no_raw_chunks_found"
+        elif saved_frames is None or saved_frames <= 0:
+            reason = "missing_saved_frame_count"
+        elif video_path is None or not video_path.exists():
+            reason = "missing_lossless_video"
+        elif not _video_reaches_frame(video_path, saved_frames - 1):
+            reason = "lossless_video_failed_validation"
+        else:
+            reason = None
+            applied = True
+            for chunk_path in chunk_paths:
+                if chunk_path.exists():
+                    chunk_path.unlink(missing_ok=True)
+
+        cleanup_info = _build_chunk_cleanup_metadata(
+            policy=policy,
+            parity_path=parity_path,
+            applied=applied,
+            reason=reason,
+            chunk_paths=chunk_paths,
+            deleted_chunk_bytes=chunk_bytes_before_delete,
+            validated_video_path=video_path,
+            validated_frame_count=saved_frames,
+        )
+        updated = _annotate_recording_after_chunk_cleanup(recording, cleanup_info=cleanup_info, applied=applied)
+        _annotate_manifest_after_chunk_cleanup(
+            run_dir,
+            recording.get(manifest_key),
+            cleanup_info=cleanup_info,
+            applied=applied,
+        )
+        if applied:
+            logger.info(
+                "Deleted %s raw chunk(s) for %s after parity validation (%s bytes)",
+                cleanup_info["deleted_chunk_count"],
+                system_name,
+                cleanup_info["deleted_chunk_bytes"],
+            )
+        else:
+            logger.info("Retained %s raw chunks: %s", system_name, reason)
+        return updated
+
+    return (
+        _finalize_one(fictrac_recording, system_name="FicTrac", manifest_key="raw_stream_manifest"),
+        _finalize_one(blackfly_recording, system_name="second camera", manifest_key="manifest_path"),
     )
 
 
@@ -721,6 +1056,98 @@ def _check_fictrac_health(
             f"FicTrac stopped producing frames for {stale_for_s:.1f} s "
             f"(timeout={cfg.fictrac_timeout_s:.1f} s)"
         )
+
+
+def _wait_for_second_camera_first_frame(
+    *,
+    recorder: Any,
+    startup_timeout_s: float,
+    logger: logging.Logger,
+    health_check: Callable[[], None],
+) -> None:
+    logger.info("Waiting up to %.1f s for the second camera first frame...", startup_timeout_s)
+    deadline = time.monotonic() + startup_timeout_s
+    while recorder.frame_count <= 0 and time.monotonic() < deadline:
+        health_check()
+        time.sleep(0.1)
+
+    health_check()
+    if recorder.frame_count <= 0:
+        raise RuntimeError(
+            f"Second camera did not capture any frames within {startup_timeout_s:.1f} s of protocol start"
+        )
+
+    logger.info("Second camera connected (%s frame(s) captured)", recorder.frame_count)
+
+
+def _is_fictrac_terminal_exit_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "FicTrac process exited unexpectedly (no exception)" in message
+        or "FicTrac thread stopped unexpectedly" in message
+    )
+
+
+def _wait_for_fictrac_frame_drain(
+    *,
+    callback: ExperimentCallback | None,
+    expected_frame_count: int | None,
+    camera_fps: float | None,
+    logger: logging.Logger,
+    health_check: Callable[[], None],
+) -> None:
+    if callback is None or expected_frame_count is None or expected_frame_count <= 0:
+        return
+
+    observed_frame_count = callback.frame_count
+    if observed_frame_count >= expected_frame_count:
+        return
+
+    timeout_s = _compute_fictrac_drain_timeout_s(
+        expected_frame_count=expected_frame_count,
+        observed_frame_count=observed_frame_count,
+        camera_fps=camera_fps,
+    )
+    logger.info(
+        "Waiting up to %.2f s for FicTrac to drain final %s frame(s)...",
+        timeout_s,
+        expected_frame_count - observed_frame_count,
+    )
+    deadline = time.monotonic() + timeout_s
+    while callback.frame_count < expected_frame_count and time.monotonic() < deadline:
+        try:
+            health_check()
+        except RuntimeError as exc:
+            if not _is_fictrac_terminal_exit_error(exc):
+                raise
+            logger.info(
+                "FicTrac ended before drain completed at %s/%s frame(s).",
+                callback.frame_count,
+                expected_frame_count,
+            )
+            return
+        time.sleep(0.05)
+
+    try:
+        health_check()
+    except RuntimeError as exc:
+        if not _is_fictrac_terminal_exit_error(exc):
+            raise
+        logger.info(
+            "FicTrac ended before drain completed at %s/%s frame(s).",
+            callback.frame_count,
+            expected_frame_count,
+        )
+        return
+    if callback.frame_count >= expected_frame_count:
+        logger.info("FicTrac drained to expected frame count (%s).", callback.frame_count)
+        return
+
+    logger.warning(
+        "FicTrac drain wait ended at %s/%s frame(s); proceeding with shutdown.",
+        callback.frame_count,
+        expected_frame_count,
+    )
 
 
 def _preconfigure_fictrac_camera_external(
@@ -1331,6 +1758,7 @@ def main():
     logger.info(f"  Run output root: {run_root}")
     logger.info(f"  FicTrac enabled: {bool(runtime_cfg.fictrac_config)}")
     logger.info(f"  Second camera recording: {runtime_cfg.save_second_camera_video}")
+    logger.info(f"  Raw chunk retention: {runtime_cfg.raw_chunk_retention_policy}")
 
     # Load and process protocol YAML
     logger.info("Loading protocol configuration...")
@@ -1622,8 +2050,16 @@ def main():
     other_camera_recording: dict[str, Any] = {}
     teensy_serial_monitor: SerialLineMonitor | None = None
     teensy_serial_transcript: list[dict[str, Any]] = []
-    expected_camera_frames: int | None = None
+    camera_trigger_trace = comp.do[do_names.index("TRIG_CAMERA")] if "TRIG_CAMERA" in do_names else None
+    expected_camera_frames = _count_rising_edges(camera_trigger_trace)
+    first_camera_trigger_sample = _first_rising_edge_sample(camera_trigger_trace)
     nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
+    long_high_rate_fictrac_run = bool(
+        runtime_cfg.fictrac_target_fps is not None
+        and runtime_cfg.fictrac_target_fps >= 120.0
+        and expected_camera_frames is not None
+        and expected_camera_frames >= 10_000
+    )
     run_interrupted = False
     resolved_camera_roles: dict[str, dict[str, Any] | None] = {"fictrac": None, "second": None}
 
@@ -1748,6 +2184,12 @@ def main():
 
             if runtime_cfg.fictrac_config:
                 logger.info("Preparing FicTrac runtime configuration...")
+                if long_high_rate_fictrac_run:
+                    logger.info(
+                        "Long high-rate FicTrac run detected (%s expected camera frames at %.3f Hz); forcing headless runtime config.",
+                        expected_camera_frames,
+                        runtime_cfg.fictrac_target_fps,
+                    )
                 fictrac_config_path, fictrac_camera_index, fictrac_runtime_info = _prepare_fictrac_runtime_config(
                     runtime_cfg.fictrac_config,
                     run_dir,
@@ -1755,6 +2197,7 @@ def main():
                     camera_fps=runtime_cfg.fictrac_target_fps,
                     video_codec=runtime_cfg.fictrac_raw_video_codec,
                     first_frame_timeout_ms=runtime_cfg.fictrac_first_frame_timeout_ms,
+                    force_headless=long_high_rate_fictrac_run,
                     camera_index_override=(
                         int(resolved_camera_roles["fictrac"]["camera_index"])
                         if resolved_camera_roles["fictrac"] is not None
@@ -1814,6 +2257,7 @@ def main():
                 fictrac_camera_index = None
 
             if runtime_cfg.save_second_camera_video:
+                second_camera_startup_timeout_s = 0.0
                 second_camera_index = (
                     int(resolved_camera_roles["second"]["camera_index"])
                     if resolved_camera_roles["second"] is not None
@@ -1835,6 +2279,16 @@ def main():
                 second_camera_timeout_ms = runtime_cfg.second_camera_timeout_ms
                 if fictrac_thread is not None and runtime_cfg.fictrac_arm_delay_s > 0:
                     second_camera_timeout_ms += int(runtime_cfg.fictrac_arm_delay_s * 1000) + 100
+                second_camera_startup_timeout_s = _compute_second_camera_startup_timeout_s(
+                    first_trigger_sample=first_camera_trigger_sample,
+                    sample_rate=rate,
+                    arm_delay_s=runtime_cfg.fictrac_arm_delay_s if fictrac_thread is not None else 0.0,
+                    recorder_timeout_ms=second_camera_timeout_ms,
+                )
+                second_camera_timeout_ms = max(
+                    second_camera_timeout_ms,
+                    int(np.ceil(second_camera_startup_timeout_s * 1000.0)),
+                )
 
                 logger.info("Recording Blackfly camera %s into the run directory...", second_camera_index)
                 other_camera_recorder = TriggeredCameraRecorder(
@@ -1910,6 +2364,20 @@ def main():
                 meta_file.write_text(json.dumps(meta_data, indent=2))
                 logger.info("✓ All DAQ tasks started, protocol execution in progress...")
 
+                if other_camera_recorder is not None:
+                    _wait_for_second_camera_first_frame(
+                        recorder=other_camera_recorder,
+                        startup_timeout_s=second_camera_startup_timeout_s,
+                        logger=logger,
+                        health_check=lambda: _check_fictrac_health(
+                            runtime_cfg,
+                            fictrac_callback,
+                            fictrac_thread,
+                            fictrac_state,
+                            other_camera_recorder,
+                        ),
+                    )
+
                 if fictrac_callback is not None:
                     startup_timeout_s = runtime_cfg.fictrac_startup_timeout_s
                     if startup_timeout_s <= 0:
@@ -1958,6 +2426,20 @@ def main():
                 do_task.wait_until_done(timeout=1.0)
                 execution_time = time.time() - start_time
                 logger.info(f"✓ Protocol execution completed in {execution_time:.2f} seconds")
+
+                _wait_for_fictrac_frame_drain(
+                    callback=fictrac_callback,
+                    expected_frame_count=expected_camera_frames if runtime_cfg.verify_camera_recording else None,
+                    camera_fps=runtime_cfg.camera_trigger_fps_hz,
+                    logger=logger,
+                    health_check=lambda: _check_fictrac_health(
+                        runtime_cfg,
+                        fictrac_callback,
+                        fictrac_thread,
+                        fictrac_state,
+                        other_camera_recorder,
+                    ),
+                )
 
                 if other_camera_recorder is not None:
                     other_camera_recording = _stop_other_camera_recorder(
@@ -2112,8 +2594,6 @@ def main():
         fictrac_callback.save_npz(fictrac_frames_file)
         logger.info(f"✓ FicTrac frames saved: {fictrac_frames_file}")
 
-    expected_camera_frames = _count_rising_edges(comp.do[do_names.index("TRIG_CAMERA")]) if "TRIG_CAMERA" in do_names else None
-
     if fictrac_runtime_info:
         fictrac_runtime_file = run_dir / "fictrac_runtime.json"
         fictrac_runtime_file.write_text(json.dumps(fictrac_runtime_info, indent=2), encoding="utf-8")
@@ -2142,6 +2622,27 @@ def main():
         blackfly_recording_file = run_dir / "blackfly_recording.json"
         blackfly_recording_file.write_text(json.dumps(other_camera_recording, indent=2), encoding="utf-8")
         logger.info(f"✓ Blackfly recording summary saved: {blackfly_recording_file}")
+
+    if fictrac_runtime_info.get("save_raw") or other_camera_recording:
+        parity_summary, parity_summary_path = _write_parity_summary(run_dir)
+        logger.info(f"✓ Parity audit saved: {parity_summary_path}")
+
+        fictrac_recording, other_camera_recording = _finalize_raw_chunk_retention(
+            run_dir=run_dir,
+            policy=runtime_cfg.raw_chunk_retention_policy,
+            parity_summary=parity_summary,
+            parity_path=parity_summary_path,
+            fictrac_recording=fictrac_recording if fictrac_runtime_info.get("save_raw") else None,
+            blackfly_recording=other_camera_recording,
+            logger=logger,
+        )
+
+        if fictrac_runtime_info.get("save_raw") and fictrac_recording is not None:
+            fictrac_recording_file = run_dir / "fictrac_camera_recording.json"
+            fictrac_recording_file.write_text(json.dumps(fictrac_recording, indent=2), encoding="utf-8")
+        if other_camera_recording is not None:
+            blackfly_recording_file = run_dir / "blackfly_recording.json"
+            blackfly_recording_file.write_text(json.dumps(other_camera_recording, indent=2), encoding="utf-8")
 
     # Generate comprehensive visualization
     if args.interactive:

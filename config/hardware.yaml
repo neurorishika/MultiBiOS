@@ -43,6 +43,7 @@ camera_recording:
   second_camera_gamma:
   verify_no_dropped_frames: true
   convert_second_camera_bin_to_lossless_mkv: true
+  raw_chunk_retention_policy: delete_after_parity # keep | delete_after_parity
 
 daq:
   latch_interval_ms: 10.0

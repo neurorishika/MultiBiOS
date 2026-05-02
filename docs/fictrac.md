@@ -92,6 +92,7 @@ What this repo now contains to make that publication straightforward:
 - a source-adjacent native patch manifest
 - rebuild instructions for the validated Windows Spinnaker toolchain
 - a validated operating point in the canonical hardware config
+- a standalone publication scaffold at `Fictrac-TrigWin/` for the planned lab-owned repo
 
 What is still missing for an actual external publication:
 
@@ -259,6 +260,84 @@ The native path now writes a chunked raw frame stream:
 - `fictrac-raw-<timestamp>-chunkNNNNNN.bin`: BGR8 frame chunks
 
 After the run, MultiBiOS reconstructs those chunks into a lossless review video and includes the result in `fictrac_camera_recording.json`.
+
+### What reconstructs the bins into a video
+
+The reconstruction path lives in `multibios/fictrac_raw_recording.py` and is called automatically from `multibios/run_protocol.py` at the end of a protocol run.
+
+Operationally, the postprocess step does this:
+
+1. discover the newest `fictrac-raw-*.json` manifest in the run directory
+2. load `frame_width`, `frame_height`, `channels`, `fps`, and `chunk_paths` from that manifest
+3. read `fictrac-raw-*-index.csv` and count valid indexed frames
+4. stream each `.bin` chunk back through NumPy memmaps in chunk order
+5. write a lossless review video named `fictrac-raw-<timestamp>-lossless.avi` or `.mkv`
+6. store the result in `fictrac_camera_recording.json` under `lossless_video`
+
+The writer currently tries the same codec/container candidates used elsewhere in MultiBiOS:
+
+- `FFV1` in `.avi`
+- `HFYU` in `.avi`
+- `FFV1` in `.mkv`
+
+### What must exist to reconstruct a FicTrac run later
+
+For a completed run, these files are the minimum useful set for re-running reconstruction:
+
+- `fictrac-raw-<timestamp>.json`
+- `fictrac-raw-<timestamp>-index.csv`
+- every referenced `fictrac-raw-<timestamp>-chunkNNNNNN.bin`
+
+The manifest is the source of truth for geometry and chunk order. The CSV index is the source of truth for saved-frame accounting. The `.bin` chunks contain the actual frame payload.
+
+If the bins are missing, MultiBiOS can still report previously computed metadata from `fictrac_camera_recording.json`, but it cannot regenerate the lossless review video.
+
+### Manual reconstruction for an existing run
+
+If a run already contains FicTrac chunks but does not yet contain the final lossless video, you can reconstruct it by re-running the same Python postprocess function that `run_protocol.py` uses.
+
+From the MultiBiOS repo root:
+
+```powershell
+C:/ProgramData/miniconda3/Scripts/conda.exe run -p C:\Users\markd\.conda\envs\multibios-blackfly --no-capture-output python -c "from pathlib import Path; import json; from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording; run_dir = Path(r'C:\Rishika\MultiBiOS\data\runs\2026-05-01_20-28-46'); summary = postprocess_fictrac_raw_recording(run_dir=run_dir, runtime_info=json.loads((run_dir / 'fictrac_runtime.json').read_text(encoding='utf-8')), frame_count=None, expected_frame_count=None, legacy_raw_videos=[], legacy_saved_raw_frames=None); print(summary['lossless_video'])"
+```
+
+Practical notes:
+
+- run this from the repo root so any repo-relative paths in the manifest resolve the same way they did during protocol teardown
+- if `fictrac_runtime.json` is missing, you can still reconstruct as long as the manifest contains `fps`; if it does not, you must supply an equivalent `camera_fps` value in `runtime_info`
+- the output video basename is derived from the manifest name, so re-running reconstruction rewrites the same `*-lossless.avi` or `*.mkv` target
+
+### How frame counts are interpreted
+
+The reconstruction summary in `fictrac_camera_recording.json` intentionally separates several counts:
+
+- `callback_frames`: frames seen by the Python callback path
+- `saved_raw_frames`: frames confirmed from the raw recording postprocess
+- `lossless_video.frames_written`: frames emitted into the review video
+- `expected_frames`: usually trigger-count derived when protocol validation is enabled
+
+For chunked runs, `saved_raw_frames` comes from the CSV index, not from blindly trusting the manifest's `saved_frames` field and not from trusting an AVI container header.
+
+That means the correct parity check is against `fictrac_camera_recording.json`, not against the raw chunk count alone.
+
+### Interaction with automatic raw chunk cleanup
+
+`hardware.yaml` can now control whether raw chunk files are retained after validation with:
+
+```yaml
+camera_recording:
+  raw_chunk_retention_policy: keep # or delete_after_parity
+```
+
+Behavior:
+
+- `keep`: retain all `.bin` chunks after postprocess
+- `delete_after_parity`: delete FicTrac and second-camera `.bin` chunks only after parity checks pass and the final lossless videos validate successfully
+
+When cleanup runs, `fictrac_camera_recording.json` is annotated with `raw_chunk_cleanup` and `raw_chunks_retained`. The manifest is also annotated.
+
+Important consequence: once cleanup has deleted the `.bin` chunks, the run still keeps the final lossless video and summary metadata, but you can no longer reconstruct the review video from raw chunks because the raw payload is gone.
 
 Implementation detail that matters on this rig:
 

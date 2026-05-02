@@ -22,6 +22,10 @@ LOSSLESS_VIDEO_CANDIDATES = [
 ]
 
 
+RAW_FRAME_CHUNK_CAPACITY = 512
+RAW_FRAME_FLUSH_INTERVAL = 64
+
+
 _LEAKED_PYSPIN_REFS: list[object] = []
 
 
@@ -56,9 +60,10 @@ class TriggeredCameraRecorder:
         self.gamma = gamma
 
         stem = f"blackfly_cam{self.camera_index}"
-        self._bin_path = self.run_dir / f"{stem}_frames.bin"
+        self._stream_base = self.run_dir / f"{stem}_frames"
         self._csv_path = self.run_dir / f"{stem}_frame_index.csv"
         self._manifest_path = self.run_dir / f"{stem}_manifest.json"
+        self._chunk_paths: list[Path] = []
 
         self._frame_q: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=self.queue_size)
         self._stop_event = threading.Event()
@@ -74,20 +79,22 @@ class TriggeredCameraRecorder:
         self._writer_error: Exception | None = None
         self._manifest: dict[str, Any] = {
             "camera_index": self.camera_index,
-            "format": "raw-mono8-stream",
+            "format": "raw-mono8-chunks",
             "dtype": "uint8",
+            "channels": 1,
             "timeout_ms": self.timeout_ms,
             "queue_size": self.queue_size,
             "stream_buffer_count_requested": self.stream_buffer_count,
             "binning": self.binning,
+            "chunk_frame_capacity": RAW_FRAME_CHUNK_CAPACITY,
             "requested_exposure_us": self.exposure_us,
             "requested_roi_width": self.roi_width,
             "requested_roi_height": self.roi_height,
             "requested_gain_db": self.gain_db,
             "requested_gamma": self.gamma,
-            "frame_bin_path": str(self._bin_path),
             "frame_index_path": str(self._csv_path),
             "manifest_path": str(self._manifest_path),
+            "chunk_paths": [],
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -98,6 +105,10 @@ class TriggeredCameraRecorder:
     @property
     def manifest(self) -> dict[str, Any]:
         return dict(self._manifest)
+
+    @property
+    def frame_count(self) -> int:
+        return int(self._manifest.get("saved_frames", 0) or 0)
 
     def start(self) -> dict[str, Any]:
         if self._capture_thread is not None:
@@ -237,15 +248,28 @@ class TriggeredCameraRecorder:
                 if self._writer_error is not None:
                     return
 
+    def _write_manifest(self) -> None:
+        self._manifest["chunk_paths"] = [str(path) for path in self._chunk_paths]
+        self._manifest_path.write_text(json.dumps(self._manifest, indent=2), encoding="utf-8")
+
+    def _open_chunk(self) -> tuple[Path, Any]:
+        chunk_path = self.run_dir / f"{self._stream_base.name}-chunk{len(self._chunk_paths):06d}.bin"
+        chunk_fh = open(chunk_path, "wb")
+        self._chunk_paths.append(chunk_path)
+        self._manifest["chunk_paths"] = [str(path) for path in self._chunk_paths]
+        self._manifest["frame_bin_path"] = str(self._chunk_paths[0])
+        return chunk_path, chunk_fh
+
     def _writer_loop(self) -> None:
         saved_frames = 0
         first_frame_id: int | None = None
         last_frame_id: int | None = None
+        chunk_index = -1
+        chunk_frame_index = 0
+        chunk_fh = None
 
         try:
-            with open(self._bin_path, "wb") as bin_fh, open(
-                self._csv_path, "w", newline="", encoding="utf-8"
-            ) as csv_fh:
+            with open(self._csv_path, "w", newline="", encoding="utf-8") as csv_fh:
                 writer = csv.writer(csv_fh)
                 writer.writerow(
                     [
@@ -253,8 +277,13 @@ class TriggeredCameraRecorder:
                         "frame_id",
                         "camera_timestamp",
                         "host_timestamp_ns",
+                        "chunk_index",
+                        "chunk_frame_index",
                     ]
                 )
+                chunk_path, chunk_fh = self._open_chunk()
+                chunk_index = 0
+                self._write_manifest()
 
                 while True:
                     item = self._frame_q.get()
@@ -267,24 +296,55 @@ class TriggeredCameraRecorder:
                         first_frame_id = int(item["frame_id"])
                         self._manifest["frame_width"] = int(frame.shape[1])
                         self._manifest["frame_height"] = int(frame.shape[0])
+                        self._manifest["channels"] = 1 if frame.ndim == 2 else int(frame.shape[2])
+                        self._write_manifest()
                     last_frame_id = int(item["frame_id"])
 
-                    bin_fh.write(frame.tobytes(order="C"))
+                    if chunk_fh is None or chunk_frame_index >= RAW_FRAME_CHUNK_CAPACITY:
+                        if chunk_fh is not None:
+                            chunk_fh.flush()
+                            chunk_fh.close()
+                        chunk_path, chunk_fh = self._open_chunk()
+                        chunk_index += 1
+                        chunk_frame_index = 0
+                        self._write_manifest()
+
+                    chunk_fh.write(frame.tobytes(order="C"))
                     writer.writerow(
                         [
                             saved_frames,
                             item["frame_id"],
                             item["camera_timestamp"],
                             item["host_timestamp_ns"],
+                            chunk_index,
+                            chunk_frame_index,
                         ]
                     )
                     saved_frames += 1
+                    chunk_frame_index += 1
                     self._manifest["saved_frames"] = saved_frames
+                    self._manifest["chunk_index_last"] = chunk_index
+                    self._manifest["chunk_frame_index_last"] = chunk_frame_index - 1
                     self._frame_q.task_done()
+
+                    if (saved_frames % RAW_FRAME_FLUSH_INTERVAL) == 0:
+                        chunk_fh.flush()
+                        csv_fh.flush()
+                        self._write_manifest()
 
             self._manifest["frame_id_first"] = first_frame_id
             self._manifest["frame_id_last"] = last_frame_id
+            if chunk_fh is not None:
+                chunk_fh.flush()
+                chunk_fh.close()
+            self._write_manifest()
         except Exception as exc:
+            if chunk_fh is not None:
+                try:
+                    chunk_fh.flush()
+                    chunk_fh.close()
+                except Exception:
+                    pass
             self._writer_error = exc
 
     def _read_camera_identity(self) -> dict[str, Any]:
@@ -392,15 +452,60 @@ def _read_rows(csv_path: Path) -> list[dict[str, int]]:
     with open(csv_path, newline="", encoding="utf-8") as csv_fh:
         reader = csv.DictReader(csv_fh)
         for row in reader:
-            rows.append(
-                {
-                    "frame_index": int(row["frame_index"]),
-                    "frame_id": int(row["frame_id"]),
-                    "camera_timestamp": int(row["camera_timestamp"]),
-                    "host_timestamp_ns": int(row["host_timestamp_ns"]),
-                }
-            )
+            frame_index = row.get("frame_index")
+            frame_id = row.get("frame_id")
+            camera_timestamp = row.get("camera_timestamp")
+            host_timestamp_ns = row.get("host_timestamp_ns")
+            if None in (frame_index, frame_id, camera_timestamp, host_timestamp_ns):
+                continue
+
+            record = {
+                "frame_index": int(frame_index),
+                "frame_id": int(frame_id),
+                "camera_timestamp": int(camera_timestamp),
+                "host_timestamp_ns": int(host_timestamp_ns),
+            }
+            chunk_index = row.get("chunk_index")
+            chunk_frame_index = row.get("chunk_frame_index")
+            if chunk_index not in (None, "") and chunk_frame_index not in (None, ""):
+                record["chunk_index"] = int(chunk_index)
+                record["chunk_frame_index"] = int(chunk_frame_index)
+            rows.append(record)
     return rows
+
+
+def _resolve_chunk_paths(manifest: dict[str, Any]) -> list[Path]:
+    chunk_paths = [Path(str(path)) for path in manifest.get("chunk_paths", []) if str(path)]
+    if chunk_paths:
+        return chunk_paths
+
+    frame_bin_path = manifest.get("frame_bin_path")
+    if frame_bin_path:
+        return [Path(str(frame_bin_path))]
+    return []
+
+
+def _count_chunk_frames(manifest: dict[str, Any]) -> int | None:
+    chunk_paths = _resolve_chunk_paths(manifest)
+    if not chunk_paths:
+        return None
+
+    width = manifest.get("frame_width")
+    height = manifest.get("frame_height")
+    channels = int(manifest.get("channels", 1) or 1)
+    if width is None or height is None:
+        return None
+
+    frame_bytes = int(width) * int(height) * channels
+    if frame_bytes <= 0:
+        return None
+
+    full_frames = 0
+    for chunk_path in chunk_paths:
+        if not chunk_path.exists():
+            continue
+        full_frames += chunk_path.stat().st_size // frame_bytes
+    return int(full_frames)
 
 
 def _analyze_rows(rows: list[dict[str, int]], expected_frame_count: int | None) -> dict[str, Any]:
@@ -471,9 +576,11 @@ def _convert_bin_to_lossless_video(
     nominal_fps: float | None,
 ) -> dict[str, Any]:
     run_dir = Path(manifest["manifest_path"]).parent
-    frame_count = int(manifest.get("saved_frames", 0))
+    chunk_paths = _resolve_chunk_paths(manifest)
+    frame_count = _count_chunk_frames(manifest) or int(manifest.get("saved_frames", 0))
     source_width = int(manifest["frame_width"])
     source_height = int(manifest["frame_height"])
+    channels = int(manifest.get("channels", 1) or 1)
     requested_width = manifest.get("requested_roi_width")
     requested_height = manifest.get("requested_roi_height")
     crop_width = (
@@ -488,62 +595,97 @@ def _convert_bin_to_lossless_video(
     )
     crop_x = max(0, (source_width - crop_width) // 2)
     crop_y = max(0, (source_height - crop_height) // 2)
-    bin_path = Path(manifest["frame_bin_path"])
-    if frame_count <= 0 or not bin_path.exists():
-        raise RuntimeError(f"Missing raw frame stream for conversion: {bin_path}")
+    if frame_count <= 0 or not chunk_paths:
+        raise RuntimeError("Missing raw frame stream for conversion.")
 
     fps = analysis.get("source_fps") or analysis.get("saved_fps") or nominal_fps
     if not fps or float(fps) <= 0:
         raise RuntimeError("Could not determine fps for second-camera lossless conversion.")
 
-    frames = np.memmap(bin_path, dtype=np.uint8, mode="r", shape=(frame_count, source_height, source_width))
-
-    def _frame_bgr(index: int) -> np.ndarray:
-        frame = np.asarray(frames[index])
+    def _frame_bgr(frame: np.ndarray) -> np.ndarray:
         if crop_width != source_width or crop_height != source_height:
             frame = frame[crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
         return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
 
-    trial_frame = _frame_bgr(0)
-
-    writer = None
-    chosen = None
-    video_path = None
     stem = f"blackfly_cam{manifest['camera_index']}_lossless"
+
+    def _iter_frames() -> Any:
+        for chunk_path in chunk_paths:
+            if not chunk_path.exists():
+                continue
+            chunk_size = chunk_path.stat().st_size
+            chunk_frames = chunk_size // (source_width * source_height * channels)
+            if chunk_frames <= 0:
+                continue
+            frames = np.memmap(chunk_path, dtype=np.uint8, mode="r", shape=(chunk_frames, source_height, source_width))
+            try:
+                for idx in range(chunk_frames):
+                    yield _frame_bgr(np.asarray(frames[idx]))
+            finally:
+                del frames
+
+    def _video_reaches_frame(video_path: Path, frame_index: int) -> bool:
+        capture = cv2.VideoCapture(str(video_path))
+        if not capture.isOpened():
+            capture.release()
+            return False
+
+        try:
+            reported_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if reported_frames > 0 and reported_frames <= frame_index:
+                return False
+            if frame_index > 0 and not capture.set(cv2.CAP_PROP_POS_FRAMES, float(frame_index)):
+                return False
+            ok, _ = capture.read()
+            return bool(ok)
+        finally:
+            capture.release()
+
     for fourcc, fourcc_name, suffix in _codec_candidates():
         candidate_path = run_dir / f"{stem}{suffix}"
-        test_writer = cv2.VideoWriter(str(candidate_path), fourcc, float(fps), (crop_width, crop_height), True)
-        if not test_writer.isOpened():
-            test_writer.release()
+        writer = cv2.VideoWriter(
+            str(candidate_path),
+            fourcc,
+            float(fps),
+            (crop_width, crop_height),
+            True,
+        )
+        if not writer.isOpened():
+            writer.release()
             continue
+
+        frames_written = 0
+        writer_error: Exception | None = None
         try:
-            test_writer.write(trial_frame)
-            writer = test_writer
-            chosen = fourcc_name
-            video_path = candidate_path
-            break
-        except Exception:
-            test_writer.release()
+            for frame_bgr in _iter_frames():
+                writer.write(frame_bgr)
+                frames_written += 1
+        except Exception as exc:
+            writer_error = exc
+        finally:
+            writer.release()
 
-    if writer is None or chosen is None or video_path is None:
-        raise RuntimeError("Could not open a lossless VideoWriter for second-camera conversion.")
+        if writer_error is not None or frames_written != frame_count:
+            if candidate_path.exists():
+                candidate_path.unlink(missing_ok=True)
+            if writer_error is not None:
+                continue
+        if not _video_reaches_frame(candidate_path, frame_count - 1):
+            candidate_path.unlink(missing_ok=True)
+            continue
 
-    try:
-        for idx in range(1, frame_count):
-            writer.write(_frame_bgr(idx))
-    finally:
-        writer.release()
+        return {
+            "path": str(candidate_path),
+            "codec": fourcc_name,
+            "fps": float(fps),
+            "frame_count": frames_written,
+            "width": crop_width,
+            "height": crop_height,
+            "cropped_from_width": source_width,
+            "cropped_from_height": source_height,
+        }
 
-    return {
-        "path": str(video_path),
-        "codec": chosen,
-        "fps": float(fps),
-        "frame_count": frame_count,
-        "width": crop_width,
-        "height": crop_height,
-        "cropped_from_width": source_width,
-        "cropped_from_height": source_height,
-    }
+    raise RuntimeError("Could not open a lossless VideoWriter for second-camera conversion.")
 
 
 def postprocess_triggered_camera_recording(
@@ -556,11 +698,24 @@ def postprocess_triggered_camera_recording(
     recording = dict(manifest)
     csv_path = Path(recording["frame_index_path"])
     analysis = _analyze_rows(_read_rows(csv_path), expected_frame_count)
+    chunk_frames_detected = _count_chunk_frames(recording)
+    if chunk_frames_detected is not None:
+        analysis["indexed_frames"] = analysis["frames_saved"]
+        analysis["chunk_frames_detected"] = int(chunk_frames_detected)
+        analysis["frames_saved"] = max(int(analysis["frames_saved"]), int(chunk_frames_detected))
+        if expected_frame_count is not None:
+            missing_frames = max(int(expected_frame_count) - int(analysis["frames_saved"]), 0)
+            analysis["missing_frames_vs_expected"] = missing_frames
+            analysis["frame_count_matches_expected"] = int(analysis["frames_saved"]) == int(expected_frame_count)
+            analysis["no_dropped_frames"] = (
+                analysis["skipped_frames"] == 0 and analysis["frame_count_matches_expected"]
+            )
     analysis_path = Path(recording["manifest_path"]).with_name(
         f"blackfly_cam{recording['camera_index']}_analysis.json"
     )
     analysis_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
 
+    recording["saved_frames"] = int(analysis["frames_saved"])
     recording["expected_frame_count"] = expected_frame_count
     recording["nominal_trigger_fps"] = nominal_fps
     recording["analysis_path"] = str(analysis_path)
