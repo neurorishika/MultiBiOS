@@ -44,10 +44,11 @@ This is the key idea. A future reader should not need to know which Python modul
 The top-level categories should therefore be:
 
 - `inputs/`: exact experiment definition and provenance
+- `experiment/`: operator-entered experimental context and outcome record
 - `planned/`: what software compiled and intended to output
 - `recorded/`: primary observations captured during the run
 - `derived/`: summaries, validation reports, and convenience products that can be regenerated
-- `logs/`: verbose transcripts and diagnostics used for debugging
+- `logs/`: primary logs and diagnostics used for debugging
 
 This separation is the strongest improvement for readability, auditability, and long-term maintenance.
 
@@ -68,6 +69,10 @@ data/runs/<run_id>/
     source_snapshot.json
     software_environment.json
     hardware_snapshot.json
+
+  experiment/
+    record.json
+    record.meta.json
 
   planned/
     compile_report.json
@@ -98,43 +103,65 @@ data/runs/<run_id>/
         samples.npz
         samples.meta.json
     cameras/
-      blackfly_cam1/
+      secondary_camera/
         recording_manifest.json
-        frames.bin
-        frames.meta.json
+        frame_stream.bin
+        frame_stream.meta.json
         frame_index.csv
         frame_index.meta.json
+        lossless_video.avi
+        lossless_video.meta.json
       fictrac_camera/
         recording_manifest.json
-        raw_video.avi
+        frame_stream.bin
+        frame_stream.meta.json
+        frame_index.csv
+        frame_index.meta.json
+        lossless_video.avi
+        lossless_video.meta.json
     tracking/
       fictrac/
         runtime_config.txt
         runtime_config.json
         session_record.json
+        frame_series.npz
+        frame_series.meta.json
 
   derived/
     validation/
       dataset_completeness.json
       timing_alignment.json
       daq_capture_summary.json
-      blackfly_cam1_integrity.json
+      secondary_camera_integrity.json
       fictrac_integrity.json
+      parity_audit.json
     previews/
       protocol_preview.html
-    cameras/
-      blackfly_cam1/
-        review_video_lossless.avi
-        review_video_manifest.json
 
   logs/
-    serial/
+    primary/
       teensy_transcript.jsonl
+      teensy_transcript.meta.json
     diagnostics/
       fictrac_driver_diagnostics.json
       warnings.json
       run_log.txt
 ```
+
+## Audit Verdict
+
+After reviewing the latest real run outputs, this structure is the strongest version of the plan so far, but only with four adjustments applied.
+
+1. Add a first-class `experiment/` folder.
+   The original draft had no clean place for operator-entered subject and outcome metadata. That is a major gap because those fields are essential for interpretation and later analysis, but they are neither pure input config nor pure recorded signal.
+2. Keep all camera video artifacts under `recorded/cameras/`.
+   This matches how humans think about camera data and matches the current pipeline where raw chunks may be deleted after parity validation while the validated lossless video remains. The camera folder must stay self-contained.
+3. Split logs into `primary/` and `diagnostics/`.
+   The Teensy serial transcript is not a disposable debug trace. It is primary evidence for controller behavior and should be classified more strongly than general diagnostics.
+4. Represent post-cleanup capture states explicitly.
+   New runs can end with no retained raw chunk bins, a retained frame index, a retained validated video, and a parity audit proving equivalence. The plan must model that state directly.
+
+Without those four changes, the previous draft was not yet the best structure.
 
 ## Top-Level Files
 
@@ -179,12 +206,91 @@ Minimum fields:
 - `artifact_index`
 - `warnings`
 - `missing_optional_artifacts`
+- `experiment_record_path`
 
 Why this is a good idea:
 
 - a single manifest gives code one stable entry point
 - it avoids spreading basic discovery logic across many ad hoc filenames
 - it lets incomplete or failed runs still be audited cleanly
+
+## Experiment Record
+
+The run dataset needs one canonical operator-entered experiment record.
+
+Recommendation:
+
+- store it in `experiment/record.json`
+- use `experiment/record.meta.json` to document field meanings, units, controlled vocabularies, and UI capture provenance
+- keep the record immutable once the run is finalized; corrections should create a versioned amendment trail rather than silent overwrites
+
+This record should be divided into `pre_experiment` and `post_experiment` sections so that requested context and observed outcome are not mixed together.
+
+### `experiment/record.json`
+
+Recommended structure:
+
+- `schema_name`
+- `schema_version`
+- `entry_status`
+- `entered_by`
+- `entered_started_utc`
+- `entered_completed_utc`
+- `pre_experiment`
+- `post_experiment`
+- `custom_fields`
+
+Recommended `pre_experiment` fields:
+
+- `experiment_date`
+- `source_filename`
+- `fly_num`
+- `species`
+- `genotype`
+- `hemisphere`
+- `age`
+- `starvation_state`
+- `volumetric`
+- `stimulus_modality`
+- `rig_temperature_c`
+- `humidity_percent`
+- `protocol_name`
+- `protocol_version` when known
+- `rig_id`
+- `operator`
+
+Recommended `post_experiment` fields:
+
+- `response`
+- `notes`
+- `duration_s`
+- `completion_status`
+- `aborted`
+- `exclusion_reason`
+- `observed_anomalies`
+- `quality_flags`
+
+Why this is a good idea:
+
+- these fields are required to interpret the biological meaning of the run
+- pre and post sections keep planned context separate from observed result
+- the record is small enough to stay human-readable and structured enough for downstream indexing
+- `custom_fields` leaves room for future assays without breaking the base schema
+
+### `experiment/record.meta.json`
+
+This sidecar should define:
+
+- units and expected types
+- dropdown-controlled vocabularies
+- nullable versus required fields
+- provenance for who entered or edited the record
+- whether each field is user-entered, auto-filled, or system-derived
+
+Why this is a good idea:
+
+- experiment metadata is easy to collect inconsistently unless the schema is explicit
+- this makes the UI contract and dataset contract identical
 
 ### `checksums.sha256`
 
@@ -309,6 +415,16 @@ Why this is a good idea:
 - dataset-only reproducibility is impossible without hardware identity
 - this is necessary to distinguish a protocol bug from a rig-specific issue
 
+## Why `experiment/` Is Separate From `inputs/`
+
+The experiment record should not be folded into `inputs/`.
+
+Reason:
+
+- some fields are known before acquisition and some are only known after acquisition
+- mixing both into `inputs/` would blur the line between requested setup and observed outcome
+- keeping `experiment/` separate makes the run easier to read and easier to index across many runs
+
 ## Planned
 
 The `planned/` folder should contain what the software compiled and intended the rig to do.
@@ -417,33 +533,42 @@ Why this is a good idea:
 - digital return lines are direct evidence for synchronization and READY behavior
 - the raw sampled signal is more fundamental than any extracted edge summary
 
-### `recorded/cameras/blackfly_cam1/`
+### `recorded/cameras/secondary_camera/`
 
 Files:
 
 - `recording_manifest.json`
-- `frames.bin`
-- `frames.meta.json`
+- `frame_stream.bin` when retained
+- `frame_stream.meta.json`
 - `frame_index.csv`
 - `frame_index.meta.json`
+- `lossless_video.avi`
+- `lossless_video.meta.json`
 
 Why this is a good idea:
 
 - the raw frame stream and frame index are the primary evidence
 - the manifest should describe camera identity, ROI, gain, exposure, trigger mode, actual frame counts, and relationships to sibling artifacts
 - putting camera-specific files in their own folder eliminates the current top-level filename clutter
+- the validated video stays beside the rest of the camera record, which is easier for humans and matches current cleanup behavior when chunk bins are deleted
 
 ### `recorded/cameras/fictrac_camera/`
 
 Files:
 
 - `recording_manifest.json`
-- `raw_video.avi` or an equivalent raw recording artifact
+- `frame_stream.bin` when retained
+- `frame_stream.meta.json`
+- `frame_index.csv`
+- `frame_index.meta.json`
+- `lossless_video.avi`
+- `lossless_video.meta.json`
 
 Why this is a good idea:
 
 - the FicTrac input camera is a real recorded stream and should live under recorded camera data
 - separating it from the tracker output clarifies the difference between source video and tracking results
+- a retained validated video is often the only surviving contiguous representation after raw chunk cleanup, so it belongs in the camera folder
 
 ### `recorded/tracking/fictrac/`
 
@@ -452,6 +577,8 @@ Files:
 - `runtime_config.txt`
 - `runtime_config.json`
 - `session_record.json`
+- `frame_series.npz`
+- `frame_series.meta.json`
 
 This folder may also hold other raw FicTrac session outputs if they are primary evidence.
 
@@ -459,6 +586,22 @@ Why this is a good idea:
 
 - tracking results are not the same thing as camera capture
 - grouping them under `tracking/` makes the processing stage explicit
+
+### Camera Folder Rule
+
+All video artifacts must remain inside the relevant `recorded/cameras/<camera_name>/` folder, even when the video is regenerated from chunked primary storage.
+
+This is the right tradeoff for this project because:
+
+- users naturally look for videos under camera data
+- current runs may delete raw chunks after parity validation, leaving the validated lossless video as the durable camera representation
+- camera-specific discoverability matters more here than a perfectly strict raw-versus-derived folder split
+
+To preserve auditability, the camera manifest and sidecars must explicitly mark each artifact as one of:
+
+- `primary_evidence`
+- `validated_access_copy`
+- `derived_summary`
 
 ## Derived
 
@@ -473,8 +616,9 @@ Recommended files:
 - `dataset_completeness.json`
 - `timing_alignment.json`
 - `daq_capture_summary.json`
-- `blackfly_cam1_integrity.json`
+- `secondary_camera_integrity.json`
 - `fictrac_integrity.json`
+- `parity_audit.json`
 
 Why this is a good idea:
 
@@ -488,28 +632,30 @@ Why this is a good idea:
 - preview visualizations are useful, but they are not primary evidence
 - this makes it safe to delete and regenerate previews without changing the scientific record
 
-### `derived/cameras/blackfly_cam1/`
-
-Recommended files:
-
-- `review_video_lossless.avi`
-- `review_video_manifest.json`
-
-Why this is a good idea:
-
-- the lossless review video is valuable for inspection, but it is still derived from the primary raw frame stream
-- classifying it as derived preserves the distinction between evidence and convenience products
-
 ## Logs
 
-The `logs/` folder should contain verbose outputs that are useful for debugging but are not themselves the core dataset.
+The `logs/` folder should contain both primary log evidence and secondary diagnostics.
 
-### `logs/serial/teensy_transcript.jsonl`
+### `logs/primary/teensy_transcript.jsonl`
 
 Why this is a good idea:
 
 - the transcript is essential for firmware and control-path auditing
 - it is log-like in form, but important enough to preserve permanently
+- it should count toward dataset completeness as primary evidence, not merely best-effort debug output
+
+### `logs/primary/teensy_transcript.meta.json`
+
+This sidecar should define:
+
+- line schema
+- timestamp basis
+- source port identity if known
+- whether lines are raw, tagged, parsed, or system-injected
+
+Why this is a good idea:
+
+- serial transcripts are only fully auditable if a future reader knows exactly what one line means
 
 ### `logs/diagnostics/`
 
@@ -535,13 +681,15 @@ These rules should apply to every final dataset.
 3. Put arrays next to sidecars.
    Every `.npz`, `.bin`, `.csv`, or other compact artifact with non-obvious semantics should have a sibling `.meta.json` that explains shape, units, axes, and clock domain.
 4. Use stable generic names inside typed folders.
-   Example: use `recording_manifest.json` inside `recorded/cameras/blackfly_cam1/` rather than repeating `blackfly_cam1_` on every filename.
-5. Keep raw and derived products separate.
-   If a file can be regenerated, it should not live beside primary evidence unless there is a strong reason.
+   Example: use `recording_manifest.json` inside `recorded/cameras/secondary_camera/` rather than repeating `secondary_camera_` on every filename.
+5. Keep raw and derived products separate by schema role, and colocate only when human discoverability clearly wins.
+   Camera videos are the main exception in this plan: they stay under `recorded/cameras/`, but their artifact role must still be declared explicitly in metadata.
 6. Prefer explicit role names over implementation names.
    `recorded/tracking/fictrac/` is clearer than a folder name that only makes sense if you already know the codebase.
 7. Every JSON artifact should carry schema identity.
    Include at minimum `schema_name` and `schema_version` so future readers know how to interpret it.
+8. Optional retained artifacts must be modeled explicitly.
+   If raw bins are deleted after parity validation, the manifest must say so rather than silently implying they should exist.
 
 ## Required Metadata Conventions
 
@@ -554,6 +702,7 @@ Minimum conventions:
 - declare units for every numeric column that is not dimensionless
 - declare axis order for arrays
 - declare whether a file is `primary`, `derived`, or `log`
+- declare whether a retained camera video is `primary_evidence` or `validated_access_copy`
 
 This is necessary because a file can be preserved perfectly and still be unusable if its units and time basis are unclear.
 
@@ -593,16 +742,23 @@ Why this is a good idea:
 | `capture_di.npz` | `recorded/daq/digital_inputs/samples.npz` | recorded | measured digital return lines |
 | `di_map.json` | `recorded/daq/digital_inputs/channels.json` | recorded | mapping for recorded DI |
 | `di_edges.csv` | `derived/validation/daq_capture_summary.json` or a dedicated DI edge summary | derived | useful, but computable from recorded DI |
-| `blackfly_recording.json` | `recorded/cameras/blackfly_cam1/recording_manifest.json` | recorded | camera capture manifest |
-| `blackfly_cam1_manifest.json` | merge into `recording_manifest.json` or keep as a sibling manifest if roles differ | recorded | avoid duplicative manifest files without clear role boundaries |
-| `blackfly_cam1_frame_index.csv` | `recorded/cameras/blackfly_cam1/frame_index.csv` | recorded | primary frame timing evidence |
-| `blackfly_cam1_analysis.json` | `derived/validation/blackfly_cam1_integrity.json` | derived | analysis of camera capture quality |
-| `blackfly_cam1_lossless.avi` | `derived/cameras/blackfly_cam1/review_video_lossless.avi` | derived | convenient review product, not primary evidence |
+| `blackfly_recording.json` | `recorded/cameras/secondary_camera/recording_manifest.json` | recorded | camera capture manifest |
+| `secondary_camera_manifest.json` | merge into `recording_manifest.json` or keep as a sibling manifest if roles differ | recorded | avoid duplicative manifest files without clear role boundaries |
+| `secondary_camera_frame_index.csv` | `recorded/cameras/secondary_camera/frame_index.csv` | recorded | primary frame timing evidence |
+| deleted `secondary_camera` raw chunk bins | omitted from final retained dataset but recorded in `recording_manifest.json` and `derived/validation/parity_audit.json` | primary evidence removed after validation | retention state must be explicit |
+| `secondary_camera_analysis.json` | `derived/validation/secondary_camera_integrity.json` | derived | analysis of camera capture quality |
+| `secondary_camera_lossless.avi` | `recorded/cameras/secondary_camera/lossless_video.avi` | validated access copy in recorded camera folder | camera videos must stay with camera data |
 | `fictrac_runtime_config.txt` | `recorded/tracking/fictrac/runtime_config.txt` | recorded | exact runtime config used by tracker |
 | `fictrac_runtime.json` | `recorded/tracking/fictrac/runtime_config.json` | recorded | structured runtime config summary |
 | `fictrac_camera_recording.json` | `recorded/tracking/fictrac/session_record.json` or split between tracking and camera recorded folders | recorded | current name is ambiguous about whether it is input video or tracker output |
+| `fictrac_frames.npz` | `recorded/tracking/fictrac/frame_series.npz` | recorded | primary tracker frame-series output |
+| `fictrac-raw-<timestamp>.json` | `recorded/cameras/fictrac_camera/recording_manifest.json` or a referenced sibling raw-stream manifest | recorded | primary camera stream manifest |
+| `fictrac-raw-<timestamp>-index.csv` | `recorded/cameras/fictrac_camera/frame_index.csv` | recorded | primary frame timing evidence |
+| deleted FicTrac raw chunk bins | omitted from final retained dataset but recorded in `recording_manifest.json` and `derived/validation/parity_audit.json` | primary evidence removed after validation | retention state must be explicit |
+| `fictrac-raw-<timestamp>-lossless.avi` | `recorded/cameras/fictrac_camera/lossless_video.avi` | validated access copy in recorded camera folder | camera videos must stay with camera data |
 | `fictrac_driver_diagnostics.json` | `logs/diagnostics/fictrac_driver_diagnostics.json` | log | subsystem diagnostics |
-| `teensy_serial_transcript.jsonl` | `logs/serial/teensy_transcript.jsonl` | log | primary debug transcript |
+| `teensy_serial_transcript.jsonl` | `logs/primary/teensy_transcript.jsonl` | primary log | controller behavior evidence |
+| `parity_audit.json` | `derived/validation/parity_audit.json` | derived | validation proving frame-count parity and cleanup safety |
 | `preview.html` | `derived/previews/protocol_preview.html` | derived | regenerated convenience product |
 
 ## Recommendation On Paths
@@ -635,6 +791,50 @@ Why this is a good idea:
 - smaller schemas are easier to document, validate, and preserve
 - it reduces accidental coupling between recording code and post-processing code
 
+## Metadata Entry UI Plan
+
+The experiment record should be captured through a simple dedicated UI, but the UI state itself should not live inside the run dataset.
+
+Recommended behavior:
+
+- pre-experiment form opens before acquisition starts
+- post-experiment form opens before finalizing the run
+- the UI writes one immutable `experiment/record.json` into the run folder
+- the UI keeps reusable dropdown history in a separate application-level store outside `data/runs/`
+
+Recommended UI fields with dropdown history:
+
+- `species`
+- `genotype`
+- `hemisphere`
+- `starvation_state`
+- `volumetric`
+- `stimulus_modality`
+- `protocol_name`
+- `rig_id`
+- `operator`
+- common `response` values
+
+Recommended UI behavior:
+
+- auto-fill `experiment_date`, `source_filename`, `protocol_name`, `duration_s`, and `rig_id` when available from the system
+- validate required fields before run finalization
+- allow free-text notes and anomaly descriptions
+- show recent values and previous selections for controlled fields
+- keep an amendment trail if the record is edited after save
+
+Why this is a good idea:
+
+- it reduces entry errors without polluting the dataset with UI-specific history files
+- dropdowns improve consistency for fields that will later be queried across many runs
+- auto-filled system values reduce duplicate typing and drift from actual run facts
+
+Recommended non-dataset storage for dropdown history:
+
+- a rig-local application data file or lightweight database managed by the UI
+
+This should not be stored inside each run folder because it is operator convenience state, not part of the scientific record for one run.
+
 ## Minimum Completeness Standard
 
 A final run dataset should not be considered complete unless all of the following are present or explicitly marked unavailable:
@@ -642,6 +842,7 @@ A final run dataset should not be considered complete unless all of the followin
 - human overview file
 - machine manifest
 - checksums
+- experiment record
 - exact protocol copy
 - exact hardware mapping copy
 - resolved runtime settings
@@ -663,6 +864,7 @@ Implementation should be done in two phases.
 Phase 1:
 
 - add the new folder structure and manifest writing
+- add experiment record capture and storage
 - continue writing current legacy filenames in parallel for compatibility
 
 Phase 2:
