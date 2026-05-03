@@ -20,15 +20,48 @@ function Require-Command {
     }
 }
 
+function Test-VcpkgRoot {
+    param([string]$CandidateRoot)
+
+    if (-not $CandidateRoot) {
+        return $false
+    }
+
+    $toolchainCandidate = Join-Path $CandidateRoot "scripts\buildsystems\vcpkg.cmake"
+    return (Test-Path $toolchainCandidate)
+}
+
 function Resolve-VcpkgRoot {
     param([string]$ConfiguredRoot)
-    if ($ConfiguredRoot) {
-        return $ConfiguredRoot
+
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+    $candidates = @(
+        $ConfiguredRoot,
+        $env:VCPKG_ROOT,
+        (Join-Path $repoRoot "assets\third_party\vcpkg"),
+        (Join-Path $env:USERPROFILE "vcpkg"),
+        "C:\Users\markd\vcpkg"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-VcpkgRoot -CandidateRoot $candidate) {
+            return $candidate
+        }
     }
-    if ($env:VCPKG_ROOT) {
-        return $env:VCPKG_ROOT
+
+    throw "Unable to locate vcpkg. Set -VcpkgRoot or VCPKG_ROOT, or install vcpkg in a standard location such as $env:USERPROFILE\vcpkg."
+}
+
+function Remove-StalePackagedBinaries {
+    param([string]$Directory)
+
+    if (-not (Test-Path $Directory)) {
+        return
     }
-    throw "Set -VcpkgRoot or VCPKG_ROOT before building FicTrac."
+
+    Get-ChildItem -Path $Directory -File | Where-Object {
+        $_.Extension -in @('.exe', '.dll', '.pdb', '.lib')
+    } | Remove-Item -Force
 }
 
 Require-Command cmake
@@ -77,38 +110,61 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 $configureArgs = @(
     "-S", $SourceDir,
     "-B", $BuildDir,
+    "-G", "Visual Studio 17 2022",
     "-A", "x64",
     "-D", "CMAKE_TOOLCHAIN_FILE=$ToolchainFile",
     "-D", "PGR_USB3=ON",
-    "-D", "PGR_DIR=$SpinnakerRoot"
+    "-D", "PGR_DIR=$SpinnakerRoot",
+    "--fresh"
 )
 
 Write-Host "Configuring FicTrac with Spinnaker support..."
 & cmake @configureArgs
 
 Write-Host "Building FicTrac (Release)..."
-& cmake --build $BuildDir --config Release -j 4
+& cmake --build $BuildDir --config Release --clean-first --parallel 4
 
-$sourceBinCandidates = @(
+$builtBinCandidates = @(
+    (Join-Path $BuildDir "Release"),
+    (Join-Path $BuildDir "x64\Release"),
     (Join-Path $SourceDir "bin\Release"),
     (Join-Path $SourceDir "bin")
 )
-$sourceBinDir = $sourceBinCandidates | Where-Object { Test-Path (Join-Path $_ "fictrac.exe") } | Select-Object -First 1
-if (-not $sourceBinDir) {
-    throw "Build finished but no fictrac.exe was produced under $($sourceBinCandidates -join ', ')"
+$builtArtifact = $builtBinCandidates |
+    Where-Object { Test-Path (Join-Path $_ "fictrac.exe") } |
+    ForEach-Object { Get-Item (Join-Path $_ "fictrac.exe") } |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1
+if (-not $builtArtifact) {
+    throw "Build finished but no fictrac.exe was produced under the expected output paths: $($builtBinCandidates -join ', ')"
 }
+$builtBinDir = Split-Path -Parent $builtArtifact.FullName
 
 if (-not $SkipCopy) {
     New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-    Copy-Item (Join-Path $sourceBinDir "*") -Destination $OutputDir -Recurse -Force
-    if (Test-Path (Join-Path $OutputDir "fictrac.exe")) {
-        Copy-Item (Join-Path $OutputDir "fictrac.exe") (Join-Path $OutputDir "fictrac-spinnaker.exe") -Force
+    Remove-StalePackagedBinaries -Directory $OutputDir
+
+    $builtArtifacts = Get-ChildItem -Path $builtBinDir -File
+    if (-not $builtArtifacts) {
+        throw "No build artifacts were found in $builtBinDir after building FicTrac."
+    }
+
+    foreach ($artifact in $builtArtifacts) {
+        Copy-Item $artifact.FullName -Destination (Join-Path $OutputDir $artifact.Name) -Force
+    }
+
+    $packagedFictrac = Join-Path $OutputDir "fictrac.exe"
+    if (Test-Path $packagedFictrac) {
+        Copy-Item $packagedFictrac (Join-Path $OutputDir "fictrac-spinnaker.exe") -Force
+    }
+    else {
+        throw "Expected freshly built fictrac.exe in $builtBinDir, but it was not found."
     }
 }
 
 Write-Host ""
 Write-Host "Build complete."
-Write-Host "Source bin:   $sourceBinDir"
+Write-Host "Source bin:   $builtBinDir"
 Write-Host "Output dir:   $OutputDir"
 Write-Host "Source mode:  vendored FicTrac tree at $SourceDir"
-Write-Host "Next step: set config/experiment_config.yaml fictrac_bin to the rebuilt fictrac-spinnaker.exe"
+Write-Host "Next step: confirm config/hardware.yaml points fictrac.bin at the rebuilt fictrac-spinnaker.exe"
