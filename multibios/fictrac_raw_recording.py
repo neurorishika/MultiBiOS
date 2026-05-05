@@ -16,12 +16,33 @@ def _codec_candidates():
         yield cv2.VideoWriter_fourcc(*fourcc_name), fourcc_name, suffix
 
 
-def _discover_manifest(run_dir: Path) -> Path | None:
-    manifests = sorted(
-        path
-        for path in run_dir.glob("fictrac-raw-*.json")
-        if not path.name.endswith("recording.json")
-    )
+def _resolve_output_dir(run_dir: Path, runtime_info: dict[str, Any]) -> Path:
+    output_base = runtime_info.get("output_base")
+    if not output_base:
+        return run_dir.resolve()
+
+    output_path = Path(str(output_base))
+    if not output_path.is_absolute():
+        output_path = run_dir / output_path
+    return output_path.parent.resolve()
+
+
+def _discover_manifest(run_dir: Path, runtime_info: dict[str, Any]) -> Path | None:
+    search_roots = [_resolve_output_dir(run_dir, runtime_info)]
+    if search_roots[0] != run_dir.resolve():
+        search_roots.append(run_dir.resolve())
+
+    manifests: list[Path] = []
+    seen: set[Path] = set()
+    for root in search_roots:
+        for path in sorted(root.glob("fictrac-raw-*.json")):
+            if path.name.endswith("recording.json"):
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            manifests.append(resolved)
     return manifests[-1] if manifests else None
 
 
@@ -94,13 +115,15 @@ def _convert_chunks_to_lossless_video(
             raise RuntimeError("Could not determine fps for FicTrac lossless conversion.")
         fps = float(nominal_fps)
 
-    stem = Path(str(manifest.get("manifest_path", run_dir / "fictrac-raw"))).stem
+    manifest_path = _resolve_path(str(manifest.get("manifest_path", run_dir / "fictrac-raw")), run_dir)
+    recording_dir = manifest_path.parent
+    stem = manifest_path.stem
     base_stem = stem.replace(".json", "") + "-lossless"
     writer = None
     output_path: Path | None = None
     codec_name: str | None = None
     for fourcc, candidate_name, suffix in _codec_candidates():
-        candidate_path = run_dir / f"{base_stem}{suffix}"
+        candidate_path = recording_dir / f"{base_stem}{suffix}"
         candidate = cv2.VideoWriter(
             str(candidate_path),
             fourcc,
@@ -162,7 +185,7 @@ def postprocess_fictrac_raw_recording(
     legacy_saved_raw_frames: int | None,
 ) -> dict[str, Any]:
     callback_frames = None if frame_count is None else int(frame_count)
-    manifest_path = _discover_manifest(run_dir)
+    manifest_path = _discover_manifest(run_dir, runtime_info)
     if manifest_path is None:
         saved_raw_frames = legacy_saved_raw_frames
         actual_frames = saved_raw_frames if saved_raw_frames is not None else callback_frames

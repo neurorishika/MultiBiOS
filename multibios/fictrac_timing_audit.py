@@ -20,11 +20,14 @@ def _default_run_dirs(runs_root: Path, latest: int) -> list[Path]:
 
 
 def _load_frames(run_dir: Path) -> np.ndarray:
-    frames_path = run_dir / "fictrac_frames.npz"
+    frames_path = run_dir / "recorded" / "tracking" / "fictrac" / "frame_series.npz"
+    if not frames_path.exists():
+        frames_path = run_dir / "fictrac_frames.npz"
     if not frames_path.exists():
         raise FileNotFoundError(f"No fictrac_frames.npz found in {run_dir}")
     with np.load(frames_path, allow_pickle=False) as npz:
-        return np.array(npz["frames"], copy=True)
+        frame_key = "frames" if "frames" in npz.files else "data"
+        return np.array(npz[frame_key], copy=True)
 
 
 def _clock_values_ms(frames: np.ndarray, clock: str) -> np.ndarray:

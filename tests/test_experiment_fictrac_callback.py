@@ -840,6 +840,63 @@ def test_postprocess_fictrac_raw_recording_reconstructs_lossless_video(tmp_path:
     assert Path(summary["lossless_video"]["path"]).exists()
 
 
+def test_postprocess_fictrac_raw_recording_uses_configured_output_directory(tmp_path: Path) -> None:
+    output_dir = tmp_path / "recorded" / "tracking" / "fictrac"
+    output_dir.mkdir(parents=True)
+
+    chunk_path = output_dir / "fictrac-raw-2026-05-01_00-00-00-chunk000000.bin"
+    frame0 = np.zeros((4, 6, 3), dtype=np.uint8)
+    frame1 = np.full((4, 6, 3), 120, dtype=np.uint8)
+    with open(chunk_path, "wb") as fh:
+        fh.write(frame0.tobytes(order="C"))
+        fh.write(frame1.tobytes(order="C"))
+
+    index_path = output_dir / "fictrac-raw-2026-05-01_00-00-00-index.csv"
+    index_path.write_text(
+        "frame_index,log_frame,chunk_index,chunk_frame_index\n"
+        "0,0,0,0\n"
+        "1,1,0,1\n",
+        encoding="utf-8",
+    )
+    manifest_path = output_dir / "fictrac-raw-2026-05-01_00-00-00.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "format": "raw-bgr8-chunks",
+                "frame_width": 6,
+                "frame_height": 4,
+                "channels": 3,
+                "dtype": "uint8",
+                "fps": 200.0,
+                "saved_frames": 2,
+                "frame_index_path": str(index_path),
+                "manifest_path": str(manifest_path),
+                "chunk_paths": [str(chunk_path)],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = postprocess_fictrac_raw_recording(
+        run_dir=tmp_path,
+        runtime_info={
+            "fictrac_camera_index": 0,
+            "save_raw": True,
+            "video_codec": "raw",
+            "camera_fps": 200.0,
+            "output_base": str(output_dir / "fictrac"),
+        },
+        frame_count=2,
+        expected_frame_count=2,
+        legacy_raw_videos=[],
+        legacy_saved_raw_frames=None,
+    )
+
+    assert summary["raw_stream_manifest"] == str(manifest_path)
+    assert summary["lossless_video"] is not None
+    assert Path(summary["lossless_video"]["path"]).parent == output_dir
+
+
 def test_finalize_raw_chunk_retention_deletes_chunks_after_parity(tmp_path: Path) -> None:
     run_dir = tmp_path / "2026-05-01_12-16-16"
     run_dir.mkdir()
@@ -904,7 +961,9 @@ def test_finalize_raw_chunk_retention_deletes_chunks_after_parity(tmp_path: Path
     (run_dir / "fictrac_camera_recording.json").write_text(json.dumps(fictrac_recording), encoding="utf-8")
     (run_dir / "blackfly_recording.json").write_text(json.dumps(blackfly_recording), encoding="utf-8")
 
-    parity_summary, parity_path = _write_parity_summary(run_dir)
+    parity_path = run_dir / "derived" / "validation" / "parity_audit.json"
+    parity_path.parent.mkdir(parents=True)
+    parity_summary, parity_path = _write_parity_summary(run_dir, parity_path)
     fictrac_updated, blackfly_updated = _finalize_raw_chunk_retention(
         run_dir=run_dir,
         policy="delete_after_parity",
@@ -994,7 +1053,9 @@ def test_finalize_raw_chunk_retention_keeps_chunks_on_parity_mismatch(tmp_path: 
     (run_dir / "fictrac_camera_recording.json").write_text(json.dumps(fictrac_recording), encoding="utf-8")
     (run_dir / "blackfly_recording.json").write_text(json.dumps(blackfly_recording), encoding="utf-8")
 
-    parity_summary, parity_path = _write_parity_summary(run_dir)
+    parity_path = run_dir / "derived" / "validation" / "parity_audit.json"
+    parity_path.parent.mkdir(parents=True)
+    parity_summary, parity_path = _write_parity_summary(run_dir, parity_path)
     fictrac_updated, blackfly_updated = _finalize_raw_chunk_retention(
         run_dir=run_dir,
         policy="delete_after_parity",

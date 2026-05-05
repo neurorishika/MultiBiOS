@@ -22,12 +22,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+from copy import deepcopy
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +56,39 @@ from multibios.fictrac_config import resolve_fictrac_config_path
 from multibios.fictrac_consumer import ClosedLoopFrameConsumer
 from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording
 from multibios.fictrac_runtime import prepare_fictrac_runtime
+from multibios.experiment_metadata import (apply_post_run_defaults,
+                                           build_experiment_record_meta_payload,
+                                           default_metadata_history_path,
+                                           load_experiment_record,
+                                           summarize_metadata_status,
+                                           write_experiment_metadata_files)
 from multibios.parity_audit import summarize_run_parity
+from multibios.run_dataset import (RunDatasetLayout,
+                                   build_array_meta_payload,
+                                   build_channel_map_payload,
+                                   build_cli_args_payload,
+                                   build_checksums_payload,
+                                   build_daq_capture_summary_payload,
+                                   build_dataset_completeness_payload,
+                                   build_fictrac_session_record_payload,
+                                   build_hardware_snapshot_payload,
+                                   build_integrity_summary_payload,
+                                   build_notes_placeholder,
+                                   build_placeholder_experiment_record,
+                                   build_resolved_runtime_payload,
+                                   build_table_meta_payload,
+                                   build_readme_text,
+                                   build_run_manifest_payload,
+                                   build_timing_alignment_payload,
+                                   build_teensy_transcript_meta_payload,
+                                   mirror_artifact_file,
+                                   mirror_fictrac_camera_recording,
+                                   mirror_secondary_camera_recording,
+                                   normalize_run_relative_path,
+                                   relocate_artifact_file,
+                                   build_software_environment_payload,
+                                   build_source_snapshot_payload,
+                                   build_timing_anchors_payload)
 from multibios.protocol.control_plan import (compile_control_plan,
                                              write_control_plan_csv)
 # Compiler
@@ -747,12 +783,42 @@ def _compute_fictrac_drain_timeout_s(
     return max(0.5, remaining_frames / camera_fps + max(0.25, 8.0 / camera_fps))
 
 
-def _discover_fictrac_raw_videos(run_dir: Path) -> list[str]:
-    return sorted(str(path) for path in run_dir.glob("fictrac-raw-*"))
+def _fictrac_output_dir(run_dir: Path, runtime_info: dict[str, Any] | None) -> Path:
+    output_base = None if runtime_info is None else runtime_info.get("output_base")
+    if not output_base:
+        return run_dir
+
+    output_path = Path(str(output_base))
+    if not output_path.is_absolute():
+        output_path = run_dir / output_path
+    return output_path.parent.resolve()
 
 
-def _count_fictrac_saved_raw_frames(run_dir: Path) -> int | None:
-    vidlog_paths = sorted(run_dir.glob("fictrac-vidLogFrames-*.txt"))
+def _discover_fictrac_raw_videos(run_dir: Path, runtime_info: dict[str, Any] | None) -> list[str]:
+    search_roots = [_fictrac_output_dir(run_dir, runtime_info)]
+    if search_roots[0].resolve() != run_dir.resolve():
+        search_roots.append(run_dir)
+
+    discovered: list[str] = []
+    seen: set[Path] = set()
+    for root in search_roots:
+        for path in sorted(root.glob("fictrac-raw-*")):
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            discovered.append(str(resolved))
+    return discovered
+
+
+def _count_fictrac_saved_raw_frames(run_dir: Path, runtime_info: dict[str, Any] | None) -> int | None:
+    search_roots = [_fictrac_output_dir(run_dir, runtime_info)]
+    if search_roots[0].resolve() != run_dir.resolve():
+        search_roots.append(run_dir)
+
+    vidlog_paths: list[Path] = []
+    for root in search_roots:
+        vidlog_paths.extend(sorted(root.glob("fictrac-vidLogFrames-*.txt")))
     if not vidlog_paths:
         return None
 
@@ -772,16 +838,15 @@ def _build_fictrac_recording_summary(
         runtime_info=runtime_info,
         frame_count=frame_count,
         expected_frame_count=expected_frame_count,
-        legacy_raw_videos=_discover_fictrac_raw_videos(run_dir),
-        legacy_saved_raw_frames=_count_fictrac_saved_raw_frames(run_dir),
+        legacy_raw_videos=_discover_fictrac_raw_videos(run_dir, runtime_info),
+        legacy_saved_raw_frames=_count_fictrac_saved_raw_frames(run_dir, runtime_info),
     )
 
 
-def _write_parity_summary(run_dir: Path) -> tuple[dict[str, Any], Path]:
+def _write_parity_summary(run_dir: Path, output_path: Path) -> tuple[dict[str, Any], Path]:
     summary = summarize_run_parity(run_dir)
-    parity_path = run_dir / "parity_audit.json"
-    parity_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    return summary, parity_path
+    output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary, output_path
 
 
 def _resolve_run_artifact_path(run_dir: Path, path_value: Any) -> Path | None:
@@ -1676,6 +1741,389 @@ def ensure_run_dir(root: Path) -> Path:
     return d
 
 
+def _launch_metadata_form_stage(
+    *,
+    record_path: Path,
+    record_meta_path: Path,
+    history_path: Path,
+    stage: str,
+    host: str,
+    port: int,
+    no_browser: bool,
+    logger: logging.Logger,
+) -> None:
+    completion_file = record_path.parent / f".{stage}_metadata_complete.json"
+    if completion_file.exists():
+        completion_file.unlink()
+
+    command = [
+        sys.executable,
+        "-m",
+        "multibios.apps.metadata_form",
+        "--record",
+        str(record_path),
+        "--record-meta",
+        str(record_meta_path),
+        "--history",
+        str(history_path),
+        "--stage",
+        stage,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--completion-file",
+        str(completion_file),
+    ]
+    if no_browser:
+        command.append("--no-browser")
+
+    logger.info("Launching metadata form: %s", " ".join(command))
+    process = subprocess.Popen(command)
+    try:
+        while True:
+            if completion_file.exists():
+                logger.info("Metadata form completed for %s stage", stage)
+                return
+            return_code = process.poll()
+            if return_code is not None:
+                raise RuntimeError(f"Metadata form exited before submission with code {return_code}")
+            time.sleep(0.25)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def _load_record_operator(record_path: Path) -> str | None:
+    try:
+        payload = load_experiment_record(record_path)
+    except Exception:
+        return None
+    operator = payload.get("entered_by")
+    if operator:
+        return str(operator)
+    pre_experiment = payload.get("pre_experiment") or {}
+    fallback = pre_experiment.get("operator")
+    return str(fallback) if fallback else None
+
+
+def _load_record_metadata_status(record_path: Path) -> dict[str, Any]:
+    try:
+        return summarize_metadata_status(load_experiment_record(record_path))
+    except Exception:
+        return {
+            "record_present": False,
+            "record_status": None,
+            "pre_experiment_complete": False,
+            "post_experiment_complete": False,
+            "metadata_complete": False,
+            "operator_recorded": False,
+            "entered_by": None,
+            "entered_started_utc": None,
+            "entered_completed_utc": None,
+            "ui_version": None,
+            "missing_required_fields": {
+                "pre_experiment": [],
+                "post_experiment": [],
+            },
+        }
+
+
+def _update_record_with_post_run_context(
+    *,
+    record_path: Path,
+    record_meta_path: Path,
+    duration_s: float | None,
+    aborted: bool,
+) -> None:
+    record = load_experiment_record(record_path)
+    if record is None:
+        raise FileNotFoundError(f"Experiment record not found: {record_path}")
+    record = apply_post_run_defaults(record, duration_s=duration_s, aborted=aborted)
+    write_experiment_metadata_files(
+        record_path=record_path,
+        record=record,
+        record_meta_path=record_meta_path,
+    )
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return value.as_posix()
+    if hasattr(value, "item"):
+        return value.item()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _channel_entries(names: list[str], physical_channels: list[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "index": index,
+            "name": name,
+            "physical_channel": physical_channel,
+        }
+        for index, (name, physical_channel) in enumerate(zip(names, physical_channels))
+    ]
+
+
+def _required_dataset_paths(layout: RunDatasetLayout) -> list[str]:
+    return [
+        "inputs/protocol.yaml",
+        "inputs/hardware.yaml",
+        "inputs/cli_args.json",
+        "inputs/resolved_runtime.json",
+        "inputs/source_snapshot.json",
+        "inputs/software_environment.json",
+        "inputs/hardware_snapshot.json",
+        "experiment/record.json",
+        "experiment/record.meta.json",
+        "planned/compile_report.json",
+        "planned/control_plan.csv",
+        "planned/timing_anchors.json",
+        "planned/daq/digital_outputs/channels.json",
+        "planned/daq/digital_outputs/signal_array.npz",
+        "planned/daq/digital_outputs/signal_array.meta.json",
+        "planned/daq/digital_outputs/edge_table.csv",
+        "planned/daq/digital_outputs/edge_table.meta.json",
+        "planned/daq/digital_outputs/commit_edge_table.csv",
+        "planned/daq/digital_outputs/commit_edge_table.meta.json",
+        "planned/daq/analog_outputs/channels.json",
+        "planned/daq/analog_outputs/signal_array.npz",
+        "planned/daq/analog_outputs/signal_array.meta.json",
+        "recorded/daq/analog_inputs/channels.json",
+        "recorded/daq/analog_inputs/samples.npz",
+        "recorded/daq/digital_inputs/channels.json",
+        "recorded/daq/digital_inputs/samples.npz",
+        "recorded/tracking/fictrac/runtime_config.txt",
+        "recorded/tracking/fictrac/runtime_config.json",
+        "recorded/tracking/fictrac/session_record.json",
+        "recorded/tracking/fictrac/frame_series.npz",
+        "recorded/tracking/fictrac/frame_series.meta.json",
+        "logs/primary/teensy_transcript.jsonl",
+        "logs/primary/teensy_transcript.meta.json",
+        "logs/diagnostics/warnings.json",
+        "logs/diagnostics/run_log.txt",
+        "README.md",
+        "checksums.sha256",
+        "notes.md",
+    ]
+
+
+def _write_checksums_file(layout: RunDatasetLayout) -> None:
+    checksums = build_checksums_payload(
+        run_dir=layout.run_dir,
+        excluded_paths={layout.checksums_path},
+    )
+    lines = [f"{digest}  {relative_path}" for digest, relative_path in checksums]
+    layout.checksums_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _canonical_deleted_chunk_paths(run_dir: Path, raw_chunks_dir: Path, deleted_paths: list[Any]) -> list[str]:
+    return [
+        normalize_run_relative_path(run_dir, raw_chunks_dir / Path(str(path_value)).name)
+        for path_value in deleted_paths
+    ]
+
+
+def _relocate_optional_files(run_dir: Path, destinations: dict[Any, Path]) -> dict[str, str]:
+    relocated: dict[str, str] = {}
+    for source_value, destination in destinations.items():
+        rel_path = relocate_artifact_file(run_dir, source_value, destination)
+        if rel_path is not None:
+            relocated[str(source_value)] = rel_path
+    return relocated
+
+
+def _canonicalize_fictrac_runtime_info(
+    *,
+    layout: RunDatasetLayout,
+    run_dir: Path,
+    runtime_info: dict[str, Any] | None,
+) -> dict[str, Any]:
+    updated = deepcopy(runtime_info or {})
+    if not updated:
+        return updated
+    updated["runtime_config"] = normalize_run_relative_path(run_dir, layout.fictrac_tracking_runtime_config_path)
+    updated["output_base"] = normalize_run_relative_path(run_dir, layout.fictrac_tracking_dir / "fictrac")
+    return updated
+
+
+def _canonicalize_secondary_camera_recording(
+    *,
+    layout: RunDatasetLayout,
+    run_dir: Path,
+    recording: dict[str, Any],
+) -> dict[str, Any]:
+    updated = deepcopy(recording)
+    raw_chunks_dir = layout.secondary_camera_dir / "raw_chunks"
+    lossless_video = deepcopy(updated.get("lossless_video") or {})
+    lossless_rel = None
+    if lossless_video.get("path"):
+        lossless_suffix = Path(str(lossless_video["path"])).suffix or ".avi"
+        lossless_rel = relocate_artifact_file(
+            run_dir,
+            lossless_video["path"],
+            layout.secondary_camera_dir / f"lossless_video{lossless_suffix}",
+        )
+        if lossless_rel is not None:
+            lossless_video["path"] = lossless_rel
+    updated["lossless_video"] = lossless_video
+    updated["frame_index_path"] = relocate_artifact_file(
+        run_dir,
+        updated.get("frame_index_path"),
+        layout.secondary_camera_dir / "frame_index.csv",
+    )
+    updated["frame_bin_path"] = relocate_artifact_file(
+        run_dir,
+        updated.get("frame_bin_path"),
+        layout.secondary_camera_dir / "frame_stream.bin",
+    )
+    updated["manifest_path"] = relocate_artifact_file(
+        run_dir,
+        updated.get("manifest_path"),
+        layout.secondary_camera_source_manifest_path,
+    )
+    updated["analysis_path"] = relocate_artifact_file(
+        run_dir,
+        updated.get("analysis_path"),
+        layout.secondary_camera_analysis_path,
+    )
+    chunk_paths: list[str] = []
+    for path_value in updated.get("chunk_paths") or []:
+        rel_path = relocate_artifact_file(run_dir, path_value, raw_chunks_dir / Path(str(path_value)).name)
+        if rel_path is not None:
+            chunk_paths.append(rel_path)
+    if updated.get("chunk_paths") is not None:
+        updated["chunk_paths"] = chunk_paths
+
+    cleanup = deepcopy(updated.get("raw_chunk_cleanup") or {})
+    if cleanup:
+        cleanup["parity_summary_path"] = "derived/validation/parity_audit.json"
+        cleanup["validated_video_path"] = lossless_rel
+        cleanup["deleted_chunk_paths"] = _canonical_deleted_chunk_paths(
+            run_dir,
+            raw_chunks_dir,
+            cleanup.get("deleted_chunk_paths") or [],
+        )
+        updated["raw_chunk_cleanup"] = cleanup
+
+    manifest_path = _resolve_run_artifact_path(run_dir, updated.get("manifest_path"))
+    if manifest_path is not None and manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["frame_index_path"] = updated.get("frame_index_path")
+        manifest["frame_bin_path"] = updated.get("frame_bin_path")
+        manifest["chunk_paths"] = updated.get("chunk_paths") or []
+        manifest["analysis_path"] = updated.get("analysis_path")
+        manifest["raw_chunk_cleanup"] = cleanup or manifest.get("raw_chunk_cleanup")
+        manifest["raw_chunks_retained"] = updated.get("raw_chunks_retained")
+        if lossless_video:
+            manifest["lossless_video"] = lossless_video
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return updated
+
+
+def _canonicalize_fictrac_recording(
+    *,
+    layout: RunDatasetLayout,
+    run_dir: Path,
+    recording: dict[str, Any],
+    runtime_info: dict[str, Any] | None,
+) -> dict[str, Any]:
+    updated = deepcopy(recording)
+    updated["fictrac_camera_serial"] = (runtime_info or {}).get("fictrac_camera_serial")
+    raw_chunks_dir = layout.fictrac_camera_dir / "raw_chunks"
+    path_map: dict[str, str] = {}
+
+    raw_manifest_rel = relocate_artifact_file(
+        run_dir,
+        updated.get("raw_stream_manifest"),
+        layout.fictrac_camera_raw_stream_manifest_path,
+    )
+    if raw_manifest_rel is not None and updated.get("raw_stream_manifest"):
+        path_map[str(updated["raw_stream_manifest"])] = raw_manifest_rel
+        updated["raw_stream_manifest"] = raw_manifest_rel
+
+    manifest_path = _resolve_run_artifact_path(run_dir, updated.get("raw_stream_manifest"))
+    source_manifest: dict[str, Any] = {}
+    if manifest_path is not None and manifest_path.exists():
+        source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    frame_index_rel = relocate_artifact_file(
+        run_dir,
+        source_manifest.get("frame_index_path"),
+        layout.fictrac_camera_dir / "frame_index.csv",
+    )
+    if frame_index_rel is not None and source_manifest.get("frame_index_path"):
+        path_map[str(source_manifest["frame_index_path"])] = frame_index_rel
+        source_manifest["frame_index_path"] = frame_index_rel
+
+    moved_chunk_paths: list[str] = []
+    for path_value in source_manifest.get("chunk_paths") or []:
+        rel_path = relocate_artifact_file(run_dir, path_value, raw_chunks_dir / Path(str(path_value)).name)
+        if rel_path is not None:
+            moved_chunk_paths.append(rel_path)
+            path_map[str(path_value)] = rel_path
+    if source_manifest.get("chunk_paths") is not None:
+        source_manifest["chunk_paths"] = moved_chunk_paths
+
+    lossless_video = deepcopy(updated.get("lossless_video") or {})
+    lossless_rel = None
+    if lossless_video.get("path"):
+        lossless_suffix = Path(str(lossless_video["path"])).suffix or ".avi"
+        lossless_rel = relocate_artifact_file(
+            run_dir,
+            lossless_video["path"],
+            layout.fictrac_camera_dir / f"lossless_video{lossless_suffix}",
+        )
+        if lossless_rel is not None:
+            path_map[str(lossless_video["path"])] = lossless_rel
+            lossless_video["path"] = lossless_rel
+    updated["lossless_video"] = lossless_video
+
+    relocated_raw_stream_chunks: list[str] = []
+    for path_value in updated.get("raw_stream_chunks") or []:
+        rel_path = path_map.get(str(path_value))
+        if rel_path is None:
+            rel_path = relocate_artifact_file(run_dir, path_value, raw_chunks_dir / Path(str(path_value)).name)
+        if rel_path is not None:
+            path_map[str(path_value)] = rel_path
+            relocated_raw_stream_chunks.append(rel_path)
+    if updated.get("raw_stream_chunks") is not None:
+        updated["raw_stream_chunks"] = relocated_raw_stream_chunks
+
+    updated["raw_videos"] = [path_map.get(str(path_value), str(path_value).replace('\\', '/')) for path_value in updated.get("raw_videos") or []]
+    updated["output_base"] = normalize_run_relative_path(run_dir, layout.fictrac_tracking_dir / "fictrac")
+
+    cleanup = deepcopy(updated.get("raw_chunk_cleanup") or {})
+    if cleanup:
+        cleanup["parity_summary_path"] = "derived/validation/parity_audit.json"
+        cleanup["validated_video_path"] = lossless_rel
+        cleanup["deleted_chunk_paths"] = _canonical_deleted_chunk_paths(
+            run_dir,
+            raw_chunks_dir,
+            cleanup.get("deleted_chunk_paths") or [],
+        )
+        updated["raw_chunk_cleanup"] = cleanup
+
+    if source_manifest:
+        source_manifest["raw_chunk_cleanup"] = cleanup or source_manifest.get("raw_chunk_cleanup")
+        source_manifest["raw_chunks_retained"] = updated.get("raw_chunks_retained")
+        manifest_path.write_text(json.dumps(source_manifest, indent=2), encoding="utf-8")
+
+    return updated
+
+
 # ----------------------------- main -----------------------------------------
 def main():
     ap = argparse.ArgumentParser(
@@ -1730,10 +2178,40 @@ def main():
         type=int,
         help="Override protocol.timing.seed for reproducible randomization",
     )
+    ap.add_argument(
+        "--metadata-ui",
+        choices=["off", "pre", "full"],
+        default="off",
+        help="Launch the metadata form before acquisition, or before and after acquisition with 'full'. Defaults to off for unattended runs.",
+    )
+    ap.add_argument(
+        "--metadata-history",
+        default=str(default_metadata_history_path()),
+        help="Path to the persistent metadata history store.",
+    )
+    ap.add_argument("--metadata-host", default="127.0.0.1", help="Host for the metadata form server")
+    ap.add_argument("--metadata-port", type=int, default=8060, help="Port for the metadata form server")
+    ap.add_argument("--metadata-no-browser", action="store_true", help="Do not auto-open a browser for the metadata form")
     args = ap.parse_args()
 
     # Set up logging based on verbosity level
     logger = setup_logging(verbose=args.verbose, debug=args.debug)
+    captured_warnings: list[dict[str, Any]] = []
+    original_showwarning = warnings.showwarning
+
+    def _capture_warning(message, category, filename, lineno, file=None, line=None):
+        captured_warnings.append(
+            {
+                "message": str(message),
+                "category": getattr(category, "__name__", str(category)),
+                "filename": filename,
+                "lineno": lineno,
+                "source_line": line,
+            }
+        )
+        original_showwarning(message, category, filename, lineno, file=file, line=line)
+
+    warnings.showwarning = _capture_warning
     
     logger.info("=== MultiBiOS Protocol Runner Starting ===")
     logger.info(f"Command line arguments: {vars(args)}")
@@ -1889,24 +2367,87 @@ def main():
     # Create run directory and save artifacts with detailed logging
     logger.info("=== Creating Run Directory and Artifacts ===")
     run_dir = ensure_run_dir(run_root)
+    run_uuid = str(uuid.uuid4())
+    run_started_ts = time.time()
+    run_started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(run_started_ts))
+    dataset_layout = RunDatasetLayout(run_dir)
+    dataset_layout.ensure_directories()
+    if logger.level > logging.INFO:
+        logger.setLevel(logging.INFO)
+    run_log_handler = logging.FileHandler(dataset_layout.run_log_path, encoding="utf-8")
+    run_log_handler.setLevel(logging.INFO)
+    run_log_handler.setFormatter(logging.Formatter(fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(run_log_handler)
     logger.info(f"✓ Run directory created: {run_dir}")
     logger.info(f"  Run timestamp: {run_dir.name}")
+    if not dataset_layout.notes_path.exists():
+        dataset_layout.notes_path.write_text(build_notes_placeholder(), encoding="utf-8")
     
     # Save compilation report
     logger.info("Saving compilation report...")
-    report_file = run_dir / "compile_report.json"
-    report_file.write_text(json.dumps(comp.report, indent=2))
-    logger.info(f"  ✓ Compilation report: {report_file}")
+    dataset_layout.compile_report_path.write_text(json.dumps(comp.report, indent=2), encoding="utf-8")
+    logger.info(f"  ✓ Compilation report: {dataset_layout.compile_report_path}")
     logger.debug(f"    Report keys: {list(comp.report.keys()) if hasattr(comp, 'report') and comp.report else 'No report'}")
     
     # Save input files for reproducibility
     logger.info("Saving input files for reproducibility...")
-    proto_copy = run_dir / "protocol.yaml"
-    hw_copy = run_dir / "hardware.yaml"
-    proto_copy.write_text(proto_path.read_text(encoding="utf-8"), encoding="utf-8")
-    hw_copy.write_text(hw_path.read_text(encoding="utf-8"), encoding="utf-8")
-    logger.info(f"  ✓ Protocol YAML copy: {proto_copy}")
-    logger.info(f"  ✓ Hardware YAML copy: {hw_copy}")
+    dataset_layout.protocol_copy_path.write_text(proto_path.read_text(encoding="utf-8"), encoding="utf-8")
+    dataset_layout.hardware_copy_path.write_text(hw_path.read_text(encoding="utf-8"), encoding="utf-8")
+    logger.info(f"  ✓ Protocol YAML copy: {dataset_layout.protocol_copy_path}")
+    logger.info(f"  ✓ Hardware YAML copy: {dataset_layout.hardware_copy_path}")
+
+    package_versions = {
+        "numpy": getattr(np, "__version__", None),
+        "opencv": getattr(cv2, "__version__", None),
+        "nidaqmx": getattr(nidaqmx, "__version__", None),
+        "plotly": getattr(go, "__version__", None),
+        "pyyaml": getattr(yaml, "__version__", None),
+    }
+    dataset_layout.cli_args_path.write_text(
+        json.dumps(build_cli_args_payload(args=vars(args)), indent=2),
+        encoding="utf-8",
+    )
+    dataset_layout.resolved_runtime_path.write_text(
+        json.dumps(
+            build_resolved_runtime_payload(
+                args=vars(args),
+                runtime_cfg=vars(runtime_cfg),
+                sample_rate_hz=comp.tcfg.sample_rate,
+                duration_ms=comp.N * comp.dt_ms,
+                rng_seed=getattr(comp, "rng_seed", None),
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    dataset_layout.hardware_snapshot_path.write_text(
+        json.dumps(
+            build_hardware_snapshot_payload(
+                device=str(hw.device),
+                digital_outputs=hw.digital_outputs,
+                analog_outputs=hw.analog_outputs,
+                analog_inputs=hw.analog_inputs,
+                digital_inputs=hw.digital_inputs,
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    dataset_layout.software_environment_path.write_text(
+        json.dumps(build_software_environment_payload(package_versions=package_versions), indent=2),
+        encoding="utf-8",
+    )
+    dataset_layout.source_snapshot_path.write_text(
+        json.dumps(
+            build_source_snapshot_payload(
+                repo_root=Path(__file__).resolve().parent.parent,
+                entrypoint="python -m multibios.run_protocol",
+            ),
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    logger.info(f"  ✓ Input metadata files: {dataset_layout.inputs_dir}")
     
     # Save metadata  (t0 anchors start as None; re-written after do_task.start)
     logger.info("Saving run metadata...")
@@ -1928,64 +2469,178 @@ def main():
         "t0_utc": t0_utc,
         "t0_perf_counter": t0_perf,
     }
-    meta_file = run_dir / "meta.json"
-    meta_file.write_text(json.dumps(meta_data, indent=2))
-    logger.info(f"  ✓ Metadata: {meta_file}")
+    logger.info("  ✓ Metadata staged in canonical input records")
     logger.debug(f"    Metadata: {meta_data}")
+
+    timing_anchors = build_timing_anchors_payload(
+        sample_rate_hz=comp.tcfg.sample_rate,
+        t0_unix_seconds=t0_utc,
+        t0_perf_counter_seconds=t0_perf,
+    )
+    dataset_layout.timing_anchors_path.write_text(json.dumps(timing_anchors, indent=2), encoding="utf-8")
+    logger.info(f"  ✓ Timing anchors: {dataset_layout.timing_anchors_path}")
+
+    protocol_block = y.get("protocol", {}) if isinstance(y, dict) else {}
+    experiment_record = build_placeholder_experiment_record(
+        run_id=run_dir.name,
+        run_uuid=run_uuid,
+        source_filename=proto_path.name,
+        protocol_name=str(protocol_block.get("name") or proto_path.stem),
+        protocol_version=protocol_block.get("version"),
+        rig_id=str(hw.device),
+        operator=None,
+    )
+    dataset_layout.experiment_record_path.write_text(json.dumps(experiment_record, indent=2), encoding="utf-8")
+    logger.info(f"  ✓ Experiment record placeholder: {dataset_layout.experiment_record_path}")
+    dataset_layout.experiment_record_meta_path.write_text(
+        json.dumps(build_experiment_record_meta_payload(), indent=2),
+        encoding="utf-8",
+    )
+    logger.info(f"  ✓ Experiment record schema: {dataset_layout.experiment_record_meta_path}")
+    if args.metadata_ui in {"pre", "full"}:
+        _launch_metadata_form_stage(
+            record_path=dataset_layout.experiment_record_path,
+            record_meta_path=dataset_layout.experiment_record_meta_path,
+            history_path=Path(args.metadata_history),
+            stage="pre",
+            host=args.metadata_host,
+            port=args.metadata_port,
+            no_browser=args.metadata_no_browser,
+            logger=logger,
+        )
     
     # Save RCK edges log
     logger.info("Saving RCK edges log...")
-    rck_file = run_dir / "rck_edges.csv"
-    with rck_file.open("w") as f:
+    with dataset_layout.planned_do_commit_edge_table_path.open("w", encoding="utf-8") as f:
         f.write("signal,sample_idx,time_ms\n")
         for sig, si, tms in comp.rck_log:
             f.write(f"{sig},{si},{tms:.3f}\n")
-    logger.info(f"  ✓ RCK edges: {rck_file} ({len(comp.rck_log)} events)")
+    _write_json_file(
+        dataset_layout.planned_do_commit_edge_meta_path,
+        build_table_meta_payload(
+            schema_name="multibios.planned_commit_edge_table",
+            artifact_role="planned_output",
+            table_path="planned/daq/digital_outputs/commit_edge_table.csv",
+            clock_domain="daq_sample_clock",
+            columns=[
+                {"name": "signal", "unit": None, "description": "Logical commit signal name."},
+                {"name": "sample_idx", "unit": "sample_index", "description": "DAQ sample index for the commit edge."},
+                {"name": "time_ms", "unit": "ms", "description": "Planned commit edge time in milliseconds."},
+            ],
+        ),
+    )
+    logger.info(f"  ✓ RCK edges: {dataset_layout.planned_do_commit_edge_table_path} ({len(comp.rck_log)} events)")
 
     # Save channel mapping files
     logger.info("Saving channel mapping files...")
     do_names = comp.line_order
     ao_names = comp.ao_order
     
-    do_map = {"names": do_names, "phys": [hw.digital_outputs[n] for n in do_names]}
-    do_map_file = run_dir / "do_map.json"
-    do_map_file.write_text(json.dumps(do_map, indent=2))
-    logger.info(f"  ✓ DO mapping: {do_map_file} ({len(do_names)} lines)")
+    _write_json_file(
+        dataset_layout.planned_do_channels_path,
+        build_channel_map_payload(
+            schema_name="multibios.planned_digital_output_channels",
+            artifact_role="planned_output",
+            channels=_channel_entries(do_names, [hw.digital_outputs[n] for n in do_names]),
+        ),
+    )
+    logger.info(f"  ✓ DO mapping: {dataset_layout.planned_do_channels_path} ({len(do_names)} lines)")
     
-    ao_map = {"names": ao_names, "phys": [hw.analog_outputs[n] for n in ao_names]}
-    ao_map_file = run_dir / "ao_map.json"
-    ao_map_file.write_text(json.dumps(ao_map, indent=2))
-    logger.info(f"  ✓ AO mapping: {ao_map_file} ({len(ao_names)} channels)")
+    _write_json_file(
+        dataset_layout.planned_ao_channels_path,
+        build_channel_map_payload(
+            schema_name="multibios.planned_analog_output_channels",
+            artifact_role="planned_output",
+            channels=_channel_entries(ao_names, [hw.analog_outputs[n] for n in ao_names]),
+        ),
+    )
+    logger.info(f"  ✓ AO mapping: {dataset_layout.planned_ao_channels_path} ({len(ao_names)} channels)")
     
     # DI map (synchronized digital inputs) — write even if empty for consistency
     di_names_cfg = list(hw.digital_inputs.keys())
-    di_map = {"names": di_names_cfg, "phys": [hw.digital_inputs[n] for n in di_names_cfg]}
-    di_map_file = run_dir / "di_map.json"
-    di_map_file.write_text(json.dumps(di_map, indent=2))
-    logger.info(f"  ✓ DI mapping: {di_map_file} ({len(di_names_cfg)} lines)")
+    _write_json_file(
+        dataset_layout.recorded_di_channels_path,
+        build_channel_map_payload(
+            schema_name="multibios.recorded_digital_input_channels",
+            artifact_role="primary_evidence",
+            channels=_channel_entries(di_names_cfg, [hw.digital_inputs[n] for n in di_names_cfg]),
+        ),
+    )
+    logger.info(f"  ✓ DI mapping: {dataset_layout.recorded_di_channels_path} ({len(di_names_cfg)} lines)")
+
+    ai_names_cfg = list(hw.analog_inputs.keys())
+    ai_phys_cfg = [hw.analog_inputs[n] for n in ai_names_cfg]
+
+    _write_json_file(
+        dataset_layout.recorded_ai_channels_path,
+        build_channel_map_payload(
+            schema_name="multibios.recorded_analog_input_channels",
+            artifact_role="primary_evidence",
+            channels=_channel_entries(ai_names_cfg, ai_phys_cfg),
+        ),
+    )
 
     # Save compiled arrays
     logger.info("Saving compiled waveform arrays...")
-    do_file = run_dir / "compiled_do.npz"
-    ao_file = run_dir / "compiled_ao.npz"
-    
     logger.debug(f"  DO array shape: {comp.do.shape}, dtype: {comp.do.dtype}")
-    np.savez_compressed(do_file, data=comp.do.astype(np.bool_))
-    logger.info(f"  ✓ Digital outputs: {do_file}")
+    np.savez_compressed(dataset_layout.planned_do_signal_array_path, data=comp.do.astype(np.bool_))
+    _write_json_file(
+        dataset_layout.planned_do_signal_meta_path,
+        build_array_meta_payload(
+            schema_name="multibios.planned_digital_output_signal_array",
+            artifact_role="planned_output",
+            data_path="planned/daq/digital_outputs/signal_array.npz",
+            dtype=str(comp.do.astype(np.bool_).dtype),
+            shape=list(comp.do.shape),
+            axis_order=["channel", "sample"],
+            clock_domain="daq_sample_clock",
+            sample_rate_hz=comp.tcfg.sample_rate,
+            value_unit=None,
+            channel_path="planned/daq/digital_outputs/channels.json",
+        ),
+    )
+    logger.info(f"  ✓ Digital outputs: {dataset_layout.planned_do_signal_array_path}")
     
     logger.debug(f"  AO array shape: {comp.ao.shape}, dtype: {comp.ao.dtype}")
-    np.savez_compressed(ao_file, data=comp.ao.astype(np.float32))
-    logger.info(f"  ✓ Analog outputs: {ao_file}")
+    np.savez_compressed(dataset_layout.planned_ao_signal_array_path, data=comp.ao.astype(np.float32))
+    _write_json_file(
+        dataset_layout.planned_ao_signal_meta_path,
+        build_array_meta_payload(
+            schema_name="multibios.planned_analog_output_signal_array",
+            artifact_role="planned_output",
+            data_path="planned/daq/analog_outputs/signal_array.npz",
+            dtype=str(comp.ao.astype(np.float32).dtype),
+            shape=list(comp.ao.shape),
+            axis_order=["channel", "sample"],
+            clock_domain="daq_sample_clock",
+            sample_rate_hz=comp.tcfg.sample_rate,
+            value_unit="volts",
+            channel_path="planned/daq/analog_outputs/channels.json",
+        ),
+    )
+    logger.info(f"  ✓ Analog outputs: {dataset_layout.planned_ao_signal_array_path}")
 
-    control_plan_file = run_dir / "control_plan.csv"
-    write_control_plan_csv(control_plan_file, control_plan.timeline)
-    logger.info(f"  ✓ Shared control plan: {control_plan_file} ({len(control_plan.timeline)} events)")
+    write_control_plan_csv(dataset_layout.control_plan_path, control_plan.timeline)
+    logger.info(f"  ✓ Shared control plan: {dataset_layout.control_plan_path} ({len(control_plan.timeline)} events)")
 
     # Digital edge log (super helpful to diff runs)
     logger.info("Computing and saving digital edge transitions...")
-    edge_file = run_dir / "digital_edges.csv"
-    write_edge_csv(edge_file, do_names, comp.do.astype(bool), comp.dt_ms)
-    logger.info(f"  ✓ Digital edges: {edge_file}")
+    write_edge_csv(dataset_layout.planned_do_edge_table_path, do_names, comp.do.astype(bool), comp.dt_ms)
+    _write_json_file(
+        dataset_layout.planned_do_edge_meta_path,
+        build_table_meta_payload(
+            schema_name="multibios.planned_digital_output_edge_table",
+            artifact_role="planned_output",
+            table_path="planned/daq/digital_outputs/edge_table.csv",
+            clock_domain="daq_sample_clock",
+            columns=[
+                {"name": "signal", "unit": None, "description": "Logical signal name."},
+                {"name": "sample_idx", "unit": "sample_index", "description": "DAQ sample index for the edge."},
+                {"name": "time_ms", "unit": "ms", "description": "Planned edge time in milliseconds."},
+            ],
+        ),
+    )
+    logger.info(f"  ✓ Digital edges: {dataset_layout.planned_do_edge_table_path}")
     
     # Count edges for summary
     do_bool = comp.do.astype(bool)
@@ -1996,33 +2651,40 @@ def main():
         logger.debug(f"    {do_names[i]}: {edges} transitions")
     logger.info(f"  Total edge transitions: {total_edges}")
 
-    preview_file = run_dir / "preview.html"
-
     # Generate preview visualization
-    if args.interactive:
-        logger.info("Generating preview visualization...")
-        t_ms = np.arange(comp.N) * comp.dt_ms
-        fig = make_protocol_figure(
-            t_ms,
-            comp.do.astype(bool),
-            do_names,
-            comp.ao,
-            ao_names,
-            title="Preview (no DAQ)",
-            rck_log=comp.rck_log,
-        )
-        fig.write_html(preview_file, include_plotlyjs="cdn")
-        logger.info(f"  ✓ Preview visualization: {preview_file}")
+    logger.info("Generating preview visualization...")
+    t_ms = np.arange(comp.N) * comp.dt_ms
+    fig = make_protocol_figure(
+        t_ms,
+        comp.do.astype(bool),
+        do_names,
+        comp.ao,
+        ao_names,
+        title="Preview (no DAQ)",
+        rck_log=comp.rck_log,
+    )
+    dataset_layout.protocol_preview_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.write_html(dataset_layout.protocol_preview_path, include_plotlyjs="cdn")
+    logger.info(f"  ✓ Preview visualization: {dataset_layout.protocol_preview_path}")
 
     if args.dry_run:
+        manifest = build_run_manifest_payload(
+            layout=dataset_layout,
+            run_id=run_dir.name,
+            run_uuid=run_uuid,
+            status="completed",
+            started_utc=run_started_utc,
+            completed_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            rig_id=str(hw.device),
+            operator=_load_record_operator(dataset_layout.experiment_record_path),
+            sample_rate_hz=comp.tcfg.sample_rate,
+            metadata_status=_load_record_metadata_status(dataset_layout.experiment_record_path),
+        )
+        dataset_layout.run_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         logger.info("=== DRY RUN COMPLETE ===")
         logger.info(f"All artifacts saved to: {run_dir}")
-        if args.interactive:
-            logger.info(f"Preview available at: {preview_file}")
-            print(f"Dry-run complete. Preview: {preview_file}")
-        else:
-            logger.info("Preview not generated because --interactive was not requested")
-            print(f"Dry-run complete. Artifacts: {run_dir}")
+        logger.info(f"Preview available at: {dataset_layout.protocol_preview_path}")
+        print(f"Dry-run complete. Preview: {dataset_layout.protocol_preview_path}")
         return
 
     # --- DAQ execution: DO master, AO slave, AI slave (MFC feedback), DI slave (synchronized DI)
@@ -2217,7 +2879,7 @@ def main():
                     )
                 fictrac_config_path, fictrac_camera_index, fictrac_runtime_info = _prepare_fictrac_runtime_config(
                     runtime_cfg.fictrac_config,
-                    run_dir,
+                    dataset_layout.fictrac_tracking_dir,
                     enable_raw_video=runtime_cfg.save_fictrac_camera_video,
                     camera_fps=runtime_cfg.camera_trigger_fps_hz,
                     video_codec=runtime_cfg.fictrac_raw_video_codec,
@@ -2315,10 +2977,10 @@ def main():
                     int(np.ceil(second_camera_startup_timeout_s * 1000.0)),
                 )
 
-                logger.info("Recording Blackfly camera %s into the run directory...", second_camera_index)
+                logger.info("Recording Blackfly camera %s directly into %s...", second_camera_index, dataset_layout.secondary_camera_dir)
                 other_camera_recorder = TriggeredCameraRecorder(
                     camera_index=second_camera_index,
-                    run_dir=run_dir,
+                    run_dir=dataset_layout.secondary_camera_dir,
                     timeout_ms=second_camera_timeout_ms,
                     queue_size=runtime_cfg.second_camera_queue_size,
                     stream_buffer_count=runtime_cfg.second_camera_stream_buffer_count,
@@ -2386,7 +3048,12 @@ def main():
 
                 meta_data["t0_utc"] = t0_utc
                 meta_data["t0_perf_counter"] = t0_perf
-                meta_file.write_text(json.dumps(meta_data, indent=2))
+                timing_anchors = build_timing_anchors_payload(
+                    sample_rate_hz=comp.tcfg.sample_rate,
+                    t0_unix_seconds=t0_utc,
+                    t0_perf_counter_seconds=t0_perf,
+                )
+                dataset_layout.timing_anchors_path.write_text(json.dumps(timing_anchors, indent=2), encoding="utf-8")
                 logger.info("✓ All DAQ tasks started, protocol execution in progress...")
 
                 if other_camera_recorder is not None:
@@ -2498,13 +3165,27 @@ def main():
                         )
                         _safe_stop_task(ai_task, logger, "AI slave")
 
-                        ai_file = run_dir / "capture_ai.npz"
                         np.savez_compressed(
-                            ai_file,
+                            dataset_layout.recorded_ai_samples_path,
                             names=np.array(ai_names, dtype=object),
                             data=ai_buf.astype(np.float32),
                         )
-                        logger.info(f"✓ AI data saved: {ai_file}")
+                        _write_json_file(
+                            dataset_layout.recorded_ai_samples_meta_path,
+                            build_array_meta_payload(
+                                schema_name="multibios.recorded_analog_input_samples",
+                                artifact_role="primary_evidence",
+                                data_path="recorded/daq/analog_inputs/samples.npz",
+                                dtype=str(ai_buf.astype(np.float32).dtype),
+                                shape=list(ai_buf.shape),
+                                axis_order=["channel", "sample"],
+                                clock_domain="daq_sample_clock",
+                                sample_rate_hz=comp.tcfg.sample_rate,
+                                value_unit="volts",
+                                channel_path="recorded/daq/analog_inputs/channels.json",
+                            ),
+                        )
+                        logger.info(f"✓ AI data saved: {dataset_layout.recorded_ai_samples_path}")
                         logger.info(f"  AI data shape: {ai_buf.shape}")
                         for i, name in enumerate(ai_names):
                             min_val, max_val = ai_buf[i].min(), ai_buf[i].max()
@@ -2523,13 +3204,27 @@ def main():
                         )
                         _safe_stop_task(di_task, logger, "DI slave")
 
-                        di_file = run_dir / "capture_di.npz"
                         np.savez_compressed(
-                            di_file,
+                            dataset_layout.recorded_di_samples_path,
                             names=np.array(di_names, dtype=object),
                             data=np.array(di_data).astype(np.bool_),
                         )
-                        logger.info(f"✓ DI data saved: {di_file}")
+                        _write_json_file(
+                            dataset_layout.recorded_di_samples_meta_path,
+                            build_array_meta_payload(
+                                schema_name="multibios.recorded_digital_input_samples",
+                                artifact_role="primary_evidence",
+                                data_path="recorded/daq/digital_inputs/samples.npz",
+                                dtype=str(np.array(di_data).astype(np.bool_).dtype),
+                                shape=list(np.array(di_data).shape),
+                                axis_order=["channel", "sample"],
+                                clock_domain="daq_sample_clock",
+                                sample_rate_hz=comp.tcfg.sample_rate,
+                                value_unit="boolean",
+                                channel_path="recorded/daq/digital_inputs/channels.json",
+                            ),
+                        )
+                        logger.info(f"✓ DI data saved: {dataset_layout.recorded_di_samples_path}")
 
                         di_bool = np.array(di_data).astype(bool)
                         logger.info(f"  DI data shape: {di_bool.shape}")
@@ -2558,6 +3253,36 @@ def main():
                 )
 
             if run_interrupted:
+                _update_record_with_post_run_context(
+                    record_path=dataset_layout.experiment_record_path,
+                    record_meta_path=dataset_layout.experiment_record_meta_path,
+                    duration_s=time.time() - run_started_ts,
+                    aborted=True,
+                )
+                if args.metadata_ui == "full":
+                    _launch_metadata_form_stage(
+                        record_path=dataset_layout.experiment_record_path,
+                        record_meta_path=dataset_layout.experiment_record_meta_path,
+                        history_path=Path(args.metadata_history),
+                        stage="post",
+                        host=args.metadata_host,
+                        port=args.metadata_port,
+                        no_browser=args.metadata_no_browser,
+                        logger=logger,
+                    )
+                manifest = build_run_manifest_payload(
+                    layout=dataset_layout,
+                    run_id=run_dir.name,
+                    run_uuid=run_uuid,
+                    status="aborted",
+                    started_utc=run_started_utc,
+                    completed_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    rig_id=str(hw.device),
+                    operator=_load_record_operator(dataset_layout.experiment_record_path),
+                    sample_rate_hz=comp.tcfg.sample_rate,
+                    metadata_status=_load_record_metadata_status(dataset_layout.experiment_record_path),
+                )
+                dataset_layout.run_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
                 logger.warning("Run interrupted by user; skipping remaining acquisition and post-run artifact generation.")
                 return
 
@@ -2579,12 +3304,22 @@ def main():
             teensy_serial_transcript = teensy_serial_monitor.get_transcript()
             teensy_serial_monitor.close()
             if teensy_serial_transcript:
-                teensy_transcript_file = run_dir / "teensy_serial_transcript.jsonl"
-                with open(teensy_transcript_file, "w", encoding="utf-8") as handle:
+                with open(dataset_layout.teensy_transcript_path, "w", encoding="utf-8") as handle:
                     for entry in teensy_serial_transcript:
                         json.dump(entry, handle, default=str)
                         handle.write("\n")
-                logger.info(f"✓ Teensy serial transcript saved: {teensy_transcript_file}")
+                dataset_layout.teensy_transcript_meta_path.write_text(
+                    json.dumps(
+                        build_teensy_transcript_meta_payload(
+                            source_port=runtime_cfg.teensy_port or None,
+                            capture_start_utc=run_started_utc,
+                            capture_end_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        ),
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                logger.info(f"✓ Teensy serial transcript saved: {dataset_layout.teensy_transcript_path}")
 
     logger.info("✓ All DAQ tasks completed and data acquired")
 
@@ -2595,7 +3330,7 @@ def main():
     ai_names_overlay = ai_data_overlay = None
     
     # Load DI data if available
-    di_file = run_dir / "capture_di.npz"
+    di_file = dataset_layout.recorded_di_samples_path
     if di_file.exists():
         logger.info("Loading DI data for visualization overlay...")
         npz_di = np.load(di_file, allow_pickle=True)
@@ -2605,7 +3340,7 @@ def main():
         logger.debug(f"    DI overlay shape: {di_data_overlay.shape}")
 
     # Load AI data if available  
-    ai_file = run_dir / "capture_ai.npz"
+    ai_file = dataset_layout.recorded_ai_samples_path
     if ai_file.exists():
         logger.info("Loading AI data for visualization overlay...")
         npz_ai = np.load(ai_file, allow_pickle=True)
@@ -2615,14 +3350,53 @@ def main():
         logger.debug(f"    AI overlay shape: {ai_data_overlay.shape}")
 
     if fictrac_callback is not None:
-        fictrac_frames_file = run_dir / "fictrac_frames.npz"
-        fictrac_callback.save_npz(fictrac_frames_file)
-        logger.info(f"✓ FicTrac frames saved: {fictrac_frames_file}")
+        fictrac_callback.save_npz(dataset_layout.fictrac_tracking_frame_series_path)
+        _write_json_file(
+            dataset_layout.fictrac_tracking_frame_series_meta_path,
+            build_array_meta_payload(
+                schema_name="multibios.fictrac_frame_series_meta",
+                artifact_role="primary_evidence",
+                data_path="recorded/tracking/fictrac/frame_series.npz",
+                dtype=str(FICTRAC_FRAME_DTYPE),
+                shape=[fictrac_callback.frame_count],
+                axis_order=["frame"],
+                clock_domain="system_perf_counter",
+                sample_rate_hz=runtime_cfg.camera_trigger_fps_hz,
+                value_unit=None,
+                extra={"structured_dtype": str(FICTRAC_FRAME_DTYPE)},
+            ),
+        )
+        logger.info(f"✓ FicTrac frames saved: {dataset_layout.fictrac_tracking_frame_series_path}")
 
     if fictrac_runtime_info:
-        fictrac_runtime_file = run_dir / "fictrac_runtime.json"
-        fictrac_runtime_file.write_text(json.dumps(fictrac_runtime_info, indent=2), encoding="utf-8")
-        logger.info(f"✓ FicTrac runtime info saved: {fictrac_runtime_file}")
+        fictrac_runtime_info = _canonicalize_fictrac_runtime_info(
+            layout=dataset_layout,
+            run_dir=run_dir,
+            runtime_info=fictrac_runtime_info,
+        )
+        dataset_layout.fictrac_tracking_runtime_json_path.write_text(
+            json.dumps(fictrac_runtime_info, indent=2),
+            encoding="utf-8",
+        )
+        relocate_artifact_file(
+            run_dir,
+            fictrac_runtime_info.get("runtime_config"),
+            dataset_layout.fictrac_tracking_runtime_config_path,
+        )
+        logger.info(f"✓ FicTrac runtime info saved: {dataset_layout.fictrac_tracking_runtime_json_path}")
+
+    fictrac_output_dir = _fictrac_output_dir(run_dir, fictrac_runtime_info)
+    _relocate_optional_files(
+        run_dir,
+        {
+            fictrac_output_dir / "fictrac-template.png": dataset_layout.fictrac_tracking_template_image_path,
+            next(iter(sorted(fictrac_output_dir.glob("fictrac-*.dat"))), None): dataset_layout.fictrac_tracking_output_dat_path,
+        },
+    )
+
+    diagnostics_path = run_dir / "fictrac_driver_diagnostics.json"
+    if diagnostics_path.exists():
+        relocate_artifact_file(run_dir, diagnostics_path, dataset_layout.fictrac_driver_diagnostics_path)
 
     if fictrac_runtime_info.get("save_raw"):
         fictrac_recording = _build_fictrac_recording_summary(
@@ -2631,9 +3405,6 @@ def main():
             frame_count=fictrac_callback.frame_count if fictrac_callback is not None else None,
             expected_frame_count=expected_camera_frames if runtime_cfg.verify_camera_recording else None,
         )
-        fictrac_recording_file = run_dir / "fictrac_camera_recording.json"
-        fictrac_recording_file.write_text(json.dumps(fictrac_recording, indent=2), encoding="utf-8")
-        logger.info(f"✓ FicTrac recording summary saved: {fictrac_recording_file}")
 
     if other_camera_recording:
         from multibios.blackfly.triggered_camera_record import postprocess_triggered_camera_recording
@@ -2644,12 +3415,9 @@ def main():
             nominal_fps=nominal_camera_fps,
             convert_to_lossless_mkv=runtime_cfg.convert_second_camera_bin_to_lossless_mkv,
         )
-        blackfly_recording_file = run_dir / "blackfly_recording.json"
-        blackfly_recording_file.write_text(json.dumps(other_camera_recording, indent=2), encoding="utf-8")
-        logger.info(f"✓ Blackfly recording summary saved: {blackfly_recording_file}")
 
     if fictrac_runtime_info.get("save_raw") or other_camera_recording:
-        parity_summary, parity_summary_path = _write_parity_summary(run_dir)
+        parity_summary, parity_summary_path = _write_parity_summary(run_dir, dataset_layout.parity_audit_path)
         logger.info(f"✓ Parity audit saved: {parity_summary_path}")
 
         fictrac_recording, other_camera_recording = _finalize_raw_chunk_retention(
@@ -2662,12 +3430,49 @@ def main():
             logger=logger,
         )
 
-        if fictrac_runtime_info.get("save_raw") and fictrac_recording is not None:
-            fictrac_recording_file = run_dir / "fictrac_camera_recording.json"
-            fictrac_recording_file.write_text(json.dumps(fictrac_recording, indent=2), encoding="utf-8")
-        if other_camera_recording is not None:
-            blackfly_recording_file = run_dir / "blackfly_recording.json"
-            blackfly_recording_file.write_text(json.dumps(other_camera_recording, indent=2), encoding="utf-8")
+    if fictrac_runtime_info.get("save_raw") and fictrac_recording is not None:
+        fictrac_recording = _canonicalize_fictrac_recording(
+            layout=dataset_layout,
+            run_dir=run_dir,
+            recording=fictrac_recording,
+            runtime_info=fictrac_runtime_info,
+        )
+        _write_json_file(dataset_layout.fictrac_camera_recording_summary_path, fictrac_recording)
+        logger.info(f"✓ FicTrac recording summary saved: {dataset_layout.fictrac_camera_recording_summary_path}")
+
+    if other_camera_recording is not None:
+        other_camera_recording = _canonicalize_secondary_camera_recording(
+            layout=dataset_layout,
+            run_dir=run_dir,
+            recording=other_camera_recording,
+        )
+        _write_json_file(dataset_layout.secondary_camera_recording_summary_path, other_camera_recording)
+        logger.info(f"✓ Blackfly recording summary saved: {dataset_layout.secondary_camera_recording_summary_path}")
+
+    fictrac_camera_manifest: dict[str, Any] | None = None
+    secondary_camera_manifest: dict[str, Any] | None = None
+
+    if fictrac_runtime_info.get("save_raw") and fictrac_recording is not None:
+        fictrac_camera_manifest = mirror_fictrac_camera_recording(
+            layout=dataset_layout,
+            run_dir=run_dir,
+            recording=fictrac_recording,
+        )
+
+    if other_camera_recording is not None:
+        secondary_camera_manifest = mirror_secondary_camera_recording(
+            layout=dataset_layout,
+            run_dir=run_dir,
+            recording=other_camera_recording,
+        )
+
+    _write_json_file(
+        dataset_layout.fictrac_tracking_session_record_path,
+        build_fictrac_session_record_payload(
+            recording=fictrac_recording if fictrac_runtime_info.get("save_raw") else None,
+            runtime_info=fictrac_runtime_info,
+        ),
+    )
 
     # Generate comprehensive visualization
     if args.interactive:
@@ -2686,16 +3491,30 @@ def main():
             title="Protocol (DO/AO) + Digital Inputs (DI) + MFC Feedback (AI)",
         )
         
-        final_preview = run_dir / "preview.html"
         logger.info("Writing final interactive HTML...")
-        fig.write_html(final_preview, include_plotlyjs="cdn")
-        logger.info(f"✓ Final visualization saved: {final_preview}")
+        fig.write_html(dataset_layout.protocol_preview_path, include_plotlyjs="cdn")
+        logger.info(f"✓ Final visualization saved: {dataset_layout.protocol_preview_path}")
 
     # Generate DI edge log if present
+    di_edges_total: int | None = None
     if di_file.exists():
         logger.info("Computing DI line edge transitions...")
-        di_edge_file = run_dir / "di_edges.csv"
-        write_edge_csv(di_edge_file, di_names_overlay, di_data_overlay, comp.dt_ms)
+        write_edge_csv(dataset_layout.recorded_di_edge_table_path, di_names_overlay, di_data_overlay, comp.dt_ms)
+        _write_json_file(
+            dataset_layout.recorded_di_edge_meta_path,
+            build_table_meta_payload(
+                schema_name="multibios.recorded_digital_input_edge_table",
+                artifact_role="derived_summary",
+                table_path="recorded/daq/digital_inputs/edge_table.csv",
+                clock_domain="daq_sample_clock",
+                columns=[
+                    {"name": "line", "unit": None, "description": "Logical digital input name."},
+                    {"name": "edge_type", "unit": None, "description": "Observed edge direction."},
+                    {"name": "sample_idx", "unit": "sample_index", "description": "DAQ sample index for the edge."},
+                    {"name": "time_ms", "unit": "ms", "description": "Observed edge time in milliseconds."},
+                ],
+            ),
+        )
         
         # Count DI edges for summary
         di_edges_total = 0
@@ -2703,7 +3522,7 @@ def main():
             edges = np.sum(np.diff(di_data_overlay[i, :].astype(int)) != 0)
             di_edges_total += edges
             logger.debug(f"    {di_names_overlay[i]}: {edges} DI transitions")
-        logger.info(f"✓ DI edges saved: {di_edge_file} ({di_edges_total} total transitions)")
+        logger.info(f"✓ DI edges saved: {dataset_layout.recorded_di_edge_table_path} ({di_edges_total} total transitions)")
 
     # Final summary
     logger.info("=== RUN COMPLETION SUMMARY ===")
@@ -2729,7 +3548,127 @@ def main():
             size_str = f"{size_bytes/(1024*1024):.1f} MB"
         logger.info(f"  {file_path.name}: {size_str}")
 
-    print(f"Run complete. See interactive preview: {run_dir/'preview.html'}")
+    retention_summary = {
+        "raw_chunks_deleted_after_validation": False,
+        "deleted_artifact_count": 0,
+        "validated_access_copies_present": False,
+        "parity_audit_path": None,
+    }
+    parity_path = dataset_layout.parity_audit_path
+    if parity_path.exists():
+        retention_summary["parity_audit_path"] = "derived/validation/parity_audit.json"
+    for summary in (fictrac_recording, other_camera_recording):
+        if not summary:
+            continue
+        cleanup = summary.get("raw_chunk_cleanup") or {}
+        deleted_paths = cleanup.get("deleted_chunk_paths") or []
+        retention_summary["raw_chunks_deleted_after_validation"] = retention_summary["raw_chunks_deleted_after_validation"] or bool(cleanup.get("applied"))
+        retention_summary["deleted_artifact_count"] += len(deleted_paths)
+        retention_summary["validated_access_copies_present"] = retention_summary["validated_access_copies_present"] or bool(cleanup.get("validated_video_path") or summary.get("lossless_video"))
+
+    _write_json_file(dataset_layout.warnings_path, {"warnings": captured_warnings})
+    _write_json_file(
+        dataset_layout.timing_alignment_path,
+        build_timing_alignment_payload(
+            sample_rate_hz=comp.tcfg.sample_rate,
+            t0_unix_seconds=t0_utc,
+            t0_perf_counter_seconds=t0_perf,
+            expected_camera_frames=expected_camera_frames,
+        ),
+    )
+    _write_json_file(
+        dataset_layout.daq_capture_summary_path,
+        build_daq_capture_summary_payload(
+            ai_names=ai_names_overlay or [],
+            ai_shape=list(ai_data_overlay.shape) if ai_data_overlay is not None else None,
+            di_names=di_names_overlay or [],
+            di_shape=list(di_data_overlay.shape) if di_data_overlay is not None else None,
+            di_edge_count=di_edges_total,
+        ),
+    )
+    if secondary_camera_manifest is not None:
+        _write_json_file(
+            dataset_layout.secondary_camera_integrity_path,
+            build_integrity_summary_payload(
+                schema_name="multibios.secondary_camera_integrity",
+                recording_manifest=secondary_camera_manifest,
+                recording_manifest_path="recorded/cameras/secondary_camera/recording_manifest.json",
+            ),
+        )
+    if fictrac_camera_manifest is not None:
+        _write_json_file(
+            dataset_layout.fictrac_integrity_path,
+            build_integrity_summary_payload(
+                schema_name="multibios.fictrac_integrity",
+                recording_manifest=fictrac_camera_manifest,
+                recording_manifest_path="recorded/cameras/fictrac_camera/recording_manifest.json",
+            ),
+        )
+
+    _update_record_with_post_run_context(
+        record_path=dataset_layout.experiment_record_path,
+        record_meta_path=dataset_layout.experiment_record_meta_path,
+        duration_s=time.time() - run_started_ts,
+        aborted=False,
+    )
+    if args.metadata_ui == "full":
+        _launch_metadata_form_stage(
+            record_path=dataset_layout.experiment_record_path,
+            record_meta_path=dataset_layout.experiment_record_meta_path,
+            history_path=Path(args.metadata_history),
+            stage="post",
+            host=args.metadata_host,
+            port=args.metadata_port,
+            no_browser=args.metadata_no_browser,
+            logger=logger,
+        )
+
+    metadata_status = _load_record_metadata_status(dataset_layout.experiment_record_path)
+    dataset_layout.readme_path.write_text(
+        build_readme_text(
+            run_id=run_dir.name,
+            status="completed",
+            rig_id=str(hw.device),
+            started_utc=run_started_utc,
+            protocol_name=str(protocol_block.get("name") or proto_path.stem),
+            metadata_status=metadata_status,
+        ),
+        encoding="utf-8",
+    )
+    _write_checksums_file(dataset_layout)
+
+    manifest = build_run_manifest_payload(
+        layout=dataset_layout,
+        run_id=run_dir.name,
+        run_uuid=run_uuid,
+        status="completed",
+        started_utc=run_started_utc,
+        completed_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        rig_id=str(hw.device),
+        operator=_load_record_operator(dataset_layout.experiment_record_path),
+        sample_rate_hz=comp.tcfg.sample_rate,
+        retention_summary=retention_summary,
+        metadata_status=metadata_status,
+    )
+    dataset_layout.run_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_json_file(
+        dataset_layout.dataset_completeness_path,
+        build_dataset_completeness_payload(
+            manifest=manifest,
+            required_paths=[
+                path
+                for path in _required_dataset_paths(dataset_layout)
+                if not (
+                    (path.startswith("recorded/daq/analog_inputs") and not dataset_layout.recorded_ai_samples_path.exists())
+                    or (path.startswith("recorded/daq/digital_inputs") and not dataset_layout.recorded_di_samples_path.exists())
+                    or (path.startswith("recorded/tracking/fictrac") and not dataset_layout.fictrac_tracking_frame_series_path.exists())
+                    or (path.startswith("logs/primary/teensy_transcript") and not dataset_layout.teensy_transcript_path.exists())
+                )
+            ],
+        ),
+    )
+
+    print(f"Run complete. See dataset preview: {dataset_layout.protocol_preview_path}")
 
 
 if __name__ == "__main__":

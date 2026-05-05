@@ -30,22 +30,37 @@ def _count_trigger_rising_edges(edge_csv: Path, *, line_name: str = "TRIG_CAMERA
     return count
 
 
+def _first_existing_path(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
 def _load_callback_frame_count(run_dir: Path) -> int | None:
-    frames_path = run_dir / "fictrac_frames.npz"
-    if not frames_path.exists():
+    frames_path = _first_existing_path([
+        run_dir / "recorded" / "tracking" / "fictrac" / "frame_series.npz",
+        run_dir / "fictrac_frames.npz",
+    ])
+    if frames_path is None:
         return None
     with np.load(frames_path, allow_pickle=False) as npz:
-        frames = npz["frames"]
+        frame_key = "frames" if "frames" in npz.files else "data"
+        frames = npz[frame_key]
         return int(len(frames))
 
 
 def summarize_run_parity(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.resolve()
-    fictrac_recording = _load_json(run_dir / "fictrac_camera_recording.json") or {}
-    fictrac_diagnostics = _load_json(run_dir / "fictrac_driver_diagnostics.json") or {}
-    blackfly_recording = _load_json(run_dir / "blackfly_recording.json") or {}
+    fictrac_session = _load_json(run_dir / "recorded" / "tracking" / "fictrac" / "session_record.json") or {}
+    fictrac_recording = fictrac_session.get("recording_summary") or _load_json(run_dir / "fictrac_camera_recording.json") or {}
+    fictrac_diagnostics = _load_json(run_dir / "logs" / "diagnostics" / "fictrac_driver_diagnostics.json") or _load_json(run_dir / "fictrac_driver_diagnostics.json") or {}
+    blackfly_recording = _load_json(run_dir / "recorded" / "cameras" / "secondary_camera" / "recording_summary.json") or _load_json(run_dir / "blackfly_recording.json") or {}
 
-    trigger_rising_edges = _count_trigger_rising_edges(run_dir / "digital_edges.csv")
+    trigger_rising_edges = _count_trigger_rising_edges(_first_existing_path([
+        run_dir / "planned" / "daq" / "digital_outputs" / "edge_table.csv",
+        run_dir / "digital_edges.csv",
+    ]) or run_dir / "digital_edges.csv")
     fictrac_saved_raw_frames = fictrac_recording.get("saved_raw_frames")
     fictrac_udp_frame_cnt = fictrac_diagnostics.get("frame_cnt")
     fictrac_callback_frames = _load_callback_frame_count(run_dir)

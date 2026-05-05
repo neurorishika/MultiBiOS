@@ -19,33 +19,64 @@ from plotly.subplots import make_subplots
 # ---------- IO helpers ----------
 
 
+def _load_first_json(paths: list[Path]) -> dict[str, Any]:
+    for path in paths:
+        if path.exists():
+            return json.loads(path.read_text())
+    raise FileNotFoundError(f"No JSON artifact found in {paths}")
+
+
+def _load_first_npz(paths: list[Path]) -> np.lib.npyio.NpzFile:
+    for path in paths:
+        if path.exists():
+            return np.load(path, allow_pickle=True)
+    raise FileNotFoundError(f"No NPZ artifact found in {paths}")
+
+
 def load_run_artifacts(run: Path) -> Dict[str, Any]:
-    meta = json.loads((run / "meta.json").read_text())
+    resolved_runtime = _load_first_json([run / "inputs" / "resolved_runtime.json"])
+    timing_anchors = _load_first_json([run / "planned" / "timing_anchors.json"])
+    meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {
+        "sample_rate": resolved_runtime["sample_rate_hz"],
+        "duration_ms": resolved_runtime["duration_ms"],
+        "rng_seed": resolved_runtime.get("rng_seed"),
+        "args": resolved_runtime.get("cli_overrides"),
+        "t0_utc": timing_anchors.get("t0_unix_seconds"),
+        "t0_perf_counter": timing_anchors.get("t0_perf_counter_seconds"),
+    }
     sr = float(meta["sample_rate"])
     dt_ms = 1000.0 / sr
 
-    do_map = json.loads((run / "do_map.json").read_text())
-    ao_map = json.loads((run / "ao_map.json").read_text())
-    do = np.load(run / "compiled_do.npz")["data"].astype(bool)
-    ao = np.load(run / "compiled_ao.npz")["data"].astype(np.float32)
+    do_map = _load_first_json([run / "planned" / "daq" / "digital_outputs" / "channels.json", run / "do_map.json"])
+    ao_map = _load_first_json([run / "planned" / "daq" / "analog_outputs" / "channels.json", run / "ao_map.json"])
+    do = _load_first_npz([run / "planned" / "daq" / "digital_outputs" / "signal_array.npz", run / "compiled_do.npz"])["data"].astype(bool)
+    ao = _load_first_npz([run / "planned" / "daq" / "analog_outputs" / "signal_array.npz", run / "compiled_ao.npz"])["data"].astype(np.float32)
     N = do.shape[1]
     t_ms = np.arange(N) * dt_ms
 
     ai = ai_names = None
-    if (run / "capture_ai.npz").exists():
-        npz = np.load(run / "capture_ai.npz", allow_pickle=True)
+    ai_path = run / "recorded" / "daq" / "analog_inputs" / "samples.npz"
+    if not ai_path.exists():
+        ai_path = run / "capture_ai.npz"
+    if ai_path.exists():
+        npz = np.load(ai_path, allow_pickle=True)
         ai = npz["data"]
         ai_names = list(npz["names"])
 
     di = di_names = None
-    if (run / "capture_di.npz").exists():
-        npz = np.load(run / "capture_di.npz", allow_pickle=True)
+    di_path = run / "recorded" / "daq" / "digital_inputs" / "samples.npz"
+    if not di_path.exists():
+        di_path = run / "capture_di.npz"
+    if di_path.exists():
+        npz = np.load(di_path, allow_pickle=True)
         di = npz["data"].astype(bool)
         di_names = list(npz["names"])
 
     # rck log optional (nice for vertical markers)
     rck_log = []
-    rck_csv = run / "rck_edges.csv"
+    rck_csv = run / "planned" / "daq" / "digital_outputs" / "commit_edge_table.csv"
+    if not rck_csv.exists():
+        rck_csv = run / "rck_edges.csv"
     if rck_csv.exists():
         # CSV header: signal,sample_idx,time_ms
         for line in rck_csv.read_text().splitlines()[1:]:
@@ -55,9 +86,9 @@ def load_run_artifacts(run: Path) -> Dict[str, Any]:
     return dict(
         t_ms=t_ms,
         do=do,
-        do_names=do_map["names"],
+        do_names=do_map.get("names") or [channel["name"] for channel in do_map["channels"]],
         ao=ao,
-        ao_names=ao_map["names"],
+        ao_names=ao_map.get("names") or [channel["name"] for channel in ao_map["channels"]],
         ai=ai,
         ai_names=ai_names,
         di=di,

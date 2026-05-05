@@ -12,6 +12,7 @@ dependencies:
       - pyyaml>=6,<7
       - alicat>=0.4,<0.5
       - dash>=3.2,<4
+      - pywebview>=6,<7
       - nidaqmx>=1.2,<2
       - matplotlib>=3.8,<4
       - pandas>=2.2,<3
