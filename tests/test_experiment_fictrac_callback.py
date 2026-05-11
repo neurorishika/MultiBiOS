@@ -18,8 +18,10 @@ from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording
 from multibios.protocol.control_plan import compile_control_plan
 from multibios.protocol.schema import ProtocolCompiler, TimingConfig
 from multibios.run_protocol import (ExperimentCallback,
+                                    _should_force_headless_fictrac_run,
                                     _finalize_raw_chunk_retention,
                                     _write_parity_summary,
+                                    _canonicalize_fictrac_runtime_info,
                                     _compute_fictrac_drain_timeout_s,
                                     _compute_second_camera_startup_timeout_s,
                                     _count_rising_edges,
@@ -27,8 +29,11 @@ from multibios.run_protocol import (ExperimentCallback,
                                     _prepare_fictrac_runtime_config,
                                     _read_yaml_text,
                                     _safe_stop_task, _stop_fictrac,
+                                    _scale_compiled_mfc_ao_from_slpm_to_volts,
                                     _wait_for_fictrac_frame_drain,
+                                    RunProtocolConfig,
                                     load_run_protocol_config)
+from multibios.run_dataset import RunDatasetLayout
 
 
 def _state(frame_cnt: int) -> FicTracState:
@@ -158,6 +163,19 @@ def test_prepare_fictrac_runtime_config_can_force_headless(tmp_path: Path) -> No
     assert info["force_headless"] is True
 
 
+def test_should_force_headless_fictrac_run_can_be_overridden_for_live_display() -> None:
+    assert _should_force_headless_fictrac_run(
+        camera_trigger_fps_hz=200.0,
+        expected_camera_frames=93_600,
+        allow_live_display=False,
+    ) is True
+    assert _should_force_headless_fictrac_run(
+        camera_trigger_fps_hz=200.0,
+        expected_camera_frames=93_600,
+        allow_live_display=True,
+    ) is False
+
+
 def test_first_rising_edge_sample_reports_first_transition() -> None:
     trace = np.array([False, False, True, True, False, True], dtype=bool)
     assert _first_rising_edge_sample(trace) == 2
@@ -267,7 +285,13 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "  convert_second_camera_bin_to_lossless_mkv: false\n"
         "  raw_chunk_retention_policy: delete_after_parity\n"
         "mfc:\n"
-        "  mode: none\n"
+        "  mode: analog\n"
+        "  analog_value_units: slpm\n"
+        "  analog_full_scale_slpm:\n"
+        "    mfc.air_left_setpoint: 1.0\n"
+        "    mfc.air_right_setpoint: 1.0\n"
+        "    mfc.odor_left_setpoint: 1.0\n"
+        "    mfc.odor_right_setpoint: 1.0\n"
         "  live_interval_s: 0\n"
         "daq:\n"
         "  latch_interval_ms: 12\n"
@@ -315,6 +339,9 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
     assert cfg.verify_camera_recording is True
     assert cfg.convert_second_camera_bin_to_lossless_mkv is False
     assert cfg.raw_chunk_retention_policy == "delete_after_parity"
+    assert cfg.mfc_mode == "analog"
+    assert cfg.mfc_value_units == "slpm"
+    assert cfg.mfc_analog_full_scale_slpm["mfc.air_left_setpoint"] == 1.0
     assert cfg.data_dir == "C:/data/runs"
 
 
@@ -576,6 +603,48 @@ def test_protocol_compiler_allows_submillisecond_camera_intervals() -> None:
     bool_trace = trace.astype(bool)
     rising_edges = np.flatnonzero(np.concatenate(([bool_trace[0]], bool_trace[1:] & ~bool_trace[:-1])))
     assert rising_edges.tolist() == [0, 11, 22, 33]
+
+
+def test_scale_compiled_mfc_ao_from_slpm_to_volts_uses_hardware_full_scale() -> None:
+    class DummyHardware:
+        do_lines = {
+            "OLFACTOMETER_LEFT_S0": "Dev1/port0/line0",
+            "OLFACTOMETER_LEFT_S1": "Dev1/port0/line1",
+            "OLFACTOMETER_LEFT_S2": "Dev1/port0/line2",
+            "SWITCHVALVE_LEFT_S": "Dev1/port0/line3",
+            "OLFACTOMETER_RIGHT_S0": "Dev1/port0/line4",
+            "OLFACTOMETER_RIGHT_S1": "Dev1/port0/line5",
+            "OLFACTOMETER_RIGHT_S2": "Dev1/port0/line6",
+            "SWITCHVALVE_RIGHT_S": "Dev1/port0/line7",
+        }
+        ao_channels = {"mfc.air_left_setpoint": "Dev1/ao0"}
+
+    compiler = ProtocolCompiler(DummyHardware(), TimingConfig(sample_rate=1000))
+    compiler.compile_from_yaml(
+        {
+            "protocol": {"timing": {"sample_rate": 1000}},
+            "sequence": [
+                {
+                    "phase": "boot",
+                    "duration": 10,
+                    "actions": [
+                        {"device": "mfc.air_left_setpoint", "value": 0.5, "timing": 0},
+                    ],
+                }
+            ],
+        }
+    )
+
+    cfg = RunProtocolConfig(
+        mfc_mode="analog",
+        mfc_value_units="slpm",
+        mfc_analog_full_scale_slpm={"mfc.air_left_setpoint": 1.0},
+    )
+
+    _scale_compiled_mfc_ao_from_slpm_to_volts(compiler, cfg)
+
+    assert compiler.ao is not None
+    np.testing.assert_allclose(compiler.ao[0], np.full(10, 2.5, dtype=np.float32))
 
 
 def test_postprocess_triggered_camera_recording_marks_no_drop_and_conversion(tmp_path: Path) -> None:
@@ -1076,6 +1145,72 @@ def test_finalize_raw_chunk_retention_keeps_chunks_on_parity_mismatch(tmp_path: 
     assert blackfly_updated["raw_chunk_cleanup"]["applied"] is False
     assert fictrac_updated["raw_chunk_cleanup"]["reason"] == "parity_mismatch_fictrac_saved_raw_frames"
     assert blackfly_updated["raw_chunk_cleanup"]["reason"] == "parity_mismatch_fictrac_saved_raw_frames"
+
+
+def test_write_parity_summary_uses_in_memory_recordings_before_structured_files_exist(tmp_path: Path) -> None:
+    run_dir = tmp_path / "2026-05-05_10-12-49"
+    (run_dir / "planned" / "daq" / "digital_outputs").mkdir(parents=True)
+    (run_dir / "recorded" / "tracking" / "fictrac").mkdir(parents=True)
+
+    (run_dir / "planned" / "daq" / "digital_outputs" / "edge_table.csv").write_text(
+        "line,edge_type,sample_idx,time_ms\n"
+        "TRIG_CAMERA,rising,1,0.5\n"
+        "TRIG_CAMERA,rising,2,1.0\n",
+        encoding="utf-8",
+    )
+    (run_dir / "recorded" / "tracking" / "fictrac" / "fictrac_driver_diagnostics.json").write_text(
+        json.dumps({"frame_cnt": 2, "final_returncode": 0}),
+        encoding="utf-8",
+    )
+    np.savez_compressed(
+        run_dir / "recorded" / "tracking" / "fictrac" / "frame_series.npz",
+        frames=np.zeros(2, dtype=FICTRAC_FRAME_DTYPE),
+    )
+
+    parity_path = run_dir / "derived" / "validation" / "parity_audit.json"
+    parity_path.parent.mkdir(parents=True)
+
+    summary, _ = _write_parity_summary(
+        run_dir,
+        parity_path,
+        fictrac_recording={"saved_raw_frames": 2, "expected_frames": 2},
+        blackfly_recording={"saved_frames": 2, "expected_frame_count": 2},
+    )
+
+    assert summary["counts"] == {
+        "trigger_rising_edges": 2,
+        "fictrac_saved_raw_frames": 2,
+        "fictrac_udp_frame_cnt": 2,
+        "fictrac_callback_frames": 2,
+        "second_camera_saved_frames": 2,
+    }
+    assert summary["exact_trigger_match"] is True
+    written = json.loads(parity_path.read_text(encoding="utf-8"))
+    assert written["counts"]["fictrac_saved_raw_frames"] == 2
+    assert written["counts"]["second_camera_saved_frames"] == 2
+
+
+def test_canonicalize_fictrac_runtime_info_matches_relocated_runtime_config(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    layout = RunDatasetLayout(run_dir)
+    layout.ensure_directories()
+
+    source_config = run_dir / "recorded" / "tracking" / "fictrac" / "fictrac_runtime_config.txt"
+    source_config.parent.mkdir(parents=True, exist_ok=True)
+    source_config.write_text("src_fn : 1\n", encoding="utf-8")
+
+    target_config = layout.fictrac_tracking_runtime_config_path
+    source_config.replace(target_config)
+
+    runtime_info = _canonicalize_fictrac_runtime_info(
+        layout=layout,
+        run_dir=run_dir,
+        runtime_info={"runtime_config": str(source_config), "output_base": str(run_dir / "recorded" / "tracking" / "fictrac" / "fictrac")},
+    )
+
+    assert target_config.exists()
+    assert runtime_info["runtime_config"] == "recorded/tracking/fictrac/runtime_config.txt"
 
 
 def test_postprocess_fictrac_raw_recording_reconstructs_mono_chunks(tmp_path: Path) -> None:

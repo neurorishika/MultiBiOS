@@ -25,12 +25,17 @@ Controls
     S         - save current frame (with overlay + current view)
     H         - toggle alignment crosshair on/off
     O         - toggle FicTrac ROI + exclusion zones
+    V         - toggle hardware.yaml settings + ROI preview on/off
+    J / K     - decrease / increase live frame rate
+    N / M     - decrease / increase live exposure
+    , / .     - decrease / increase live gain
+    ; / '     - decrease / increase live gamma
     + / -     - zoom in / out  (mouse scroll also works)
-    [ / ]     - rotate ±2°
+    [ / ]     - rotate ±90°
     Arrows    - pan
     R         - reset zoom / pan / rotation
     1 / 2     - make Camera 0 or 1 the active transform target
-    0         - apply transform controls to both cameras
+    0         - auto-target transform controls from cursor
     TAB       - cycle layout: side-by-side → cam 0 focus → cam 1 focus
 """
 
@@ -67,12 +72,13 @@ TARGET_FPS    = 30.0         # desired frame rate
 GRAB_TIMEOUT  = 1000         # ms to wait for each frame before giving up
 SAVE_DIR      = Path("captured_frames")
 WINDOW_MARGIN = 0.92         # fraction of screen to use (leaves room for taskbar)
-DAQ_EXPOSURE_US = 5000.0     # fixed trigger-mode exposure to avoid slow auto-exposure
+DAQ_EXPOSURE_US = 4500.0     # fixed trigger-mode exposure to avoid slow auto-exposure
 DAQ_ROI_HEIGHT  = 0          # 0 = full sensor; set e.g. 776 to halve readout time for faster triggers
 
 # DAQ-triggered GPIO lines — check your camera's pin-out in SpinView
 DAQ_OUTPUT_LINE  = "Line2"   # camera output line used for ExposureActive
 DAQ_TRIGGER_LINE = "Line0"   # camera trigger input line from NI-DAQ
+DEFAULT_HARDWARE_PATH = Path("config/hardware.yaml")
 
 
 def load_blackfly_defaults(hardware_path: str | Path) -> dict:
@@ -87,6 +93,41 @@ def load_blackfly_defaults(hardware_path: str | Path) -> dict:
         return {}
     defaults = raw.get("blackfly_defaults") or {}
     return defaults if isinstance(defaults, dict) else {}
+
+
+def load_blackfly_preview_settings(hardware_path: str | Path) -> list[dict]:
+    """Load per-camera ROI/exposure defaults used by the final rig config."""
+    path = Path(hardware_path)
+    if not path.exists():
+        return [{}, {}]
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except Exception:
+        return [{}, {}]
+
+    blackfly = raw.get("blackfly_defaults") or {}
+    camera_recording = raw.get("camera_recording") or {}
+    if not isinstance(blackfly, dict):
+        blackfly = {}
+    if not isinstance(camera_recording, dict):
+        camera_recording = {}
+
+    cam0 = {
+        "roi_width": blackfly.get("roi_width"),
+        "roi_height": blackfly.get("roi_height"),
+        "exposure_us": blackfly.get("exposure_us"),
+        "gain_db": blackfly.get("gain_db"),
+        "gamma": blackfly.get("gamma"),
+    }
+    cam1 = {
+        "roi_width": camera_recording.get("second_camera_roi_width", blackfly.get("roi_width")),
+        "roi_height": camera_recording.get("second_camera_roi_height", blackfly.get("roi_height")),
+        "exposure_us": camera_recording.get("second_camera_exposure_us", blackfly.get("exposure_us")),
+        "gain_db": camera_recording.get("second_camera_gain_db", blackfly.get("gain_db")),
+        "gamma": camera_recording.get("second_camera_gamma", blackfly.get("gamma")),
+    }
+    return [cam0, cam1]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Spinnaker helpers  (Spinnaker 4.x / PySpin node-access pattern)
@@ -119,6 +160,13 @@ def _float_set(nodemap, node_name: str, value: float) -> bool:
               f"  (range {lo:.1f}–{hi:.1f})")
     node.SetValue(clamped)
     return True
+
+
+def _float_node_value(nodemap, node_name: str) -> float | None:
+    node = PySpin.CFloatPtr(nodemap.GetNode(node_name))
+    if not PySpin.IsReadable(node):
+        return None
+    return float(node.GetValue())
 
 
 def _bool_set(nodemap, node_name: str, value: bool, silent: bool = False) -> bool:
@@ -661,12 +709,29 @@ def _configure_image_tuning(nm, *, gain_db: float | None = None, gamma: float | 
             print("  [warn] Could not set a fixed gamma value.")
 
 
-def configure_camera_software_mode(cam, fps: float) -> None:
+def configure_camera_software_mode(
+    cam,
+    fps: float,
+    exposure_us: float | None = None,
+    gain_db: float | None = None,
+    gamma: float | None = None,
+) -> None:
     """Free-running software-viewer mode."""
     _configure_common(cam, fps)
     nm = cam.GetNodeMap()
     _maximize_link_throughput(nm)
     _enum_set(nm, "TriggerMode", "Off")
+    if exposure_us is not None:
+        _enum_set(nm, "ExposureAuto", "Off")
+        _enum_set(nm, "ExposureMode", "Timed")
+        if _float_set(nm, "ExposureTime", exposure_us) or _float_set(nm, "ExposureTimeAbs", exposure_us):
+            print(f"  Software mode exposure fixed at {exposure_us:.0f} us.")
+        else:
+            print("  [warn] Could not set free-run exposure time.")
+    if gain_db is not None:
+        _configure_image_tuning(nm, gain_db=gain_db, gamma=gamma)
+    elif gamma is not None:
+        _configure_image_tuning(nm, gamma=gamma)
     print("  Software mode: free-run, TriggerMode Off.")
 
 
@@ -1133,6 +1198,169 @@ def _letterbox(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
     return canvas
 
 
+def _center_crop(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """Crop the image to a centered ROI, clamped to the source frame."""
+    ih, iw = img.shape[:2]
+    crop_w = max(1, min(iw, int(target_w)))
+    crop_h = max(1, min(ih, int(target_h)))
+    x0 = max(0, (iw - crop_w) // 2)
+    y0 = max(0, (ih - crop_h) // 2)
+    return img[y0:y0 + crop_h, x0:x0 + crop_w]
+
+
+def apply_hardware_preview(
+    frame: np.ndarray,
+    preview_settings: dict,
+    enabled: bool,
+    canvas_w: int,
+    canvas_h: int,
+) -> np.ndarray:
+    """Show the centered hardware ROI as it would appear in the final view."""
+    if not enabled:
+        return frame
+    roi_width = preview_settings.get("roi_width")
+    roi_height = preview_settings.get("roi_height")
+    if not roi_width or not roi_height:
+        return frame
+    cropped = _center_crop(frame, roi_width, roi_height)
+    return _letterbox(cropped, canvas_w, canvas_h)
+
+
+def _step_frame_rate(current_fps: float, direction: int) -> float:
+    step = 5.0 if current_fps < 30.0 else 10.0
+    return max(1.0, current_fps + direction * step)
+
+
+def _step_exposure_us(current_exposure: float, direction: int) -> float:
+    if current_exposure < 2_000.0:
+        step = 250.0
+    elif current_exposure < 10_000.0:
+        step = 500.0
+    else:
+        step = 1_000.0
+    return max(50.0, current_exposure + direction * step)
+
+
+def _step_gain_db(current_gain: float, direction: int) -> float:
+    step = 0.5 if current_gain < 12.0 else 1.0
+    return max(0.0, current_gain + direction * step)
+
+
+def _step_gamma(current_gamma: float, direction: int) -> float:
+    step = 0.05 if current_gamma < 2.0 else 0.1
+    return max(0.1, current_gamma + direction * step)
+
+
+def _coalesce(value, fallback):
+    return fallback if value is None else value
+
+
+def _clone_camera_live_settings(settings: list[dict]) -> list[dict]:
+    return [dict(setting) for setting in settings]
+
+
+def _format_camera_live_setting(idx: int, setting: dict) -> str:
+    return (
+        f"C{idx}:{setting['fps']:.1f}Hz {setting['exposure_us']:.0f}us "
+        f"{setting['gain_db']:.1f}dB g{setting['gamma']:.2f}"
+    )
+
+
+def _merge_camera_live_setting(requested: dict, actual: dict) -> dict:
+    return {
+        "fps": float(_coalesce(actual.get("fps"), requested["fps"])),
+        "exposure_us": float(_coalesce(actual.get("exposure_us"), requested["exposure_us"])),
+        "gain_db": float(_coalesce(actual.get("gain_db"), requested["gain_db"])),
+        "gamma": float(_coalesce(actual.get("gamma"), requested["gamma"])),
+    }
+
+
+def _resolve_target_camera_indices(
+    active_cam: str | int,
+    focus_cam: int | None,
+    composite_width: int,
+    mouse_x: int,
+) -> list[int]:
+    if active_cam == "auto":
+        if focus_cam is not None:
+            return [focus_cam]
+        return [0 if mouse_x <= composite_width // 2 else 1]
+    if active_cam == "both":
+        return [0, 1]
+    return [int(active_cam)]
+
+
+def _hardware_live_settings(
+    current_settings: list[dict],
+    hardware_defaults: list[dict],
+) -> list[dict]:
+    settings = []
+    for idx in range(len(current_settings)):
+        current = current_settings[idx]
+        defaults = hardware_defaults[idx]
+        settings.append(
+            {
+                "fps": current["fps"],
+                "exposure_us": float(_coalesce(defaults.get("exposure_us"), current["exposure_us"])),
+                "gain_db": float(_coalesce(defaults.get("gain_db"), current["gain_db"])),
+                "gamma": float(_coalesce(defaults.get("gamma"), current["gamma"])),
+            }
+        )
+    return settings
+
+
+def read_camera_live_settings(cam) -> dict:
+    """Read back the camera's current free-run timing settings."""
+    nm = cam.GetNodeMap()
+    exposure_us = _float_node_value(nm, "ExposureTime")
+    if exposure_us is None:
+        exposure_us = _float_node_value(nm, "ExposureTimeAbs")
+
+    frame_rate = _float_node_value(nm, "AcquisitionFrameRate")
+    if frame_rate is None:
+        frame_rate = _float_node_value(nm, "AcquisitionFrameRateAbs")
+
+    gain_db = _float_node_value(nm, "Gain")
+    if gain_db is None:
+        gain_db = _float_node_value(nm, "GainAbs")
+
+    gamma = _float_node_value(nm, "Gamma")
+
+    return {
+        "exposure_us": exposure_us,
+        "fps": frame_rate,
+        "gain_db": gain_db,
+        "gamma": gamma,
+    }
+
+
+def restart_software_capture(cams: list, camera_settings: list[dict]) -> list[dict]:
+    """Apply updated free-run settings without reopening the cameras."""
+    for cam in cams:
+        try:
+            cam.EndAcquisition()
+        except Exception:
+            pass
+
+    for idx, cam in enumerate(cams):
+        settings = camera_settings[idx]
+        configure_camera_software_mode(
+            cam,
+            settings["fps"],
+            exposure_us=settings["exposure_us"],
+            gain_db=settings["gain_db"],
+            gamma=settings["gamma"],
+        )
+
+    for cam in cams:
+        cam.BeginAcquisition()
+
+    actual_settings = []
+    for idx, cam in enumerate(cams):
+        actual_settings.append(_merge_camera_live_setting(camera_settings[idx], read_camera_live_settings(cam)))
+    return actual_settings
+
+
 def build_side_by_side(
     left:   np.ndarray,
     right:  np.ndarray,
@@ -1169,15 +1397,29 @@ def build_side_by_side(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run(fictrac_config_path: "Path | None" = None,
-        fictrac_cam_idx: "int | None" = None) -> None:
+        fictrac_cam_idx: "int | None" = None,
+        hardware_path: "Path | None" = DEFAULT_HARDWARE_PATH,
+        initial_exposure_us: float | None = None) -> None:
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    hardware_preview = load_blackfly_preview_settings(hardware_path) if hardware_path is not None else [{}, {}]
+    if initial_exposure_us is None:
+        initial_exposure_us = hardware_preview[0].get("exposure_us") or DAQ_EXPOSURE_US
+    initial_gain_db = hardware_preview[0].get("gain_db")
+    initial_gamma = hardware_preview[0].get("gamma")
 
     system, cam_list, cams = connect_cameras()
 
     try:
         print("\nConfiguring software capture mode ...")
         for idx in range(len(cams)):
-            configure_camera_software_mode(cams[idx], TARGET_FPS)
+            configure_camera_software_mode(
+                cams[idx],
+                TARGET_FPS,
+                exposure_us=_coalesce(hardware_preview[idx].get("exposure_us"), initial_exposure_us),
+                gain_db=_coalesce(hardware_preview[idx].get("gain_db"), initial_gain_db),
+                gamma=_coalesce(hardware_preview[idx].get("gamma"), initial_gamma),
+            )
         labels = ("Camera 0", "Camera 1")
 
         for idx in range(len(cams)):
@@ -1185,11 +1427,40 @@ def run(fictrac_config_path: "Path | None" = None,
         print("\nCapture started  [software sync].")
         print("  Q/ESC    quit          S  save frame")
         print("  H        crosshair     O  ROI + excl zones")
+        print("  V        hw settings   J/K  fps -/+  (all cameras)")
+        print("  N/M      exp -/+       ,/.  gain -/+  ;/' gamma -/+  (cursor-targeted)")
         print("  +/-      zoom          [/]  rotate ±90° (snaps to 0/90/180/270)")
         print("  Arrows   pan           R  reset view")
         print("  0        auto-target from cursor (default)")
         print("  1/2      lock target to cam 0 / cam 1")
         print("  TAB      cycle layout: side-by-side / cam0 focus / cam1 focus\n")
+
+        camera_live_settings = []
+        for idx in range(len(cams)):
+            live_settings = read_camera_live_settings(cams[idx])
+            camera_live_settings.append(
+                {
+                    "fps": float(_coalesce(live_settings.get("fps"), TARGET_FPS)),
+                    "exposure_us": float(
+                        _coalesce(
+                            live_settings.get("exposure_us"),
+                            _coalesce(hardware_preview[idx].get("exposure_us"), initial_exposure_us),
+                        )
+                    ),
+                    "gain_db": float(
+                        _coalesce(
+                            live_settings.get("gain_db"),
+                            _coalesce(hardware_preview[idx].get("gain_db"), initial_gain_db if initial_gain_db is not None else 0.0),
+                        )
+                    ),
+                    "gamma": float(
+                        _coalesce(
+                            live_settings.get("gamma"),
+                            _coalesce(hardware_preview[idx].get("gamma"), initial_gamma if initial_gamma is not None else 1.0),
+                        )
+                    ),
+                }
+            )
 
         # ── Grab one frame to know the actual frame dimensions ────────────────
         _f0, _f1 = grab_pair(cams)
@@ -1224,6 +1495,8 @@ def run(fictrac_config_path: "Path | None" = None,
             print("  FicTrac overlay: no config loaded — crosshair only")
         show_crosshair = True
         show_roi       = fictrac_roi is not None
+        hardware_mode_enabled = False
+        manual_camera_live_settings: list[dict] | None = None
 
         WIN_NAME = "Dual Flea Camera - synchronized"
         # WINDOW_KEEPRATIO: OpenCV letterboxes the composite when the window is
@@ -1269,6 +1542,8 @@ def run(fictrac_config_path: "Path | None" = None,
                 frame1, show_crosshair,
                 fictrac_roi if fictrac_cam_idx == 1 else None, show_roi,
             )
+            over0 = apply_hardware_preview(over0, hardware_preview[0], hardware_mode_enabled, cam_w, cam_h)
+            over1 = apply_hardware_preview(over1, hardware_preview[1], hardware_mode_enabled, cam_w, cam_h)
             disp0 = apply_view_transform(over0, vs[0], cam_w, cam_h)
             disp1 = apply_view_transform(over1, vs[1], cam_w, cam_h)
 
@@ -1300,10 +1575,16 @@ def run(fictrac_config_path: "Path | None" = None,
                 if active_cam == "auto"
                 else ("both" if active_cam == "both" else f"cam{active_cam}locked")
             )
+            _settings_lbl = " | ".join(
+                _format_camera_live_setting(idx, camera_live_settings[idx])
+                for idx in range(len(camera_live_settings))
+            )
             _hud = (
                 f"{fps_display:.1f} fps [software]  "
+                f"mode:{'hardware' if hardware_mode_enabled else 'manual'}  "
                 f"act:{_cam_lbl}  "
-                f"C0:{vs[0].status()}  C1:{vs[1].status()}"
+                f"{_settings_lbl}  "
+                f"view C0:{vs[0].status()} C1:{vs[1].status()}"
             )
             cv2.putText(composite, _hud,
                         (8, composite.shape[0] - 8),
@@ -1319,32 +1600,15 @@ def run(fictrac_config_path: "Path | None" = None,
             # ── Mouse scroll zoom ────────────────────────────────────────────
             if _scroll[0] != 0:
                 # auto-detect from cursor unless user locked to 1/2
-                if active_cam == "auto":
-                    _sw = composite.shape[1] if focus_cam is None else composite.shape[1]
-                    _hover = 0 if (_mouse_x[0] < _sw // 2 or focus_cam == 0) else 1
-                    if focus_cam == 1: _hover = 1
-                    _trg = [vs[_hover]]
-                else:
-                    _trg = vs if active_cam == "both" else [vs[active_cam]]
+                _trg = [vs[idx] for idx in _resolve_target_camera_indices(active_cam, focus_cam, composite.shape[1], _mouse_x[0])]
                 _fac = 1.15 ** abs(_scroll[0])
                 for _v in _trg:
                     _v.zoom_by(_fac if _scroll[0] > 0 else 1.0 / _fac)
                 _scroll[0] = 0
 
             # ── Resolve which camera keyboard actions target ──────────────────
-            if active_cam == "auto":
-                # cursor left-half → cam0, right-half → cam1
-                # in focus mode the only visible camera is always the target
-                if focus_cam is not None:
-                    _cur_cam = focus_cam
-                else:
-                    _half_w = composite.shape[1] // 2
-                    _cur_cam = 0 if _mouse_x[0] <= _half_w else 1
-                _targets = [vs[_cur_cam]]
-            elif active_cam == "both":
-                _targets = vs
-            else:
-                _targets = [vs[active_cam]]
+            _target_camera_indices = _resolve_target_camera_indices(active_cam, focus_cam, composite.shape[1], _mouse_x[0])
+            _targets = [vs[idx] for idx in _target_camera_indices]
 
             # ── Keyboard ─────────────────────────────────────────────────────
             key = cv2.waitKeyEx(1)
@@ -1375,6 +1639,71 @@ def run(fictrac_config_path: "Path | None" = None,
                 if fictrac_roi is not None:
                     show_roi = not show_roi
                     print(f"  FicTrac ROI overlay: {'ON' if show_roi else 'OFF'}")
+            elif key == ord("v"):
+                if not hardware_mode_enabled:
+                    manual_camera_live_settings = _clone_camera_live_settings(camera_live_settings)
+                    camera_live_settings = restart_software_capture(
+                        cams,
+                        _hardware_live_settings(camera_live_settings, hardware_preview),
+                    )
+                    hardware_mode_enabled = True
+                    print("  Hardware mode: ON (applied hardware.yaml exposure/gain/gamma + ROI preview)")
+                else:
+                    if manual_camera_live_settings is not None:
+                        camera_live_settings = restart_software_capture(cams, manual_camera_live_settings)
+                    hardware_mode_enabled = False
+                    manual_camera_live_settings = None
+                    print("  Hardware mode: OFF (restored manual live settings)")
+            elif key == ord("j"):
+                requested_fps = _step_frame_rate(camera_live_settings[0]["fps"], -1)
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in range(len(requested_settings)):
+                    requested_settings[idx]["fps"] = requested_fps
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord("k"):
+                requested_fps = _step_frame_rate(camera_live_settings[0]["fps"], 1)
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in range(len(requested_settings)):
+                    requested_settings[idx]["fps"] = requested_fps
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord("n"):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["exposure_us"] = _step_exposure_us(requested_settings[idx]["exposure_us"], -1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord("m"):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["exposure_us"] = _step_exposure_us(requested_settings[idx]["exposure_us"], 1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord(","):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["gain_db"] = _step_gain_db(requested_settings[idx]["gain_db"], -1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord("."):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["gain_db"] = _step_gain_db(requested_settings[idx]["gain_db"], 1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord(";"):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["gamma"] = _step_gamma(requested_settings[idx]["gamma"], -1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
+            elif key == ord("'"):
+                requested_settings = _clone_camera_live_settings(camera_live_settings)
+                for idx in _target_camera_indices:
+                    requested_settings[idx]["gamma"] = _step_gamma(requested_settings[idx]["gamma"], 1)
+                camera_live_settings = restart_software_capture(cams, requested_settings)
+                print("  Live settings: " + " | ".join(_format_camera_live_setting(idx, camera_live_settings[idx]) for idx in range(len(camera_live_settings))))
             # ── Zoom ─────────────────────────────────────────────────────────
             elif key in (ord("+"), ord("=")):
                 for _v in _targets: _v.zoom_by(1.15)
@@ -1453,6 +1782,15 @@ if __name__ == "__main__":
         help="Path to FicTrac config.txt for ROI overlay (default: config_camera.txt)."
     )
     parser.add_argument(
+        "--hardware", type=Path,
+        default=DEFAULT_HARDWARE_PATH,
+        help="Path to hardware.yaml used for ROI preview defaults (default: config/hardware.yaml)."
+    )
+    parser.add_argument(
+        "--exposure-us", type=float, default=None,
+        help="Initial live-view exposure in microseconds (default: hardware.yaml blackfly default)."
+    )
+    parser.add_argument(
         "--fictrac-cam", type=int, default=None, choices=[0, 1],
         help="Camera index the FicTrac ROI applies to (default: auto-detect from src_fn)."
     )
@@ -1461,5 +1799,10 @@ if __name__ == "__main__":
     TARGET_FPS    = args.fps
     DISPLAY_SCALE = args.scale
 
-    run(fictrac_config_path=args.config, fictrac_cam_idx=args.fictrac_cam)
+    run(
+        fictrac_config_path=args.config,
+        fictrac_cam_idx=args.fictrac_cam,
+        hardware_path=args.hardware,
+        initial_exposure_us=args.exposure_us,
+    )
 

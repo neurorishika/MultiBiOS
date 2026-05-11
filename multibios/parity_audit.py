@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from multibios.run_paths import DEFAULT_HARDWARE_PATH, resolve_run_output_root
+
 
 def _load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
@@ -50,12 +52,33 @@ def _load_callback_frame_count(run_dir: Path) -> int | None:
         return int(len(frames))
 
 
-def summarize_run_parity(run_dir: Path) -> dict[str, Any]:
+def summarize_run_parity(
+    run_dir: Path,
+    *,
+    fictrac_recording_override: dict[str, Any] | None = None,
+    blackfly_recording_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     fictrac_session = _load_json(run_dir / "recorded" / "tracking" / "fictrac" / "session_record.json") or {}
-    fictrac_recording = fictrac_session.get("recording_summary") or _load_json(run_dir / "fictrac_camera_recording.json") or {}
-    fictrac_diagnostics = _load_json(run_dir / "logs" / "diagnostics" / "fictrac_driver_diagnostics.json") or _load_json(run_dir / "fictrac_driver_diagnostics.json") or {}
-    blackfly_recording = _load_json(run_dir / "recorded" / "cameras" / "secondary_camera" / "recording_summary.json") or _load_json(run_dir / "blackfly_recording.json") or {}
+    fictrac_recording = (
+        fictrac_recording_override
+        or fictrac_session.get("recording_summary")
+        or _load_json(run_dir / "recorded" / "cameras" / "fictrac_camera" / "recording_summary.json")
+        or _load_json(run_dir / "fictrac_camera_recording.json")
+        or {}
+    )
+    fictrac_diagnostics = (
+        _load_json(run_dir / "recorded" / "tracking" / "fictrac" / "fictrac_driver_diagnostics.json")
+        or _load_json(run_dir / "logs" / "diagnostics" / "fictrac_driver_diagnostics.json")
+        or _load_json(run_dir / "fictrac_driver_diagnostics.json")
+        or {}
+    )
+    blackfly_recording = (
+        blackfly_recording_override
+        or _load_json(run_dir / "recorded" / "cameras" / "secondary_camera" / "recording_summary.json")
+        or _load_json(run_dir / "blackfly_recording.json")
+        or {}
+    )
 
     trigger_rising_edges = _count_trigger_rising_edges(_first_existing_path([
         run_dir / "planned" / "daq" / "digital_outputs" / "edge_table.csv",
@@ -127,14 +150,24 @@ def _format_summary(summary: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit trigger/frame parity across MultiBiOS run artifacts.")
     parser.add_argument("run_dirs", nargs="*", help="Run directories to audit.")
-    parser.add_argument("--runs-root", default="data/runs", help="Root directory containing run folders.")
+    parser.add_argument(
+        "--runs-root",
+        default=None,
+        help="Root directory containing run folders (defaults to hardware.yaml data_output.data_dir or data/runs).",
+    )
+    parser.add_argument(
+        "--hardware",
+        default=str(DEFAULT_HARDWARE_PATH),
+        help="Path to hardware.yaml used to resolve the default runs root.",
+    )
     parser.add_argument("--latest", type=int, default=1, help="Use the latest N runs from --runs-root when no run_dirs are provided.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of compact text summaries.")
     args = parser.parse_args(argv)
 
     run_dirs = [Path(path) for path in args.run_dirs]
     if not run_dirs:
-        run_dirs = _default_run_dirs(Path(args.runs_root), latest=max(int(args.latest), 1))
+        runs_root = Path(args.runs_root) if args.runs_root else resolve_run_output_root(args.hardware)
+        run_dirs = _default_run_dirs(runs_root, latest=max(int(args.latest), 1))
     summaries = [summarize_run_parity(path) for path in run_dirs]
 
     if args.json:

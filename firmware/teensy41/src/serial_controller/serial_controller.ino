@@ -794,7 +794,8 @@ static void handle_command(char* rawLine) {
     bool toClean = (cmd[0] == 'C');
     bool s1=false, s2=false;
     if (!parse_sv_target(tok[1], s1, s2)) { tag_print(); Serial.println("ERR: bad switch target"); return; }
-    preempt_runners();
+    // Do NOT preempt runners — CLN/ODR only controls SV bits; stopping a runner
+    // would restore the pre-runner staged frame and change OLF state unexpectedly.
     if (s1) staged.sv1 = toClean ? 0x00 : 0x03;
     if (s2) staged.sv2 = toClean ? 0x00 : 0x03;
     mark_dirty(); do_send_staged();

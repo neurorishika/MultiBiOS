@@ -20,7 +20,7 @@ blackfly_defaults:
   roi_width: 400
   roi_height: 400
   binning: 1
-  gain_db: 10.0
+  gain_db: 0.0
   gamma: 1.0
 
 camera_recording:
@@ -34,13 +34,12 @@ camera_recording:
   second_camera_timeout_ms: 250
   second_camera_queue_size: 512
   second_camera_stream_buffer_count: 256
-  # Optional per-camera overrides; leave blank to inherit from blackfly_defaults.
-  # second_camera_exposure_us:
-  # second_camera_roi_width:
-  # second_camera_roi_height:
-  # second_camera_binning:
-  # second_camera_gain_db:
-  # second_camera_gamma:
+  second_camera_exposure_us:
+  second_camera_roi_width: 400
+  second_camera_roi_height: 400
+  second_camera_binning: 1
+  second_camera_gain_db:
+  second_camera_gamma:
   verify_no_dropped_frames: true
   convert_second_camera_bin_to_lossless_mkv: true
   raw_chunk_retention_policy: delete_after_parity # keep | delete_after_parity
@@ -49,13 +48,7 @@ daq:
   latch_interval_ms: 10.0
 
 mfc:
-  mode: "analog"
-  analog_value_units: "slpm"
-  analog_full_scale_slpm:
-    mfc.air_left_setpoint: 1.0
-    mfc.air_right_setpoint: 1.0
-    mfc.odor_left_setpoint: 1.0
-    mfc.odor_right_setpoint: 1.0
+  mode: "alicat_serial"
   device_map:
     mfc.air_left_setpoint: "A"
     mfc.air_right_setpoint: "B"

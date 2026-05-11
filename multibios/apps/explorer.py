@@ -4,7 +4,7 @@
 Run with:
 
     python -m multibios.apps.explorer
-    python -m multibios.apps.explorer --runs data/runs --port 8050
+    python -m multibios.apps.explorer --runs path/to/runs --port 8050
 
 Then open http://localhost:8050 in a browser.
 """
@@ -26,6 +26,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from dash import Input, Output, State, callback_context, dash_table, dcc, html
 from plotly.subplots import make_subplots
+
+from multibios.run_paths import DEFAULT_HARDWARE_PATH, resolve_run_output_root
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  COLOUR SCHEME
@@ -1047,14 +1049,22 @@ def create_app(runs_dir: Path) -> dash.Dash:
 
 def main():
     parser = argparse.ArgumentParser(description="MultiBiOS Experiment Explorer")
-    parser.add_argument("--runs", default="data/runs",
-                        help="Path to runs directory (default: data/runs)")
+    parser.add_argument(
+        "--runs",
+        default=None,
+        help="Path to runs directory (defaults to hardware.yaml data_output.data_dir or data/runs)",
+    )
+    parser.add_argument(
+        "--hardware",
+        default=str(DEFAULT_HARDWARE_PATH),
+        help="Path to hardware.yaml used to resolve the default runs directory.",
+    )
     parser.add_argument("--port", type=int, default=8050)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
-    runs_dir = Path(args.runs)
+    runs_dir = Path(args.runs) if args.runs else resolve_run_output_root(args.hardware)
     if not runs_dir.is_absolute():
         runs_dir = Path.cwd() / runs_dir
 

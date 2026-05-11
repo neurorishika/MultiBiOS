@@ -112,6 +112,7 @@ if ($audit -is [System.Array]) {
     $audit = $audit[0]
 }
 
+$auditPath = Join-Path $newRunDir.FullName "derived\validation\parity_audit.json"
 $counts = $audit.counts
 Write-Host ("Run directory: {0}" -f $newRunDir.FullName) -ForegroundColor Cyan
 $summaryLine = [string]::Format(
@@ -128,10 +129,10 @@ if (-not $audit.exact_trigger_match) {
     if ($tempHardwarePath -and (Test-Path $tempHardwarePath)) {
         Remove-Item $tempHardwarePath -Force -ErrorAction SilentlyContinue
     }
-    throw ("{0} failed. See {1}" -f $TestName, (Join-Path $newRunDir.FullName "parity_audit.json"))
+    throw ("{0} failed. See {1}" -f $TestName, $auditPath)
 }
 
-Write-Host ("{0} passed. See {1}" -f $TestName, (Join-Path $newRunDir.FullName "parity_audit.json")) -ForegroundColor Green
+Write-Host ("{0} passed. See {1}" -f $TestName, $auditPath) -ForegroundColor Green
 
 if ($tempHardwarePath -and (Test-Path $tempHardwarePath)) {
     Remove-Item $tempHardwarePath -Force -ErrorAction SilentlyContinue

@@ -13,10 +13,10 @@ opt_max_err      : 35000.000000
 opt_max_evals    : 100
 opt_tol          : 0.001
 q_factor         : 9
-roi_c            : { -0.001536, 0.013140, 0.999912 }
-roi_circ         : { 135, 149, 338, 257, 329, 361, 36, 310, 33, 313, 323, 378 }
-roi_ignr         : { { 57, 179, 119, 209, 273, 198, 293, 152, 187, 109, 105, 143 } }
-roi_r            : 0.021309
+roi_c            : { 0.001229, 0.004182, 0.999991 }
+roi_circ         : { 156, 117, 88, 263, 332, 254 }
+roi_ignr         : { { 85, 130, 206, 135, 356, 130, 204, 73 }, { 81, 270, 339, 268, 337, 381, 77, 374 } }
+roi_r            : 0.017172
 save_debug       : n
 save_raw         : n
 sock_host        : 127.0.0.1
@@ -29,4 +29,8 @@ thr_ratio        : 1.25
 thr_win_pc       : 0.25
 vfov             : 3.14159
 
+## FicTrac v2.1.2 config file (build date May  3 2026)
+## FicTrac v2.1.2 config file (build date May  3 2026)
+## FicTrac v2.1.2 config file (build date May  3 2026)
+## FicTrac v2.1.2 config file (build date May  3 2026)
 ## FicTrac v2.1.2 config file (build date Apr 29 2026)

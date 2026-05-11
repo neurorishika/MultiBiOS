@@ -170,6 +170,8 @@ conda run -n multibios-blackfly python -m multibios.run_protocol `
   --verbose --progress
 ```
 
+If you want the native live FicTrac display window during a long interactive run, add `--fictrac-display`. MultiBiOS otherwise forces long high-rate runs into headless mode once they exceed the validated automation threshold.
+
 If `config/hardware.yaml` contains a `fictrac:` block, `run_protocol` now also:
 
 - prepares the Spinnaker runtime path for the child process

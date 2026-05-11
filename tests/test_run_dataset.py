@@ -144,6 +144,30 @@ def test_build_run_manifest_payload_indexes_new_tree_files(tmp_path: Path) -> No
     assert "experiment/record.meta.json" in indexed_paths
 
 
+def test_build_run_manifest_payload_populates_checksums(tmp_path: Path) -> None:
+    run_dir = tmp_path / "2026-05-03_16-49-37"
+    run_dir.mkdir()
+    layout = RunDatasetLayout(run_dir)
+    layout.ensure_directories()
+    layout.protocol_copy_path.write_text("protocol: {}\n", encoding="utf-8")
+
+    manifest = build_run_manifest_payload(
+        layout=layout,
+        run_id=run_dir.name,
+        run_uuid="1234",
+        status="completed",
+        started_utc="2026-05-03T16:49:37Z",
+        completed_utc="2026-05-03T16:49:45Z",
+        rig_id="Dev1",
+        operator=None,
+        sample_rate_hz=2000,
+    )
+
+    artifact = next(entry for entry in manifest["artifact_index"] if entry["path"] == "inputs/protocol.yaml")
+    assert artifact["checksum_sha256"] is not None
+    assert len(artifact["checksum_sha256"]) == 64
+
+
 def test_build_teensy_transcript_meta_payload_marks_primary_log() -> None:
     payload = build_teensy_transcript_meta_payload(
         source_port="COM9",

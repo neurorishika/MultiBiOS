@@ -847,6 +847,7 @@ def build_run_manifest_payload(
     missing_optional_artifacts: list[str] | None = None,
     retention_summary: dict[str, Any] | None = None,
     metadata_status: dict[str, Any] | None = None,
+    checksum_lookup: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     artifact_index: list[dict[str, Any]] = []
     root_level_roles = {
@@ -880,7 +881,7 @@ def build_run_manifest_payload(
                 "produced_by": "multibios.run_protocol",
                 "required_for_completeness": top in {"inputs", "experiment", "planned", "recorded"} or rel.startswith("logs/primary/") or rel in root_level_roles,
                 "retained": True,
-                "checksum_sha256": None,
+                "checksum_sha256": (checksum_lookup or {}).get(rel, compute_file_sha256(path)),
             }
         )
 

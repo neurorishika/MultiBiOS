@@ -7,7 +7,8 @@ Run hardware-clocked NI USB-6353 protocol and log MFC analog feedback + synchron
 - AI (slave): records MFC feedback (0–10 V) locked to DO sample clock
 - DI (slave): records synchronized digital input rails, locked to DO sample clock
 
-Artifacts are written to data/runs/YYYY-MM-DD_HH-MM-SS/
+Artifacts are written under the run root configured by hardware.yaml
+(data_output.data_dir) or an explicit --out-root override.
 - compiled_do.npz / compiled_ao.npz
 - capture_ai.npz (MFC feedback, optional)
 - capture_di.npz (digital input rails, optional)
@@ -33,7 +34,7 @@ import threading
 import time
 import uuid
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -79,6 +80,7 @@ from multibios.run_dataset import (RunDatasetLayout,
                                    build_table_meta_payload,
                                    build_readme_text,
                                    build_run_manifest_payload,
+                                   compute_file_sha256,
                                    build_timing_alignment_payload,
                                    build_teensy_transcript_meta_payload,
                                    mirror_artifact_file,
@@ -94,12 +96,21 @@ from multibios.protocol.control_plan import (compile_control_plan,
 # Compiler
 from multibios.protocol.schema import (CompileError, ProtocolCompiler,
                                        TimingConfig)
+from multibios.run_paths import resolve_run_output_root
 from multibios.serial_line_monitor import SerialLineMonitor
 # Visualization helpers
 from multibios.viz_helpers import make_protocol_figure, write_edge_csv
 
 
 RAW_CHUNK_RETENTION_POLICIES = {"keep", "delete_after_parity"}
+MFC_SETPOINT_DEVICE_KEYS = (
+    "mfc.air_left_setpoint",
+    "mfc.air_right_setpoint",
+    "mfc.odor_left_setpoint",
+    "mfc.odor_right_setpoint",
+)
+MFC_VALUE_UNITS = {"volts", "slpm"}
+MFC_MODES = {"none", "alicat_serial", "analog"}
 
 
 def _read_yaml_text(path: Path) -> Any:
@@ -169,7 +180,56 @@ class RunProtocolConfig:
     verify_camera_recording: bool = True
     convert_second_camera_bin_to_lossless_mkv: bool = True
     raw_chunk_retention_policy: str = "keep"
+    mfc_mode: str = "none"
+    mfc_value_units: str = "volts"
+    mfc_analog_full_scale_slpm: Dict[str, float] = field(default_factory=dict)
     data_dir: str = "data/runs"
+
+
+def _parse_mfc_analog_full_scale_slpm(raw_value: Any) -> Dict[str, float]:
+    if raw_value is None:
+        return {}
+
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+        return {key: value for key in MFC_SETPOINT_DEVICE_KEYS}
+
+    if not isinstance(raw_value, dict):
+        raise ValueError(
+            "mfc.analog_full_scale_slpm must be a number or a mapping of MFC device keys to SLPM values"
+        )
+
+    full_scale: Dict[str, float] = {}
+    for key, value in raw_value.items():
+        full_scale[str(key)] = float(value)
+    return full_scale
+
+
+def _scale_compiled_mfc_ao_from_slpm_to_volts(comp: ProtocolCompiler, cfg: RunProtocolConfig) -> None:
+    if cfg.mfc_mode != "analog" or cfg.mfc_value_units != "slpm":
+        return
+    if comp.ao is None:
+        return
+
+    missing = [
+        name
+        for name in MFC_SETPOINT_DEVICE_KEYS
+        if name in comp.ao_to_idx and name not in cfg.mfc_analog_full_scale_slpm
+    ]
+    if missing:
+        raise ValueError(
+            "hardware.yaml is missing mfc.analog_full_scale_slpm entries for: "
+            + ", ".join(sorted(missing))
+        )
+
+    for name in MFC_SETPOINT_DEVICE_KEYS:
+        if name not in comp.ao_to_idx:
+            continue
+        full_scale_slpm = float(cfg.mfc_analog_full_scale_slpm[name])
+        if full_scale_slpm <= 0:
+            raise ValueError(f"mfc.analog_full_scale_slpm[{name!r}] must be > 0")
+        ao_index = comp.ao_to_idx[name]
+        comp.ao[ao_index] = np.clip((comp.ao[ao_index] / full_scale_slpm) * 5.0, 0.0, 5.0)
 
 
 class ExperimentCallback(BaseFicTracCallback):
@@ -298,6 +358,22 @@ def _prepare_fictrac_runtime_config(
     }
 
 
+def _should_force_headless_fictrac_run(
+    *,
+    camera_trigger_fps_hz: float | None,
+    expected_camera_frames: int | None,
+    allow_live_display: bool,
+) -> bool:
+    if allow_live_display:
+        return False
+    return bool(
+        camera_trigger_fps_hz is not None
+        and camera_trigger_fps_hz >= 120.0
+        and expected_camera_frames is not None
+        and expected_camera_frames >= 10_000
+    )
+
+
 def _load_yaml_file(path: str | Path | None) -> dict[str, Any]:
     if path is None:
         return {}
@@ -422,6 +498,7 @@ def load_run_protocol_config(
     hardware_fictrac = _yaml_section(hardware, "fictrac")
     hardware_blackfly = _yaml_section(hardware, "blackfly_defaults")
     hardware_camera_recording = _yaml_section(hardware, "camera_recording")
+    hardware_mfc = _yaml_section(hardware, "mfc")
     hardware_data_output = _yaml_section(hardware, "data_output")
 
     cfg = RunProtocolConfig()
@@ -720,6 +797,20 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("delete_raw_chunks_after_parity", hardware_path, "camera_recording")
         cfg.raw_chunk_retention_policy = "delete_after_parity" if bool(raw["delete_raw_chunks_after_parity"]) else "keep"
 
+    cfg.mfc_mode = str(hardware_mfc.get("mode", cfg.mfc_mode) or cfg.mfc_mode).strip().lower()
+    if cfg.mfc_mode not in MFC_MODES:
+        allowed = ", ".join(sorted(MFC_MODES))
+        raise ValueError(f"mfc.mode must be one of: {allowed}; got {cfg.mfc_mode!r}")
+
+    cfg.mfc_value_units = str(hardware_mfc.get("analog_value_units", cfg.mfc_value_units) or cfg.mfc_value_units).strip().lower()
+    if cfg.mfc_value_units not in MFC_VALUE_UNITS:
+        allowed = ", ".join(sorted(MFC_VALUE_UNITS))
+        raise ValueError(f"mfc.analog_value_units must be one of: {allowed}; got {cfg.mfc_value_units!r}")
+
+    cfg.mfc_analog_full_scale_slpm = _parse_mfc_analog_full_scale_slpm(
+        hardware_mfc.get("analog_full_scale_slpm")
+    )
+
     cfg.data_dir = str(hardware_data_output.get("data_dir", cfg.data_dir))
     if "data_dir" in raw:
         _warn_deprecated_experiment_key("data_dir", hardware_path, "data_output")
@@ -843,8 +934,58 @@ def _build_fictrac_recording_summary(
     )
 
 
-def _write_parity_summary(run_dir: Path, output_path: Path) -> tuple[dict[str, Any], Path]:
-    summary = summarize_run_parity(run_dir)
+def _merge_recording_counts_into_parity_summary(
+    parity_summary: dict[str, Any],
+    *,
+    fictrac_recording: dict[str, Any] | None,
+    blackfly_recording: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary = json.loads(json.dumps(parity_summary))
+    counts = dict(summary.get("counts") or {})
+
+    if fictrac_recording is not None:
+        counts["fictrac_saved_raw_frames"] = _recording_saved_frame_count(fictrac_recording)
+        if fictrac_recording.get("expected_frames") is not None:
+            summary["fictrac_expected_frames"] = fictrac_recording.get("expected_frames")
+
+    if blackfly_recording is not None:
+        counts["second_camera_saved_frames"] = _recording_saved_frame_count(blackfly_recording)
+        if blackfly_recording.get("expected_frame_count") is not None:
+            summary["second_camera_expected_frames"] = blackfly_recording.get("expected_frame_count")
+
+    expected = counts.get("trigger_rising_edges")
+    mismatches = {
+        name: (None if expected is None or value is None else int(value) - int(expected))
+        for name, value in counts.items()
+        if name != "trigger_rising_edges"
+    }
+    summary["counts"] = counts
+    summary["mismatches_vs_trigger"] = mismatches
+    summary["exact_trigger_match"] = expected is not None and all(
+        value is not None and int(value) == int(expected)
+        for name, value in counts.items()
+        if name != "trigger_rising_edges"
+    )
+    return summary
+
+
+def _write_parity_summary(
+    run_dir: Path,
+    output_path: Path,
+    *,
+    fictrac_recording: dict[str, Any] | None = None,
+    blackfly_recording: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], Path]:
+    summary = summarize_run_parity(
+        run_dir,
+        fictrac_recording_override=fictrac_recording,
+        blackfly_recording_override=blackfly_recording,
+    )
+    summary = _merge_recording_counts_into_parity_summary(
+        summary,
+        fictrac_recording=fictrac_recording,
+        blackfly_recording=blackfly_recording,
+    )
     output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary, output_path
 
@@ -1928,6 +2069,22 @@ def _write_checksums_file(layout: RunDatasetLayout) -> None:
     layout.checksums_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def _load_checksums_lookup(checksums_path: Path) -> dict[str, str]:
+    if not checksums_path.exists():
+        return {}
+
+    lookup: dict[str, str] = {}
+    for raw_line in checksums_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        digest, _, relative_path = line.partition("  ")
+        if not digest or not relative_path:
+            continue
+        lookup[relative_path] = digest
+    return lookup
+
+
 def _canonical_deleted_chunk_paths(run_dir: Path, raw_chunks_dir: Path, deleted_paths: list[Any]) -> list[str]:
     return [
         normalize_run_relative_path(run_dir, raw_chunks_dir / Path(str(path_value)).name)
@@ -2146,7 +2303,7 @@ def main():
         action="store_true",
         help="Always save interactive HTML preview",
     )
-    ap.add_argument("--out-root", help="Run folder root (defaults to hardware data_output.data_dir or data/runs)")
+    ap.add_argument("--out-root", help="Run folder root (defaults to hardware.yaml data_output.data_dir or data/runs)")
     ap.add_argument(
         "--verbose", "-v", 
         action="store_true", 
@@ -2167,6 +2324,11 @@ def main():
         type=int,
         default=100,
         help="Progress update interval in milliseconds (default: 100)"
+    )
+    ap.add_argument(
+        "--fictrac-display",
+        action="store_true",
+        help="Keep the live FicTrac display window enabled even for long high-rate interactive runs.",
     )
     # Optional pulse tuning overrides (otherwise read from YAML)
     ap.add_argument("--preload-lead-ms", type=int)
@@ -2259,7 +2421,7 @@ def main():
         hw.device = args.device
 
     runtime_cfg = load_run_protocol_config(args.experiment, hardware_path=hw_path)
-    run_root = Path(args.out_root) if args.out_root else Path(runtime_cfg.data_dir)
+    run_root = Path(args.out_root) if args.out_root else resolve_run_output_root(hw_path, fallback=runtime_cfg.data_dir)
     logger.info("Runtime capture settings:")
     logger.info(f"  Run output root: {run_root}")
     logger.info(f"  FicTrac enabled: {bool(runtime_cfg.fictrac_config)}")
@@ -2340,6 +2502,7 @@ def main():
         logger.info("Compiling protocol from YAML...")
         start_time = time.time()
         comp.compile_from_yaml(y)
+        _scale_compiled_mfc_ao_from_slpm_to_volts(comp, runtime_cfg)
         compile_time = time.time() - start_time
         
         logger.info(f"✓ Protocol compilation completed in {compile_time:.2f} seconds")
@@ -2741,11 +2904,10 @@ def main():
     expected_camera_frames = _count_rising_edges(camera_trigger_trace)
     first_camera_trigger_sample = _first_rising_edge_sample(camera_trigger_trace)
     nominal_camera_fps = (1000.0 / comp.tcfg.camera_interval_ms) if comp.tcfg.camera_interval_ms > 0 else None
-    long_high_rate_fictrac_run = bool(
-        runtime_cfg.camera_trigger_fps_hz is not None
-        and runtime_cfg.camera_trigger_fps_hz >= 120.0
-        and expected_camera_frames is not None
-        and expected_camera_frames >= 10_000
+    long_high_rate_fictrac_run = _should_force_headless_fictrac_run(
+        camera_trigger_fps_hz=runtime_cfg.camera_trigger_fps_hz,
+        expected_camera_frames=expected_camera_frames,
+        allow_live_display=args.fictrac_display,
     )
     run_interrupted = False
     resolved_camera_roles: dict[str, dict[str, Any] | None] = {"fictrac": None, "second": None}
@@ -2877,6 +3039,8 @@ def main():
                         expected_camera_frames,
                         runtime_cfg.camera_trigger_fps_hz,
                     )
+                elif args.fictrac_display:
+                    logger.info("FicTrac live display explicitly enabled for this run.")
                 fictrac_config_path, fictrac_camera_index, fictrac_runtime_info = _prepare_fictrac_runtime_config(
                     runtime_cfg.fictrac_config,
                     dataset_layout.fictrac_tracking_dir,
@@ -3369,6 +3533,11 @@ def main():
         logger.info(f"✓ FicTrac frames saved: {dataset_layout.fictrac_tracking_frame_series_path}")
 
     if fictrac_runtime_info:
+        relocate_artifact_file(
+            run_dir,
+            fictrac_runtime_info.get("runtime_config"),
+            dataset_layout.fictrac_tracking_runtime_config_path,
+        )
         fictrac_runtime_info = _canonicalize_fictrac_runtime_info(
             layout=dataset_layout,
             run_dir=run_dir,
@@ -3377,11 +3546,6 @@ def main():
         dataset_layout.fictrac_tracking_runtime_json_path.write_text(
             json.dumps(fictrac_runtime_info, indent=2),
             encoding="utf-8",
-        )
-        relocate_artifact_file(
-            run_dir,
-            fictrac_runtime_info.get("runtime_config"),
-            dataset_layout.fictrac_tracking_runtime_config_path,
         )
         logger.info(f"✓ FicTrac runtime info saved: {dataset_layout.fictrac_tracking_runtime_json_path}")
 
@@ -3417,7 +3581,12 @@ def main():
         )
 
     if fictrac_runtime_info.get("save_raw") or other_camera_recording:
-        parity_summary, parity_summary_path = _write_parity_summary(run_dir, dataset_layout.parity_audit_path)
+        parity_summary, parity_summary_path = _write_parity_summary(
+            run_dir,
+            dataset_layout.parity_audit_path,
+            fictrac_recording=fictrac_recording if fictrac_runtime_info.get("save_raw") else None,
+            blackfly_recording=other_camera_recording,
+        )
         logger.info(f"✓ Parity audit saved: {parity_summary_path}")
 
         fictrac_recording, other_camera_recording = _finalize_raw_chunk_retention(
@@ -3636,6 +3805,8 @@ def main():
         encoding="utf-8",
     )
     _write_checksums_file(dataset_layout)
+    checksum_lookup = _load_checksums_lookup(dataset_layout.checksums_path)
+    checksum_lookup[normalize_run_relative_path(run_dir, dataset_layout.checksums_path)] = compute_file_sha256(dataset_layout.checksums_path)
 
     manifest = build_run_manifest_payload(
         layout=dataset_layout,
@@ -3649,6 +3820,7 @@ def main():
         sample_rate_hz=comp.tcfg.sample_rate,
         retention_summary=retention_summary,
         metadata_status=metadata_status,
+        checksum_lookup=checksum_lookup,
     )
     dataset_layout.run_manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     _write_json_file(

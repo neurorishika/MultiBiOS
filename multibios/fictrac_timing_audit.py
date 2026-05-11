@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from multibios.run_paths import DEFAULT_HARDWARE_PATH, resolve_run_output_root
+
 
 _CLOCK_FIELDS = ("alt_timestamp", "wall_time", "timestamp")
 
@@ -162,7 +164,16 @@ def _format_summary(summary: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Summarize FicTrac inter-frame timing from fictrac_frames.npz.")
     parser.add_argument("run_dirs", nargs="*", help="Run directories to analyze.")
-    parser.add_argument("--runs-root", default="data/runs", help="Root directory containing run folders.")
+    parser.add_argument(
+        "--runs-root",
+        default=None,
+        help="Root directory containing run folders (defaults to hardware.yaml data_output.data_dir or data/runs).",
+    )
+    parser.add_argument(
+        "--hardware",
+        default=str(DEFAULT_HARDWARE_PATH),
+        help="Path to hardware.yaml used to resolve the default runs root.",
+    )
     parser.add_argument("--latest", type=int, default=1, help="Use the latest N runs from --runs-root when no run_dirs are provided.")
     parser.add_argument("--clock", choices=_CLOCK_FIELDS, default="alt_timestamp", help="Timestamp field to use for inter-frame intervals.")
     parser.add_argument("--json", action="store_true", help="Print JSON output including comparison summaries.")
@@ -171,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
 
     run_dirs = [Path(path) for path in args.run_dirs]
     if not run_dirs:
-        run_dirs = _default_run_dirs(Path(args.runs_root), latest=max(int(args.latest), 1))
+        runs_root = Path(args.runs_root) if args.runs_root else resolve_run_output_root(args.hardware)
+        run_dirs = _default_run_dirs(runs_root, latest=max(int(args.latest), 1))
 
     summaries = [summarize_fictrac_intervals(path, clock=args.clock) for path in run_dirs]
     comparisons = compare_interval_summaries(summaries)
