@@ -56,6 +56,7 @@ def build_experiment_record_meta_payload() -> dict[str, Any]:
     field_definitions = [
         _field("pre_experiment.experiment_date", "Experiment date", "date", True, False, None, "system", "Date of the experiment."),
         _field("pre_experiment.source_filename", "Source filename", "string", True, False, None, "system", "Protocol source filename."),
+        _field("pre_experiment.expected_imaging_periods", "Expected imaging periods", "integer", False, False, None, "system", "Estimated number of microscope imaging periods in the compiled protocol."),
         _field("pre_experiment.fly_id", "Fly ID", "integer", True, False, None, "user", "Per-day fly identifier that resets each experiment day."),
         _field("pre_experiment.species", "Species", "string", True, False, None, "user", "Biological species."),
         _field("pre_experiment.genotype", "Genotype", "string", True, False, None, "user", "Genotype or line name."),
@@ -78,6 +79,12 @@ def build_experiment_record_meta_payload() -> dict[str, Any]:
         _field("post_experiment.completion_status", "Completion status", "enum", True, True, None, "mixed", "Outcome classification."),
         _field("post_experiment.aborted", "Aborted", "boolean", True, False, None, "mixed", "Whether the run aborted early."),
         _field("post_experiment.exclusion_reason", "Exclusion reason", "string", False, True, None, "user", "Reason for exclusion."),
+        _field("post_experiment.imaging_dataset_source_path", "Imaging dataset source path", "string", False, True, None, "user", "Original PrairieView dataset path selected after the run."),
+        _field("post_experiment.imaging_dataset_relative_path", "Imaging dataset copied path", "string", False, False, None, "system", "Run-relative destination for the copied PrairieView dataset."),
+        _field("post_experiment.imaging_acquisition_type", "Imaging acquisition type", "enum", False, False, None, "user", "Microscopy acquisition type for the selected PrairieView dataset."),
+        _field("post_experiment.imaging_num_rois", "Imaging ROI count", "integer", False, False, None, "user", "Number of microscope ROIs in the selected dataset."),
+        _field("post_experiment.imaging_num_channels", "Imaging channel count", "integer", False, False, None, "user", "Number of recorded channels in the selected dataset."),
+        _field("post_experiment.imaging_num_planes", "Imaging plane count", "integer", False, False, None, "user", "Number of planes in the selected dataset when the acquisition is volumetric."),
         _field("post_experiment.observed_anomalies", "Observed anomalies", "array", False, False, None, "user", "Observed anomalies list."),
         _field("post_experiment.quality_flags", "Quality flags", "array", False, False, None, "user", "Quality or review flags."),
     ]
@@ -91,6 +98,7 @@ def build_experiment_record_meta_payload() -> dict[str, Any]:
             "pre_experiment.age.unit": ["hours", "days", "weeks", "unknown"],
             "pre_experiment.starvation.unit": ["hours", "days", "weeks", "unknown"],
             "pre_experiment.volumetric": ["yes", "no", "unknown"],
+            "post_experiment.imaging_acquisition_type": ["single_plane", "volumetric"],
             "post_experiment.completion_status": ["completed", "completed_with_issue", "aborted", "failed", "excluded"],
         },
         "required_fields": {
@@ -287,9 +295,33 @@ def missing_required_fields_for_stage(record: dict[str, Any], *, stage: str) -> 
             missing.append(field_path)
 
     completion_status = _get_path(record, "post_experiment.completion_status")
+    aborted = bool(_get_path(record, "post_experiment.aborted"))
     exclusion_reason = _get_path(record, "post_experiment.exclusion_reason")
+    expected_imaging_periods = _coerce_int_like(_get_path(record, "pre_experiment.expected_imaging_periods")) or 0
+    imaging_dataset_relative_path = _get_path(record, "post_experiment.imaging_dataset_relative_path")
+    imaging_acquisition_type = _get_path(record, "post_experiment.imaging_acquisition_type")
+    imaging_num_rois = _coerce_int_like(_get_path(record, "post_experiment.imaging_num_rois"))
+    imaging_num_channels = _coerce_int_like(_get_path(record, "post_experiment.imaging_num_channels"))
+    imaging_num_planes = _coerce_int_like(_get_path(record, "post_experiment.imaging_num_planes"))
     if stage == "post" and completion_status == "excluded" and (exclusion_reason is None or not str(exclusion_reason).strip()):
         missing.append("post_experiment.exclusion_reason")
+    if (
+        stage == "post"
+        and expected_imaging_periods > 0
+        and not aborted
+        and completion_status not in {"aborted", "failed"}
+        and (imaging_dataset_relative_path is None or not str(imaging_dataset_relative_path).strip())
+    ):
+        missing.append("post_experiment.imaging_dataset_relative_path")
+    if stage == "post" and expected_imaging_periods > 0 and not aborted and completion_status not in {"aborted", "failed"}:
+        if imaging_acquisition_type is None or not str(imaging_acquisition_type).strip():
+            missing.append("post_experiment.imaging_acquisition_type")
+        if imaging_num_rois is None:
+            missing.append("post_experiment.imaging_num_rois")
+        if imaging_num_channels is None:
+            missing.append("post_experiment.imaging_num_channels")
+        if imaging_acquisition_type == "volumetric" and imaging_num_planes is None:
+            missing.append("post_experiment.imaging_num_planes")
     return missing
 
 

@@ -5,6 +5,7 @@ from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -33,6 +34,7 @@ from multibios.experiment_metadata import (HISTORY_ENABLED_FIELDS,
                                            update_metadata_history,
                                            validate_record_for_stage,
                                            write_experiment_metadata_files)
+from multibios.run_dataset import normalize_run_relative_path
 
 
 BG = "#111827"
@@ -242,6 +244,49 @@ def create_app(
                 return {}, "Required", exclusion_reason or ""
             return {"display": "none"}, "Optional", ""
 
+        @app.callback(
+            Output("post-imaging-num-planes-field", "style"),
+            Output("post-imaging-num-planes-required", "children"),
+            Output("post-imaging-num-planes", "value"),
+            Input("post-imaging-acquisition-type", "value"),
+            State("post-imaging-num-planes", "value"),
+        )
+        def toggle_post_imaging_num_planes(acquisition_type: str | None, num_planes: str | None) -> tuple[dict, str, str]:
+            if acquisition_type == "volumetric":
+                return {}, "Required", num_planes or ""
+            return {"display": "none"}, "Optional", ""
+
+        @app.callback(
+            Output("post-imaging-dataset-source", "value"),
+            Output("post-imaging-dataset-relative-path", "value"),
+            Output("post-imaging-dataset-status", "children"),
+            Input("post-select-imaging-dataset", "n_clicks"),
+            State("post-imaging-dataset-source", "value"),
+            State("post-imaging-dataset-relative-path", "value"),
+            prevent_initial_call=True,
+        )
+        def select_imaging_dataset(
+            _n_clicks: int | None,
+            current_source: str | None,
+            current_relative_path: str | None,
+        ) -> tuple[str, str, str]:
+            try:
+                selected_dir = _select_directory_dialog(
+                    title="Select completed PrairieView imaging dataset",
+                    initial_dir=_initial_dialog_directory(current_source),
+                )
+            except Exception as exc:
+                return current_source or "", current_relative_path or "", f"Failed to open imaging dataset picker: {exc}"
+            if selected_dir is None:
+                return current_source or "", current_relative_path or "", "Imaging dataset selection cancelled."
+
+            try:
+                destination = _copy_imaging_dataset_into_run(record_path=record_path, source_dir=selected_dir)
+            except Exception as exc:
+                return current_source or "", current_relative_path or "", f"Failed to copy imaging dataset: {exc}"
+            relative_destination = normalize_run_relative_path(record_path.parent.parent, destination)
+            return str(selected_dir), relative_destination, f"Copied imaging dataset to {relative_destination}"
+
     @app.callback(
         Output("submit-status", "children"),
         Input("submit-button", "n_clicks"),
@@ -268,6 +313,12 @@ def create_app(
         State("post-completion-status", "value"),
         State("post-aborted", "value"),
         State("post-exclusion-reason", "value"),
+        State("post-imaging-dataset-source", "value"),
+        State("post-imaging-dataset-relative-path", "value"),
+        State("post-imaging-acquisition-type", "value"),
+        State("post-imaging-num-rois", "value"),
+        State("post-imaging-num-channels", "value"),
+        State("post-imaging-num-planes", "value"),
         State("post-observed-anomalies", "value"),
         State("post-quality-flags", "value"),
         prevent_initial_call=True,
@@ -297,6 +348,12 @@ def create_app(
         completion_status: str | None,
         aborted: list[str] | None,
         exclusion_reason: str | None,
+        imaging_dataset_source_path: str | None,
+        imaging_dataset_relative_path: str | None,
+        imaging_acquisition_type: str | None,
+        imaging_num_rois: str | None,
+        imaging_num_channels: str | None,
+        imaging_num_planes: str | None,
         observed_anomalies: str | None,
         quality_flags: str | None,
     ) -> str:
@@ -350,6 +407,12 @@ def create_app(
                     "post_experiment.completion_status": completion_status,
                     "post_experiment.aborted": bool(aborted),
                     "post_experiment.exclusion_reason": exclusion_reason if completion_status == "excluded" else None,
+                    "post_experiment.imaging_dataset_source_path": _strip_or_none(imaging_dataset_source_path),
+                    "post_experiment.imaging_dataset_relative_path": _strip_or_none(imaging_dataset_relative_path),
+                    "post_experiment.imaging_acquisition_type": _strip_or_none(imaging_acquisition_type),
+                    "post_experiment.imaging_num_rois": _coerce_int(imaging_num_rois),
+                    "post_experiment.imaging_num_channels": _coerce_int(imaging_num_channels),
+                    "post_experiment.imaging_num_planes": _coerce_int(imaging_num_planes) if imaging_acquisition_type == "volumetric" else None,
                     "post_experiment.observed_anomalies": _split_lines(observed_anomalies),
                     "post_experiment.quality_flags": _split_lines(quality_flags),
                 },
@@ -472,7 +535,8 @@ def _build_layout(*, record: dict, history: dict, stage: str) -> html.Div:
     post = record.get("post_experiment", {})
     operator = pre.get("operator") or record.get("entered_by")
     active_stage_title = "Pre-Experiment" if stage == "pre" else "Post-Experiment"
-    active_stage_fields = _pre_stage_fields(pre, history, run_id=record.get("run_id")) if stage == "pre" else _post_stage_fields(post, history)
+    expected_imaging_periods = _coerce_int(pre.get("expected_imaging_periods")) or 0
+    active_stage_fields = _pre_stage_fields(pre, history, run_id=record.get("run_id")) if stage == "pre" else _post_stage_fields(post, history, expected_imaging_periods=expected_imaging_periods)
     hidden_stage_fields = _hidden_post_stage_fields(post) if stage == "pre" else _hidden_pre_stage_fields(pre)
 
     return html.Div(
@@ -530,6 +594,7 @@ def _build_layout(*, record: dict, history: dict, stage: str) -> html.Div:
 
 def _pre_stage_fields(pre: dict, history: dict, *, run_id: str | None) -> list:
     experiment_date = str(pre.get("experiment_date") or "")
+    expected_imaging_periods = _coerce_int(pre.get("expected_imaging_periods")) or 0
     last_fly_id = last_fly_id_for_date(history, experiment_date)
     previous_fly_ids = previous_fly_ids_for_date(history, experiment_date)
     fly_choice = _default_fly_choice(pre=pre, last_fly_id=last_fly_id)
@@ -591,6 +656,7 @@ def _pre_stage_fields(pre: dict, history: dict, *, run_id: str | None) -> list:
             ],
             style=_compact_info_grid_style(),
         ),
+        _microscopy_guidance_block(expected_imaging_periods),
         html.Div(
             [
                 _field_block("Fly ID", dcc.Input(id="pre-fly-id", value=pre.get("fly_id"), type="number", disabled=True, style=_disabled_input_style() if True else _input_style()), required=True),
@@ -614,11 +680,12 @@ def _pre_stage_fields(pre: dict, history: dict, *, run_id: str | None) -> list:
     ]
 
 
-def _post_stage_fields(post: dict, history: dict) -> list:
+def _post_stage_fields(post: dict, history: dict, *, expected_imaging_periods: int) -> list:
     exclusion_required = post.get("completion_status") == "excluded"
     return [
         html.Div("Required fields are marked Required. Optional fields can be left blank.", style={"color": SUBTEXT, "fontSize": "13px", "marginBottom": "12px"}),
         html.Div([_readonly_row("Duration (s)", _stringify(post.get("duration_s")))], style=_compact_info_grid_style()),
+        _post_imaging_dataset_block(post, expected_imaging_periods),
         html.Div(
             [
                 _field_block("Response", dcc.Input(id="post-response", value=post.get("response") or "", list="response-history", style=_input_style()), required=True),
@@ -666,6 +733,16 @@ def _hidden_post_stage_fields(post: dict) -> list:
         dcc.Input(id="post-completion-status", value=post.get("completion_status") or ""),
         dcc.Checklist(id="post-aborted", options=[{"label": "Run aborted", "value": "aborted"}], value=["aborted"] if post.get("aborted") else []),
         dcc.Input(id="post-exclusion-reason", value=post.get("exclusion_reason") or ""),
+        dcc.Input(id="post-imaging-dataset-source", value=post.get("imaging_dataset_source_path") or ""),
+        dcc.Input(id="post-imaging-dataset-relative-path", value=post.get("imaging_dataset_relative_path") or ""),
+        dcc.Input(id="post-imaging-acquisition-type", value=post.get("imaging_acquisition_type") or ""),
+        dcc.Input(id="post-imaging-num-rois", value=_stringify(post.get("imaging_num_rois"))),
+        dcc.Input(id="post-imaging-num-channels", value=_stringify(post.get("imaging_num_channels"))),
+        dcc.Input(id="post-imaging-num-planes", value=_stringify(post.get("imaging_num_planes"))),
+        html.Div(id="post-imaging-dataset-status"),
+        html.Div(id="post-imaging-num-planes-field"),
+        html.Span(id="post-imaging-num-planes-required"),
+        html.Button("", id="post-select-imaging-dataset", n_clicks=0),
         dcc.Textarea(id="post-notes", value=post.get("notes") or ""),
         dcc.Textarea(id="post-observed-anomalies", value="\n".join(post.get("observed_anomalies") or [])),
         dcc.Textarea(id="post-quality-flags", value="\n".join(post.get("quality_flags") or [])),
@@ -1127,6 +1204,137 @@ def _join_value_unit(value, unit) -> str:
     if value_text and unit_text and unit_text.lower() != "unknown":
         return f"{value_text} {unit_text}"
     return value_text or ("" if unit_text.lower() == "unknown" else unit_text)
+
+
+def _microscopy_guidance_block(expected_imaging_periods: int) -> html.Div | None:
+    if expected_imaging_periods <= 0:
+        return None
+    return html.Div(
+        [
+            html.Div("Microscopy guidance", style={"fontSize": "13px", "fontWeight": "600", "marginBottom": "8px"}),
+            html.Div(
+                [
+                    _readonly_row("Expected imaging periods", str(expected_imaging_periods)),
+                    _readonly_row("PrairieView setup", f"Set iterations to {expected_imaging_periods} before starting the protocol."),
+                ],
+                style=_compact_info_grid_style(),
+            ),
+        ],
+        style={"padding": "12px", "border": f"1px solid {BORDER}", "borderRadius": "10px", "marginBottom": "12px", "background": BG},
+    )
+
+
+def _post_imaging_dataset_block(post: dict, expected_imaging_periods: int) -> html.Div | None:
+    if expected_imaging_periods <= 0:
+        return html.Div(
+            [
+                dcc.Input(id="post-imaging-dataset-source", value=post.get("imaging_dataset_source_path") or ""),
+                dcc.Input(id="post-imaging-dataset-relative-path", value=post.get("imaging_dataset_relative_path") or ""),
+                dcc.Input(id="post-imaging-acquisition-type", value=post.get("imaging_acquisition_type") or ""),
+                dcc.Input(id="post-imaging-num-rois", value=_stringify(post.get("imaging_num_rois"))),
+                dcc.Input(id="post-imaging-num-channels", value=_stringify(post.get("imaging_num_channels"))),
+                dcc.Input(id="post-imaging-num-planes", value=_stringify(post.get("imaging_num_planes"))),
+                html.Div(id="post-imaging-dataset-status"),
+                html.Div(id="post-imaging-num-planes-field"),
+                html.Span(id="post-imaging-num-planes-required"),
+                html.Button("", id="post-select-imaging-dataset", n_clicks=0),
+            ],
+            style={"display": "none"},
+        )
+    copied_path = post.get("imaging_dataset_relative_path") or ""
+    source_path = post.get("imaging_dataset_source_path") or ""
+    acquisition_type = post.get("imaging_acquisition_type") or None
+    num_rois = _stringify(post.get("imaging_num_rois"))
+    num_channels = _stringify(post.get("imaging_num_channels"))
+    num_planes = _stringify(post.get("imaging_num_planes"))
+    status_text = f"Current copied dataset: {copied_path}" if copied_path else "Select the completed PrairieView dataset and copy it into this run before saving metadata."
+    return html.Div(
+        [
+            html.Div("Microscopy dataset", style={"fontSize": "13px", "fontWeight": "600", "marginBottom": "8px"}),
+            html.Div(
+                [
+                    _readonly_row("Expected imaging periods", str(expected_imaging_periods)),
+                    _readonly_row("Copied dataset", copied_path or "Not copied yet"),
+                ],
+                style=_compact_info_grid_style(),
+            ),
+            html.Div(
+                [
+                    html.Button("Select And Copy PrairieView Dataset", id="post-select-imaging-dataset", style=_button_style()),
+                    html.Div(id="post-imaging-dataset-status", children=status_text, style={"color": SUBTEXT, "fontSize": "13px"}),
+                ],
+                style={"display": "flex", "alignItems": "center", "gap": "12px", "flexWrap": "wrap", "marginTop": "10px", "marginBottom": "10px"},
+            ),
+            html.Div(
+                [
+                    _field_block("Selected source path", dcc.Input(id="post-imaging-dataset-source", value=source_path, readOnly=True, style=_disabled_input_style()), required=False),
+                    _field_block("Copied dataset path", dcc.Input(id="post-imaging-dataset-relative-path", value=copied_path, readOnly=True, style=_disabled_input_style()), required=True),
+                    _field_block("Acquisition type", dcc.Dropdown(id="post-imaging-acquisition-type", options=[{"label": "Single-plane", "value": "single_plane"}, {"label": "Volumetric", "value": "volumetric"}], value=acquisition_type, clearable=False, style=_dropdown_style()), required=True),
+                    _field_block("Number of ROIs", dcc.Input(id="post-imaging-num-rois", value=num_rois, type="number", min=1, step=1, style=_input_style()), required=True),
+                    _field_block("Number of channels", dcc.Input(id="post-imaging-num-channels", value=num_channels, type="number", min=1, step=1, style=_input_style()), required=True),
+                    _field_block("Number of planes", dcc.Input(id="post-imaging-num-planes", value=num_planes, type="number", min=1, step=1, style=_input_style()), required=acquisition_type == "volumetric", container_id="post-imaging-num-planes-field", badge_id="post-imaging-num-planes-required", style={} if acquisition_type == "volumetric" else {"display": "none"}),
+                ],
+                style=_form_grid_style(),
+            ),
+        ],
+        style={"padding": "12px", "border": f"1px solid {BORDER}", "borderRadius": "10px", "marginBottom": "12px", "background": BG},
+    )
+
+
+def _initial_dialog_directory(current_source: str | None) -> str | None:
+    normalized = _strip_or_none(current_source)
+    if normalized is None:
+        return None
+    path = Path(normalized)
+    if path.exists() and path.is_dir():
+        return str(path.parent)
+    return None
+
+
+def _select_directory_dialog(*, title: str, initial_dir: str | None = None) -> Path | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError("Tk directory picker is unavailable on this system") from exc
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+    except Exception:
+        pass
+    try:
+        selected = filedialog.askdirectory(title=title, initialdir=initial_dir or str(Path.home()), parent=root)
+    finally:
+        root.destroy()
+    if not selected:
+        return None
+    selected_path = Path(selected)
+    return selected_path if selected_path.exists() else None
+
+
+def _copy_imaging_dataset_into_run(*, record_path: Path, source_dir: Path) -> Path:
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise FileNotFoundError(f"Imaging dataset directory not found: {source_dir}")
+    run_dir = record_path.parent.parent
+    destination_root = run_dir / "recorded" / "microscopy"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination = destination_root / source_dir.name
+    if destination.exists():
+        if destination.is_dir():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    shutil.copytree(source_dir, destination)
+    return destination
+
+
+def _strip_or_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def _index_string() -> str:

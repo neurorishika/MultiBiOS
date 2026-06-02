@@ -78,6 +78,10 @@ class RunDatasetLayout:
         return self.recorded_dir / "tracking"
 
     @property
+    def recorded_microscopy_dir(self) -> Path:
+        return self.recorded_dir / "microscopy"
+
+    @property
     def derived_dir(self) -> Path:
         return self.run_dir / "derived"
 
@@ -391,6 +395,7 @@ class RunDatasetLayout:
             self.recorded_digital_inputs_dir,
             self.recorded_cameras_dir,
             self.recorded_tracking_dir,
+            self.recorded_microscopy_dir,
             self.derived_dir,
             self.validation_dir,
             self.previews_dir,
@@ -482,6 +487,7 @@ def build_placeholder_experiment_record(
         "pre_experiment": {
             "experiment_date": experiment_date,
             "source_filename": source_filename,
+            "expected_imaging_periods": 0,
             "fly_id": None,
             "species": None,
             "genotype": None,
@@ -504,6 +510,12 @@ def build_placeholder_experiment_record(
             "completion_status": None,
             "aborted": False,
             "exclusion_reason": None,
+            "imaging_dataset_source_path": None,
+            "imaging_dataset_relative_path": None,
+            "imaging_acquisition_type": None,
+            "imaging_num_rois": None,
+            "imaging_num_channels": None,
+            "imaging_num_planes": None,
             "observed_anomalies": [],
             "quality_flags": [],
         },

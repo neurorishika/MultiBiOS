@@ -14,7 +14,7 @@
 #  │  Options: ODOR1  ODOR2  ODOR3  ODOR4  ODOR5  FLUSH  │
 #  └─────────────────────────────────────────────────────┘
 _active_odor: &odor "ODOR1"
-_mfc_odor_flow_slpm: &mfc_flow 0.03
+_mfc_odor_flow_slpm: &mfc_flow 0.3
 # ==============================================================
 
 protocol:

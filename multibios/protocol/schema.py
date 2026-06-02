@@ -21,6 +21,9 @@ import numpy.typing as npt
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any, Optional, Union, Protocol, Literal
 
+from multibios.protocol.numeric_expr import (build_protocol_numeric_symbols,
+                                             evaluate_numeric_expression)
+
 # ----------------------------- Types & constants -----------------------------
 
 BigStateName = Literal[
@@ -332,6 +335,7 @@ class ProtocolCompiler:
         p = y.get("protocol", {})
         timing: TimingDict = p.get("timing", {})
         seq: List[PhaseDict] = y.get("sequence", [])
+        numeric_symbols = build_protocol_numeric_symbols(y)
 
         # timing
         base_unit = timing.get("base_unit", "ms")
@@ -382,11 +386,16 @@ class ProtocolCompiler:
         }
 
         # expand phases (times vs repeat+1)
-        expanded: List[Tuple[str, int, Dict[str, Any], int]] = []
-        total_ms = 0
+        expanded: List[Tuple[str, float, Dict[str, Any], int]] = []
+        total_ms = 0.0
         for entry in seq:
             name = entry.get("phase", "PHASE")
-            dur = int(entry.get("duration", 0))
+            try:
+                dur = evaluate_numeric_expression(entry.get("duration", 0), numeric_symbols)
+            except Exception as exc:
+                raise CompileError(
+                    f"Phase '{name}': invalid duration '{entry.get('duration', 0)}': {exc}"
+                ) from exc
             if "times" in entry:
                 times = int(entry["times"])
             elif "repeat" in entry:
@@ -477,7 +486,12 @@ class ProtocolCompiler:
             # long toggles first (camera)
             for a in actions:
                 dev = self._norm_dev(a.get("device", ""))
-                timing_ms = float(a.get("timing", 0))
+                try:
+                    timing_ms = evaluate_numeric_expression(a.get("timing", 0), numeric_symbols)
+                except Exception as exc:
+                    raise CompileError(
+                        f"Phase '{name}': invalid timing '{a.get('timing', 0)}' for device '{dev}': {exc}"
+                    ) from exc
                 if dev == "triggers.camera_continuous":
                     self.schedule_camera_continuous(
                         bool(a.get("state", False)), t_cursor + timing_ms
@@ -488,7 +502,12 @@ class ProtocolCompiler:
                 t0 = t_cursor + rep_idx * duration
                 for a in actions:
                     dev = self._norm_dev(a.get("device", ""))
-                    timing_ms = float(a.get("timing", 0))
+                    try:
+                        timing_ms = evaluate_numeric_expression(a.get("timing", 0), numeric_symbols)
+                    except Exception as exc:
+                        raise CompileError(
+                            f"Phase '{name}': invalid timing '{a.get('timing', 0)}' for device '{dev}': {exc}"
+                        ) from exc
                     t_abs = t0 + timing_ms
 
                     if dev.startswith("mfc."):

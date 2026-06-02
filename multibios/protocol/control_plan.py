@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from multibios.protocol.numeric_expr import (build_protocol_numeric_symbols,
+                                             evaluate_numeric_expression)
 from multibios.protocol.schema import CompileError
 
 
@@ -82,12 +84,18 @@ def compile_control_plan(
     microscope_times: list[float] = []
     camera_windows: list[tuple[float, float]] = []
     camera_on_at: float | None = None
+    numeric_symbols = build_protocol_numeric_symbols(protocol_yaml)
 
     expanded = []
     total_ms = 0.0
     for entry in seq:
         name = entry.get("phase", "PHASE")
-        dur = int(entry.get("duration", 0))
+        try:
+            dur = evaluate_numeric_expression(entry.get("duration", 0), numeric_symbols)
+        except Exception as exc:
+            raise CompileError(
+                f"Phase '{name}': invalid duration '{entry.get('duration', 0)}': {exc}"
+            ) from exc
         if "times" in entry:
             times = int(entry["times"])
         elif "repeat" in entry:
@@ -135,7 +143,12 @@ def compile_control_plan(
 
         for action in actions:
             dev = _norm_dev(action.get("device", ""))
-            timing_ms = float(action.get("timing", 0))
+            try:
+                timing_ms = evaluate_numeric_expression(action.get("timing", 0), numeric_symbols)
+            except Exception as exc:
+                raise CompileError(
+                    f"Phase '{name}': invalid timing '{action.get('timing', 0)}' for device '{dev}': {exc}"
+                ) from exc
             if dev == "triggers.camera_continuous":
                 enabled = bool(action.get("state", False))
                 abs_t = t_cursor + timing_ms
@@ -149,7 +162,12 @@ def compile_control_plan(
             repeat_t0 = t_cursor + rep_idx * duration
             for action in actions:
                 dev = _norm_dev(action.get("device", ""))
-                timing_ms = float(action.get("timing", 0))
+                try:
+                    timing_ms = evaluate_numeric_expression(action.get("timing", 0), numeric_symbols)
+                except Exception as exc:
+                    raise CompileError(
+                        f"Phase '{name}': invalid timing '{action.get('timing', 0)}' for device '{dev}': {exc}"
+                    ) from exc
                 t_abs = repeat_t0 + timing_ms
 
                 if dev.startswith("mfc."):

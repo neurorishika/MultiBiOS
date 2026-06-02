@@ -68,7 +68,7 @@ _AI_KEYS = {
     "odor_right": "mfc.odor_right_flowrate",
 }
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_HW = _REPO_ROOT / "config" / "hardware.yaml"
 
 

@@ -1,40 +1,52 @@
-device: "Dev1"
+device: "Dev1" 
+
+# toggle whether to run fictrac and camera recording.
+use_camera: false 
+
+data_output:
+  data_dir: "data/runs"
+  open_explorer: true
+  explorer_port: 8050
 
 teensy:
   port: "COM4"
   baud: 115200
   capture_serial: true
 
-fictrac:
-  config: "config_camera.txt"
-  bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
-  console_out: "fictrac_output.txt"
-  camera_serial: "26048173"
-  first_frame_timeout_ms: 0 # Wait indefinitely for first frame (set to nonzero to bound wait time)
-  arm_delay_s: 0.5
-  startup_timeout_s: 90.0
-  timeout_s: 5.0
-
-blackfly_defaults:
-  exposure_us: 4500
-  roi_width: 400
-  roi_height: 400
-  binning: 1
-  gain_db: 10.0
-  gamma: 1.0
-
 camera_recording:
   trigger_fps_hz: 200 # Single source of truth for camera and FicTrac frame timing
   trigger_pulse_ms: 1
   save_fictrac_camera_video: true
   save_second_camera_video: true
+
+  fictrac_config: "config_camera.txt"
+  fictrac_bin: "C:/Rishika/MultiBiOS/assets/fictrac-spinnaker/fictrac-spinnaker.exe"
+  fictrac_console_out: "fictrac_output.txt"
+  fictrac_camera_serial: "26048173"
+  fictrac_first_frame_timeout_ms: 0 # Wait indefinitely for first frame (set to nonzero to bound wait time)
+  fictrac_arm_delay_s: 0.5
+  fictrac_startup_timeout_s: 90.0
+  fictrac_timeout_s: 5.0
+
+  # shared camera defaults
+  default_exposure_us: 4500
+  default_roi_width: 400
+  default_roi_height: 400
+  default_binning: 1
+  default_gain_db: 10.0
+  default_gamma: 1.0
+
+  # FicTrac camera recording
+  fictrac_raw_video_codec: "raw"
+
+  # Second camera recording
   second_camera_serial: "26021184"
   second_camera_index: 1
-  fictrac_raw_video_codec: "raw"
   second_camera_timeout_ms: 250
   second_camera_queue_size: 512
   second_camera_stream_buffer_count: 256
-  # Optional per-camera overrides; leave blank to inherit from blackfly_defaults.
+
+  # Optional per-camera overrides; leave blank to inherit from the shared defaults above.
   # second_camera_exposure_us:
   # second_camera_roi_width:
   # second_camera_roi_height:
@@ -56,20 +68,8 @@ mfc:
     mfc.air_right_setpoint: 1.0
     mfc.odor_left_setpoint: 1.0
     mfc.odor_right_setpoint: 1.0
-  device_map:
-    mfc.air_left_setpoint: "A"
-    mfc.air_right_setpoint: "B"
-    mfc.odor_left_setpoint: "C"
-    mfc.odor_right_setpoint: "D"
-  alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
-  alicat_baud: [115200]
-  alicat_expected_ids: []
-  live_interval_s: 1.0
 
-data_output:
-  data_dir: "data/runs"
-  open_explorer: true
-  explorer_port: 8050
+
 
 digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   OLFACTOMETER_LEFT_S0:        "Dev1/port0/line0" # Pin 65
@@ -85,13 +85,8 @@ digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   RCK_OLFACTOMETER_RIGHT:      "Dev1/port0/line10" # Pin 99
   RCK_SWITCHVALVE_RIGHT:       "Dev1/port0/line11" # Pin 100
   GLOBAL_LOAD_REQ:             "Dev1/port0/line12" # Pin 101
-  TRIG_MICRO:                  "Dev1/port0/line13" # Pin 102
+  TRIG_MICRO:                  "Dev1/port0/line28" # Pin 121
   TRIG_CAMERA:                 "Dev1/port0/line31" # Pin 127 (shared trigger to both cameras)
-  # The following lines are deprecated; use GLOBAL_LOAD_REQ instead
-  # OLFACTOMETER_LEFT_LOAD_REQ:  "Dev1/port0/line19"
-  # OLFACTOMETER_RIGHT_LOAD_REQ: "Dev1/port0/line20"
-  # SWITCHVALVE_LEFT_LOAD_REQ:   "Dev1/port0/line21"    
-  # SWITCHVALVE_RIGHT_LOAD_REQ:  "Dev1/port0/line22" 
 
 digital_inputs:
   READY_OLFACTOMETER_LEFT:       "Dev1/port0/line15" # Pin 104
@@ -102,18 +97,18 @@ digital_inputs:
   # Wire from Prairie View's "Frame Clock" (or "Scope") output BNC to a free DI line.
   # The rising-edge sample index in capture_di.npz gives the hardware timestamp of
   # every microscope frame:  t_frame = t0_utc + edge_sample / sample_rate
-  MICRO_FRAME_CLOCK:             "Dev1/port0/line14" # Pin 103 — assign free line
+  MICRO_FRAME_CLOCK:             "Dev1/port0/line27" # Pin 103 — assign free line
   CAMERA_FRONT_O1:               "Dev1/port0/line29" # Pin 125 (front camera white wire)
-  CAMERA_SIDE_O1:                "Dev1/port0/line27" # Pin 123 (side/FicTrac camera white wire)
+  CAMERA_SIDE_O1:                "Dev1/port0/line30" # Pin 123 (side/FicTrac camera white wire)
 
 analog_outputs:     # MFC Control
-  mfc.air_left_setpoint:   "Dev1/ao0"
-  mfc.air_right_setpoint:  "Dev1/ao1"
-  mfc.odor_left_setpoint:  "Dev1/ao2"
+  mfc.air_left_setpoint:   "Dev1/ao1"
+  mfc.air_right_setpoint:  "Dev1/ao2"
+  mfc.odor_left_setpoint:  "Dev1/ao0"
   mfc.odor_right_setpoint: "Dev1/ao3"
 
 analog_inputs:     # MFC Feedback
-  mfc.air_left_flowrate:   "Dev1/ai0"
-  mfc.air_right_flowrate:  "Dev1/ai1"
-  mfc.odor_left_flowrate:  "Dev1/ai2"
-  mfc.odor_right_flowrate: "Dev1/ai3"
+  mfc.air_left_flowrate:   "Dev1/ai7"
+  mfc.air_right_flowrate:  "Dev1/ai19"
+  mfc.odor_left_flowrate:  "Dev1/ai3"
+  mfc.odor_right_flowrate: "Dev1/ai23"

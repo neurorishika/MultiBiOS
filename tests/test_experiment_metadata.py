@@ -43,6 +43,10 @@ def test_build_experiment_record_meta_payload_lists_required_and_history_fields(
     assert payload["schema_name"] == "multibios.experiment_record_meta"
     assert "pre_experiment.fly_id" in payload["required_fields"]["pre_experiment"]
     assert "post_experiment.response" in payload["required_fields"]["post_experiment"]
+    assert any(field["field_path"] == "pre_experiment.expected_imaging_periods" for field in payload["field_definitions"])
+    assert any(field["field_path"] == "post_experiment.imaging_dataset_relative_path" for field in payload["field_definitions"])
+    assert any(field["field_path"] == "post_experiment.imaging_acquisition_type" for field in payload["field_definitions"])
+    assert payload["controlled_vocabularies"]["post_experiment.imaging_acquisition_type"] == ["single_plane", "volumetric"]
     assert "pre_experiment.starvation.unit" in payload["history_enabled_fields"]
 
 
@@ -185,6 +189,88 @@ def test_apply_post_updates_requires_exclusion_reason_for_excluded_runs() -> Non
     )
 
     assert "Missing required field: post_experiment.exclusion_reason" in validate_record_for_stage(record, stage="post")
+
+
+def test_validate_post_stage_requires_imaging_dataset_for_completed_microscopy_runs() -> None:
+    record = _placeholder_record()
+    record["pre_experiment"]["expected_imaging_periods"] = 3
+    record = apply_post_experiment_updates(
+        record,
+        updates={
+            "post_experiment.response": "strong_response",
+            "post_experiment.completion_status": "completed",
+            "post_experiment.aborted": False,
+            "post_experiment.imaging_dataset_relative_path": None,
+        },
+        entered_by="rm",
+        timestamp_utc="2026-05-03T16:52:00Z",
+    )
+
+    assert "Missing required field: post_experiment.imaging_dataset_relative_path" in validate_record_for_stage(record, stage="post")
+
+
+def test_validate_post_stage_requires_acquisition_details_for_completed_microscopy_runs() -> None:
+    record = _placeholder_record()
+    record["pre_experiment"]["expected_imaging_periods"] = 3
+    record = apply_post_experiment_updates(
+        record,
+        updates={
+            "post_experiment.response": "strong_response",
+            "post_experiment.completion_status": "completed",
+            "post_experiment.aborted": False,
+            "post_experiment.imaging_dataset_relative_path": "recorded/microscopy/dataset_001",
+            "post_experiment.imaging_acquisition_type": None,
+            "post_experiment.imaging_num_rois": None,
+            "post_experiment.imaging_num_channels": None,
+        },
+        entered_by="rm",
+        timestamp_utc="2026-05-03T16:52:00Z",
+    )
+
+    errors = validate_record_for_stage(record, stage="post")
+    assert "Missing required field: post_experiment.imaging_acquisition_type" in errors
+    assert "Missing required field: post_experiment.imaging_num_rois" in errors
+    assert "Missing required field: post_experiment.imaging_num_channels" in errors
+
+
+def test_validate_post_stage_requires_plane_count_for_volumetric_imaging_runs() -> None:
+    record = _placeholder_record()
+    record["pre_experiment"]["expected_imaging_periods"] = 3
+    record = apply_post_experiment_updates(
+        record,
+        updates={
+            "post_experiment.response": "strong_response",
+            "post_experiment.completion_status": "completed",
+            "post_experiment.aborted": False,
+            "post_experiment.imaging_dataset_relative_path": "recorded/microscopy/dataset_001",
+            "post_experiment.imaging_acquisition_type": "volumetric",
+            "post_experiment.imaging_num_rois": 2,
+            "post_experiment.imaging_num_channels": 3,
+            "post_experiment.imaging_num_planes": None,
+        },
+        entered_by="rm",
+        timestamp_utc="2026-05-03T16:52:00Z",
+    )
+
+    assert "Missing required field: post_experiment.imaging_num_planes" in validate_record_for_stage(record, stage="post")
+
+
+def test_validate_post_stage_allows_missing_imaging_dataset_for_aborted_microscopy_runs() -> None:
+    record = _placeholder_record()
+    record["pre_experiment"]["expected_imaging_periods"] = 3
+    record = apply_post_experiment_updates(
+        record,
+        updates={
+            "post_experiment.response": "aborted_run",
+            "post_experiment.completion_status": "aborted",
+            "post_experiment.aborted": True,
+            "post_experiment.imaging_dataset_relative_path": None,
+        },
+        entered_by="rm",
+        timestamp_utc="2026-05-03T16:52:00Z",
+    )
+
+    assert validate_record_for_stage(record, stage="post") == []
 
 
 def test_apply_post_run_defaults_sets_duration_and_draft_post_state() -> None:

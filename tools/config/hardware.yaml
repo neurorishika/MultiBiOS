@@ -20,7 +20,7 @@ blackfly_defaults:
   roi_width: 400
   roi_height: 400
   binning: 1
-  gain_db: 0.0
+  gain_db: 10.0
   gamma: 1.0
 
 camera_recording:
@@ -34,12 +34,13 @@ camera_recording:
   second_camera_timeout_ms: 250
   second_camera_queue_size: 512
   second_camera_stream_buffer_count: 256
-  second_camera_exposure_us:
-  second_camera_roi_width: 400
-  second_camera_roi_height: 400
-  second_camera_binning: 1
-  second_camera_gain_db:
-  second_camera_gamma:
+  # Optional per-camera overrides; leave blank to inherit from blackfly_defaults.
+  # second_camera_exposure_us:
+  # second_camera_roi_width:
+  # second_camera_roi_height:
+  # second_camera_binning:
+  # second_camera_gain_db:
+  # second_camera_gamma:
   verify_no_dropped_frames: true
   convert_second_camera_bin_to_lossless_mkv: true
   raw_chunk_retention_policy: delete_after_parity # keep | delete_after_parity
@@ -48,16 +49,13 @@ daq:
   latch_interval_ms: 10.0
 
 mfc:
-  mode: "alicat_serial"
-  device_map:
-    mfc.air_left_setpoint: "A"
-    mfc.air_right_setpoint: "B"
-    mfc.odor_left_setpoint: "C"
-    mfc.odor_right_setpoint: "D"
-  alicat_ports: ["COM7", "COM8", "COM9", "COM10"]
-  alicat_baud: [115200]
-  alicat_expected_ids: []
-  live_interval_s: 1.0
+  mode: "analog"
+  analog_value_units: "slpm"
+  analog_full_scale_slpm:
+    mfc.air_left_setpoint: 1.0
+    mfc.air_right_setpoint: 1.0
+    mfc.odor_left_setpoint: 1.0
+    mfc.odor_right_setpoint: 1.0
 
 data_output:
   data_dir: "data/runs"
@@ -78,7 +76,7 @@ digital_outputs:     # DO used to *drive* Teensy/Shift Registers/Triggers
   RCK_OLFACTOMETER_RIGHT:      "Dev1/port0/line10" # Pin 99
   RCK_SWITCHVALVE_RIGHT:       "Dev1/port0/line11" # Pin 100
   GLOBAL_LOAD_REQ:             "Dev1/port0/line12" # Pin 101
-  TRIG_MICRO:                  "Dev1/port0/line13" # Pin 102
+  TRIG_MICRO:                  "Dev1/port0/line28" # Pin 102
   TRIG_CAMERA:                 "Dev1/port0/line31" # Pin 127 (shared trigger to both cameras)
   # The following lines are deprecated; use GLOBAL_LOAD_REQ instead
   # OLFACTOMETER_LEFT_LOAD_REQ:  "Dev1/port0/line19"
@@ -100,13 +98,13 @@ digital_inputs:
   CAMERA_SIDE_O1:                "Dev1/port0/line27" # Pin 123 (side/FicTrac camera white wire)
 
 analog_outputs:     # MFC Control
-  mfc.air_left_setpoint:   "Dev1/ao0"
-  mfc.air_right_setpoint:  "Dev1/ao1"
-  mfc.odor_left_setpoint:  "Dev1/ao2"
+  mfc.air_left_setpoint:   "Dev1/ao1"
+  mfc.air_right_setpoint:  "Dev1/ao2"
+  mfc.odor_left_setpoint:  "Dev1/ao0"
   mfc.odor_right_setpoint: "Dev1/ao3"
 
 analog_inputs:     # MFC Feedback
-  mfc.air_left_flowrate:   "Dev1/ai0"
-  mfc.air_right_flowrate:  "Dev1/ai1"
-  mfc.odor_left_flowrate:  "Dev1/ai2"
-  mfc.odor_right_flowrate: "Dev1/ai3"
+  mfc.air_left_flowrate:   "Dev1/ai7"
+  mfc.air_right_flowrate:  "Dev1/ai19"
+  mfc.odor_left_flowrate:  "Dev1/ai3"
+  mfc.odor_right_flowrate: "Dev1/ai23"

@@ -8,7 +8,18 @@
 #  │  Options: ODOR1  ODOR2  ODOR3  ODOR4  ODOR5  FLUSH  │
 #  └─────────────────────────────────────────────────────┘
 _active_odor: &odor "ODOR1"
-_mfc_odor_flow_slpm: &mfc_flow 0.03
+_mfc_odor_flow_slpm: &mfc_flow 0.3
+# Trial timing knobs. Change these to retime all five trials consistently.
+_trial_baseline_ms: &trial_baseline 5000
+_odor_duration_ms: &odor_duration 10000
+_trial_recovery_ms: &trial_recovery 10000
+_trial_isi_ms: &trial_isi 50000
+_lag_overlap_ms: &lag 1000
+_odor_off_ms: &odor_off "_trial_baseline_ms + _odor_duration_ms"
+_trial_end_trigger_ms: &trial_end_trigger "_odor_off_ms + _trial_recovery_ms"
+_trial_duration_ms: &trial_duration "_trial_end_trigger_ms + _trial_isi_ms"
+_overlap_second_on_ms: &overlap_second_on "_trial_baseline_ms + _lag_overlap_ms"
+_overlap_second_off_ms: &overlap_second_off "_odor_off_ms + _lag_overlap_ms"
 # ==============================================================
 
 protocol:
@@ -16,8 +27,8 @@ protocol:
   version: "1.0"
   description: >
     Olfactometer switches to odor and saturates for 60 s.
-    Each trial delivers a 30 s odor pulse via switch valves;
-    sequential trials have a 20 s overlap window.
+    Each trial delivers a configurable odor pulse via switch valves;
+    overlap trials delay the second side by a configurable lag.
     Total ~7 min including boot and shutdown.
 
   timing:
@@ -59,13 +70,13 @@ sequence:
         timing: 1000
       - device: "olfactometer.right"
         state: "AIR"
-        timing: 1005
+        timing: 1000
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 1010
+        timing: 1000
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 1015
+        timing: 1000
 
   # ────────────────────────────────────────────────────────────
   #  OLFACTOMETER SATURATION  —  60 s to fill odor tube
@@ -81,25 +92,29 @@ sequence:
         timing: 0
       - device: "olfactometer.right"
         state: *odor
-        timing: 5
+        timing: 0
       - device: "switch_valve.left"
         state: "CLEAN"
         timing: 0
       - device: "switch_valve.right"
         state: "CLEAN"
         timing: 0
+  
 
   # ────────────────────────────────────────────────────────────
   #  TRIAL 1 — BILATERAL
   #  Both switch valves: CLEAN -> ODOR -> CLEAN (30 s pulse)
   #
   #  Timeline:
-  #    t=0 s    SV left + right -> ODOR  |  micro trigger (start)
-  #    t=30 s   SV left + right -> CLEAN |  micro trigger (end)
-  #    t=30–70  ISI (40 s)
+  #    t=0 s    microscope trigger (trial start)
+  #    t=10 s    SV left + right -> ODOR
+  #    t=40 s    SV left + right -> CLEAN   
+  #    t=40-70 s return to baseline (no odor, valves on CLEAN)
+  #    t=70 s    microscope trigger (trial end) 
+  #    t=70-120 s ISI (50 s)
   # ────────────────────────────────────────────────────────────
   - phase: "TRIAL 1 - BILATERAL"
-    duration: 70000              # 30 s odor + 40 s ISI
+    duration: *trial_duration
     repeat: 0
     actions:
       - device: "triggers.microscope"
@@ -107,154 +122,186 @@ sequence:
         timing: 0                # trial start
       - device: "switch_valve.left"
         state: "ODOR"
-        timing: 0
+        timing: *trial_baseline
       - device: "switch_valve.right"
         state: "ODOR"
-        timing: 0
+        timing: *trial_baseline
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 30000
+        timing: *odor_off
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 30000
+        timing: *odor_off
       - device: "triggers.microscope"
         state: true
-        timing: 30000            # trial end
+        timing: *trial_end_trigger
 
   # ────────────────────────────────────────────────────────────
   #  TRIAL 2 — LEFT ONLY
   #  Only left switch valve opens. Right stays CLEAN.
   #
   #  Timeline:
-  #    t=0 s    SV left -> ODOR, SV right -> CLEAN (explicit)
-  #    t=30 s   SV left -> CLEAN
-  #    t=30–70  ISI (40 s)
+  #    t=0 s    microscope trigger (trial start)
+  #    t=10 s    SV left -> ODOR; SV right -> CLEAN 
+  #    t=40 s    SV left -> CLEAN; SV right -> CLEAN
+  #    t=40-70 s return to baseline (no odor, valves on CLEAN)
+  #    t=70 s    microscope trigger (trial end)
+  #    t=70-120 s ISI (50 s)
   # ────────────────────────────────────────────────────────────
   - phase: "TRIAL 2 - LEFT ONLY"
-    duration: 70000
+    duration: *trial_duration
     repeat: 0
     actions:
       - device: "triggers.microscope"
         state: true
-        timing: 0
-      - device: "switch_valve.right"
-        state: "CLEAN"
-        timing: 0                # explicit: right stays on air
+        timing: 0                # trial start
       - device: "switch_valve.left"
         state: "ODOR"
-        timing: 0
+        timing: *trial_baseline
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: *trial_baseline
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 30000
+        timing: *odor_off
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: *odor_off
       - device: "triggers.microscope"
         state: true
-        timing: 30000
+        timing: *trial_end_trigger
 
   # ────────────────────────────────────────────────────────────
   #  TRIAL 3 — RIGHT ONLY
   #  Only right switch valve opens. Left stays CLEAN.
-  #
   #  Timeline:
-  #    t=0 s    SV right -> ODOR, SV left -> CLEAN (explicit)
-  #    t=30 s   SV right -> CLEAN
-  #    t=30–70  ISI (40 s)
+  #    t=0 s    microscope trigger (trial start)  
+  #    t=10 s    SV left -> CLEAN; SV right -> ODOR
+  #    t=40 s    SV left -> CLEAN; SV right -> CLEAN
+  #    t=40-70 s return to baseline (no odor, valves on CLEAN
+  #    t=70 s    microscope trigger (trial end)
+  #    t=70-120 s ISI (50 s)
   # ────────────────────────────────────────────────────────────
   - phase: "TRIAL 3 - RIGHT ONLY"
-    duration: 70000
+    duration: *trial_duration
     repeat: 0
     actions:
       - device: "triggers.microscope"
         state: true
-        timing: 0
+        timing: 0                # trial start
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 0                # explicit: left stays on air
+        timing: *trial_baseline
       - device: "switch_valve.right"
         state: "ODOR"
-        timing: 0
+        timing: *trial_baseline
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: *odor_off
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 30000
+        timing: *odor_off
       - device: "triggers.microscope"
         state: true
-        timing: 30000
+        timing: *trial_end_trigger
 
   # ────────────────────────────────────────────────────────────
-  #  TRIAL 4 — LEFT THEN RIGHT  (20 s overlap)
-  #
+  #  TRIAL 4 — LEFT -> RIGHT
+  #  Left switch valve opens first, then right opens while left is still ODOR.
   #  Timeline:
-  #    t=0 s    SV left  -> ODOR           micro trigger (trial start)
-  #    t=10 s   SV right -> ODOR
-  #    t=30 s   SV left  -> CLEAN          (left closes; right still open)
-  #    t=40 s   SV right -> CLEAN          micro trigger (trial end)
-  #    t=40–70  ISI (30 s)
-  #
-  #  Overlap window: 10 s – 30 s = 20 s
+  #    t=0 s    microscope trigger (trial start)
+  #    t=10 s    SV left -> ODOR; SV right -> CLEAN
+  #    t=10+lag  SV left -> ODOR; SV right -> ODOR (overlap window)
+  #    t=40 s    SV left -> CLEAN; SV right -> ODOR
+  #    t=40+lag  SV left -> CLEAN; SV right -> CLEAN
+  #    t=40-70 s return to baseline (no odor, valves on CLEAN)
+  #    t=70 s    microscope trigger (trial end)
+  #    t=70-120 s ISI (50 s)
   # ────────────────────────────────────────────────────────────
-  - phase: "TRIAL 4 - LEFT THEN RIGHT"
-    duration: 70000              # 40 s active + 30 s ISI
+  - phase: "TRIAL 4 - LEFT -> RIGHT"
+    duration: *trial_duration
     repeat: 0
     actions:
       - device: "triggers.microscope"
         state: true
-        timing: 0                # left valve open
+        timing: 0                # trial start
       - device: "switch_valve.left"
         state: "ODOR"
-        timing: 0
+        timing: *trial_baseline
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 0                # explicit: right starts on air
+        timing: *trial_baseline
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: *overlap_second_on
       - device: "switch_valve.right"
         state: "ODOR"
-        timing: 10000
+        timing: *overlap_second_on
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 30000            # left closes (overlap ends)
+        timing: *odor_off
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: *odor_off
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: *overlap_second_off
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 40000            # right closes
+        timing: *overlap_second_off
       - device: "triggers.microscope"
         state: true
-        timing: 40000            # all valves closed
+        timing: *trial_end_trigger
 
   # ────────────────────────────────────────────────────────────
-  #  TRIAL 5 — RIGHT THEN LEFT  (20 s overlap)
-  #
+  #  TRIAL 5 — RIGHT -> LEFT
+  #  Right switch valve opens first, then left opens while right is still ODOR.
   #  Timeline:
-  #    t=0 s    SV right -> ODOR           micro trigger (trial start)
-  #    t=10 s   SV left  -> ODOR
-  #    t=30 s   SV right -> CLEAN          (right closes; left still open)
-  #    t=40 s   SV left  -> CLEAN          micro trigger (trial end)
-  #    t=40–70  ISI (30 s)
-  #
-  #  Overlap window: 10 s – 30 s = 20 s
+  #    t=0 s    microscope trigger (trial start)
+  #    t=10 s    SV left -> CLEAN; SV right -> ODOR
+  #    t=10+lag  SV left -> ODOR; SV right -> ODOR (overlap window)
+  #    t=40 s    SV left -> ODOR; SV right -> CLEAN
+  #    t=40+lag  SV left -> CLEAN; SV right -> CLEAN
+  #    t=40-70 s return to baseline (no odor, valves on CLEAN)
+  #    t=70 s    microscope trigger (trial end)
+  #    t=70-120 s ISI (50 s)
   # ────────────────────────────────────────────────────────────
-  - phase: "TRIAL 5 - RIGHT THEN LEFT"
-    duration: 70000
+  - phase: "TRIAL 5 - RIGHT -> LEFT"
+    duration: *trial_duration
     repeat: 0
     actions:
       - device: "triggers.microscope"
         state: true
-        timing: 0                # right valve open
+        timing: 0                # trial start
+      - device: "switch_valve.left"
+        state: "CLEAN"
+        timing: *trial_baseline
       - device: "switch_valve.right"
         state: "ODOR"
-        timing: 0
-      - device: "switch_valve.left"
-        state: "CLEAN"
-        timing: 0                # explicit: left starts on air
+        timing: *trial_baseline
       - device: "switch_valve.left"
         state: "ODOR"
-        timing: 10000
+        timing: *overlap_second_on
+      - device: "switch_valve.right"
+        state: "ODOR"
+        timing: *overlap_second_on
+      - device: "switch_valve.left"
+        state: "ODOR"
+        timing: *odor_off
       - device: "switch_valve.right"
         state: "CLEAN"
-        timing: 30000            # right closes (overlap ends)
+        timing: *odor_off
       - device: "switch_valve.left"
         state: "CLEAN"
-        timing: 40000            # left closes
+        timing: *overlap_second_off
+      - device: "switch_valve.right"
+        state: "CLEAN"
+        timing: *overlap_second_off
       - device: "triggers.microscope"
         state: true
-        timing: 40000            # all valves closed
-
+        timing: *trial_end_trigger
+    
+  
   # ────────────────────────────────────────────────────────────
   #  OLFACTOMETER DESATURATION  —  60 s to clear odor tube
   #  Switch valves stay CLEAN; olfactometers return to AIR.

@@ -142,11 +142,55 @@ def _apply_hardware_owned_camera_timing(timing_block: dict[str, Any], cfg: RunPr
         timing_block["camera_pulse_duration"] = float(cfg.camera_trigger_pulse_ms)
 
 
+def _disable_camera_runtime(cfg: RunProtocolConfig) -> None:
+    cfg.fictrac_config = ""
+    cfg.fictrac_camera_serial = ""
+    cfg.save_fictrac_camera_video = False
+    cfg.save_second_camera_video = False
+    cfg.camera_trigger_fps_hz = None
+    cfg.camera_trigger_pulse_ms = None
+    cfg.second_camera_index = None
+    cfg.second_camera_serial = ""
+    cfg.verify_camera_recording = False
+
+
+def _resolve_camera_mode(*, runtime_default: bool, force_camera: bool, force_nocamera: bool) -> bool:
+    if force_camera:
+        return True
+    if force_nocamera:
+        return False
+    return runtime_default
+
+
+def _apply_camera_mode_runtime_overrides(
+    cfg: RunProtocolConfig,
+    *,
+    force_camera: bool,
+    force_nocamera: bool,
+) -> bool:
+    use_camera = _resolve_camera_mode(
+        runtime_default=cfg.use_camera,
+        force_camera=force_camera,
+        force_nocamera=force_nocamera,
+    )
+    if not use_camera:
+        _disable_camera_runtime(cfg)
+    return use_camera
+
+
+def _estimate_microscopy_imaging_periods(control_plan: Any) -> int:
+    microscope_times_ms = getattr(control_plan, "microscope_times_ms", None)
+    if microscope_times_ms is None:
+        return 0
+    return len(microscope_times_ms)
+
+
 @dataclass
 class RunProtocolConfig:
     teensy_port: str = ""
     teensy_baud: int = 115_200
     capture_teensy_serial: bool = False
+    use_camera: bool = True
     fictrac_config: str = ""
     fictrac_bin: str = ""
     fictrac_console_out: str = "fictrac_output.txt"
@@ -415,21 +459,21 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "teensy_port": "teensy.port",
     "teensy_baud": "teensy.baud",
     "capture_teensy_serial": "teensy.capture_serial",
-    "fictrac_config": "fictrac.config",
-    "fictrac_bin": "fictrac.bin",
-    "fictrac_console_out": "fictrac.console_out",
-    "fictrac_camera_serial": "fictrac.camera_serial",
-    "fictrac_first_frame_timeout_ms": "fictrac.first_frame_timeout_ms",
+    "fictrac_config": "camera_recording.fictrac_config",
+    "fictrac_bin": "camera_recording.fictrac_bin",
+    "fictrac_console_out": "camera_recording.fictrac_console_out",
+    "fictrac_camera_serial": "camera_recording.fictrac_camera_serial",
+    "fictrac_first_frame_timeout_ms": "camera_recording.fictrac_first_frame_timeout_ms",
     "fictrac_target_fps": "camera_recording.trigger_fps_hz",
-    "fictrac_arm_delay_s": "fictrac.arm_delay_s",
-    "fictrac_startup_timeout_s": "fictrac.startup_timeout_s",
-    "fictrac_timeout_s": "fictrac.timeout_s",
-    "blackfly_exposure_us": "blackfly_defaults.exposure_us",
-    "blackfly_roi_width": "blackfly_defaults.roi_width",
-    "blackfly_roi_height": "blackfly_defaults.roi_height",
-    "blackfly_binning": "blackfly_defaults.binning",
-    "blackfly_gain_db": "blackfly_defaults.gain_db",
-    "blackfly_gamma": "blackfly_defaults.gamma",
+    "fictrac_arm_delay_s": "camera_recording.fictrac_arm_delay_s",
+    "fictrac_startup_timeout_s": "camera_recording.fictrac_startup_timeout_s",
+    "fictrac_timeout_s": "camera_recording.fictrac_timeout_s",
+    "blackfly_exposure_us": "camera_recording.default_exposure_us",
+    "blackfly_roi_width": "camera_recording.default_roi_width",
+    "blackfly_roi_height": "camera_recording.default_roi_height",
+    "blackfly_binning": "camera_recording.default_binning",
+    "blackfly_gain_db": "camera_recording.default_gain_db",
+    "blackfly_gamma": "camera_recording.default_gamma",
     "save_fictrac_camera_video": "camera_recording.save_fictrac_camera_video",
     "save_camera_raw_video": "camera_recording.save_fictrac_camera_video",
     "fictrac_raw_video_codec": "camera_recording.fictrac_raw_video_codec",
@@ -444,18 +488,18 @@ _EXPERIMENT_HARDWARE_OVERRIDE_TARGETS: dict[str, str] = {
     "other_camera_queue_size": "camera_recording.second_camera_queue_size",
     "second_camera_stream_buffer_count": "camera_recording.second_camera_stream_buffer_count",
     "other_camera_stream_buffer_count": "camera_recording.second_camera_stream_buffer_count",
-    "second_camera_exposure_us": "camera_recording.second_camera_exposure_us or blackfly_defaults.exposure_us",
-    "other_camera_exposure_us": "camera_recording.second_camera_exposure_us or blackfly_defaults.exposure_us",
-    "second_camera_roi_width": "camera_recording.second_camera_roi_width or blackfly_defaults.roi_width",
-    "other_camera_roi_width": "camera_recording.second_camera_roi_width or blackfly_defaults.roi_width",
-    "second_camera_roi_height": "camera_recording.second_camera_roi_height or blackfly_defaults.roi_height",
-    "other_camera_roi_height": "camera_recording.second_camera_roi_height or blackfly_defaults.roi_height",
-    "second_camera_binning": "camera_recording.second_camera_binning or blackfly_defaults.binning",
-    "other_camera_binning": "camera_recording.second_camera_binning or blackfly_defaults.binning",
-    "second_camera_gain_db": "camera_recording.second_camera_gain_db or blackfly_defaults.gain_db",
-    "other_camera_gain_db": "camera_recording.second_camera_gain_db or blackfly_defaults.gain_db",
-    "second_camera_gamma": "camera_recording.second_camera_gamma or blackfly_defaults.gamma",
-    "other_camera_gamma": "camera_recording.second_camera_gamma or blackfly_defaults.gamma",
+    "second_camera_exposure_us": "camera_recording.second_camera_exposure_us or camera_recording.default_exposure_us",
+    "other_camera_exposure_us": "camera_recording.second_camera_exposure_us or camera_recording.default_exposure_us",
+    "second_camera_roi_width": "camera_recording.second_camera_roi_width or camera_recording.default_roi_width",
+    "other_camera_roi_width": "camera_recording.second_camera_roi_width or camera_recording.default_roi_width",
+    "second_camera_roi_height": "camera_recording.second_camera_roi_height or camera_recording.default_roi_height",
+    "other_camera_roi_height": "camera_recording.second_camera_roi_height or camera_recording.default_roi_height",
+    "second_camera_binning": "camera_recording.second_camera_binning or camera_recording.default_binning",
+    "other_camera_binning": "camera_recording.second_camera_binning or camera_recording.default_binning",
+    "second_camera_gain_db": "camera_recording.second_camera_gain_db or camera_recording.default_gain_db",
+    "other_camera_gain_db": "camera_recording.second_camera_gain_db or camera_recording.default_gain_db",
+    "second_camera_gamma": "camera_recording.second_camera_gamma or camera_recording.default_gamma",
+    "other_camera_gamma": "camera_recording.second_camera_gamma or camera_recording.default_gamma",
     "verify_camera_recording": "camera_recording.verify_no_dropped_frames",
     "convert_second_camera_bin_to_lossless_mkv": "camera_recording.convert_second_camera_bin_to_lossless_mkv",
     "raw_chunk_retention_policy": "camera_recording.raw_chunk_retention_policy",
@@ -495,9 +539,36 @@ def load_run_protocol_config(
     _reject_experiment_hardware_overrides(raw, config_path=path, hardware_path=hardware_path)
     hardware = _load_yaml_file(hardware_path)
     hardware_teensy = _yaml_section(hardware, "teensy")
-    hardware_fictrac = _yaml_section(hardware, "fictrac")
-    hardware_blackfly = _yaml_section(hardware, "blackfly_defaults")
     hardware_camera_recording = _yaml_section(hardware, "camera_recording")
+    hardware_fictrac = _yaml_section(hardware, "fictrac")
+    legacy_nested_blackfly = _yaml_section(hardware_camera_recording, "blackfly_defaults")
+    legacy_top_blackfly = _yaml_section(hardware, "blackfly_defaults")
+    hardware_blackfly = {
+        "exposure_us": _value_or_fallback(
+            hardware_camera_recording.get("default_exposure_us"),
+            _value_or_fallback(legacy_nested_blackfly.get("exposure_us"), legacy_top_blackfly.get("exposure_us")),
+        ),
+        "roi_width": _value_or_fallback(
+            hardware_camera_recording.get("default_roi_width"),
+            _value_or_fallback(legacy_nested_blackfly.get("roi_width"), legacy_top_blackfly.get("roi_width")),
+        ),
+        "roi_height": _value_or_fallback(
+            hardware_camera_recording.get("default_roi_height"),
+            _value_or_fallback(legacy_nested_blackfly.get("roi_height"), legacy_top_blackfly.get("roi_height")),
+        ),
+        "binning": _value_or_fallback(
+            hardware_camera_recording.get("default_binning"),
+            _value_or_fallback(legacy_nested_blackfly.get("binning"), legacy_top_blackfly.get("binning")),
+        ),
+        "gain_db": _value_or_fallback(
+            hardware_camera_recording.get("default_gain_db"),
+            _value_or_fallback(legacy_nested_blackfly.get("gain_db"), legacy_top_blackfly.get("gain_db")),
+        ),
+        "gamma": _value_or_fallback(
+            hardware_camera_recording.get("default_gamma"),
+            _value_or_fallback(legacy_nested_blackfly.get("gamma"), legacy_top_blackfly.get("gamma")),
+        ),
+    }
     hardware_mfc = _yaml_section(hardware, "mfc")
     hardware_data_output = _yaml_section(hardware, "data_output")
 
@@ -518,32 +589,43 @@ def load_run_protocol_config(
         _warn_deprecated_experiment_key("capture_teensy_serial", hardware_path, "teensy")
         cfg.capture_teensy_serial = bool(raw["capture_teensy_serial"])
 
-    cfg.fictrac_config = str(hardware_fictrac.get("config", cfg.fictrac_config))
+    cfg.use_camera = bool(hardware.get("use_camera", hardware_camera_recording.get("use_camera", cfg.use_camera)))
+
+    cfg.fictrac_config = str(
+        hardware_camera_recording.get("fictrac_config", hardware_fictrac.get("config", cfg.fictrac_config))
+    )
     if "fictrac_config" in raw:
-        _warn_deprecated_experiment_key("fictrac_config", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_config", hardware_path, "camera_recording")
         cfg.fictrac_config = str(raw["fictrac_config"])
     cfg.fictrac_config = str(resolve_fictrac_config_path(cfg.fictrac_config, hardware_path=hardware_path))
 
-    cfg.fictrac_bin = str(hardware_fictrac.get("bin", cfg.fictrac_bin))
+    cfg.fictrac_bin = str(hardware_camera_recording.get("fictrac_bin", hardware_fictrac.get("bin", cfg.fictrac_bin)))
     if "fictrac_bin" in raw:
-        _warn_deprecated_experiment_key("fictrac_bin", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_bin", hardware_path, "camera_recording")
         cfg.fictrac_bin = str(raw["fictrac_bin"])
 
-    cfg.fictrac_console_out = str(hardware_fictrac.get("console_out", cfg.fictrac_console_out))
+    cfg.fictrac_console_out = str(
+        hardware_camera_recording.get("fictrac_console_out", hardware_fictrac.get("console_out", cfg.fictrac_console_out))
+    )
     if "fictrac_console_out" in raw:
-        _warn_deprecated_experiment_key("fictrac_console_out", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_console_out", hardware_path, "camera_recording")
         cfg.fictrac_console_out = str(raw["fictrac_console_out"])
 
-    cfg.fictrac_camera_serial = str(hardware_fictrac.get("camera_serial", cfg.fictrac_camera_serial) or "")
+    cfg.fictrac_camera_serial = str(
+        hardware_camera_recording.get("fictrac_camera_serial", hardware_fictrac.get("camera_serial", cfg.fictrac_camera_serial)) or ""
+    )
     if "fictrac_camera_serial" in raw:
-        _warn_deprecated_experiment_key("fictrac_camera_serial", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_camera_serial", hardware_path, "camera_recording")
         cfg.fictrac_camera_serial = str(raw["fictrac_camera_serial"])
 
     cfg.fictrac_first_frame_timeout_ms = int(
-        hardware_fictrac.get("first_frame_timeout_ms", cfg.fictrac_first_frame_timeout_ms)
+        hardware_camera_recording.get(
+            "fictrac_first_frame_timeout_ms",
+            hardware_fictrac.get("first_frame_timeout_ms", cfg.fictrac_first_frame_timeout_ms),
+        )
     )
     if "fictrac_first_frame_timeout_ms" in raw:
-        _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_first_frame_timeout_ms", hardware_path, "camera_recording")
         cfg.fictrac_first_frame_timeout_ms = int(raw["fictrac_first_frame_timeout_ms"])
 
     if "target_fps" in hardware_fictrac:
@@ -552,56 +634,63 @@ def load_run_protocol_config(
             "use camera_recording.trigger_fps_hz as the single source of truth"
         )
 
-    cfg.fictrac_arm_delay_s = float(hardware_fictrac.get("arm_delay_s", cfg.fictrac_arm_delay_s))
+    cfg.fictrac_arm_delay_s = float(
+        hardware_camera_recording.get("fictrac_arm_delay_s", hardware_fictrac.get("arm_delay_s", cfg.fictrac_arm_delay_s))
+    )
     if "fictrac_arm_delay_s" in raw:
-        _warn_deprecated_experiment_key("fictrac_arm_delay_s", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_arm_delay_s", hardware_path, "camera_recording")
         cfg.fictrac_arm_delay_s = float(raw["fictrac_arm_delay_s"])
 
     cfg.fictrac_startup_timeout_s = float(
-        hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s)
+        hardware_camera_recording.get(
+            "fictrac_startup_timeout_s",
+            hardware_fictrac.get("startup_timeout_s", cfg.fictrac_startup_timeout_s),
+        )
     )
     if "fictrac_startup_timeout_s" in raw:
-        _warn_deprecated_experiment_key("fictrac_startup_timeout_s", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_startup_timeout_s", hardware_path, "camera_recording")
         cfg.fictrac_startup_timeout_s = float(raw["fictrac_startup_timeout_s"])
 
-    cfg.fictrac_timeout_s = float(hardware_fictrac.get("timeout_s", cfg.fictrac_timeout_s))
+    cfg.fictrac_timeout_s = float(
+        hardware_camera_recording.get("fictrac_timeout_s", hardware_fictrac.get("timeout_s", cfg.fictrac_timeout_s))
+    )
     if "fictrac_timeout_s" in raw:
-        _warn_deprecated_experiment_key("fictrac_timeout_s", hardware_path, "fictrac")
+        _warn_deprecated_experiment_key("fictrac_timeout_s", hardware_path, "camera_recording")
         cfg.fictrac_timeout_s = float(raw["fictrac_timeout_s"])
 
     blackfly_exposure = hardware_blackfly.get("exposure_us", cfg.blackfly_exposure_us)
     cfg.blackfly_exposure_us = None if blackfly_exposure is None else float(blackfly_exposure)
     if "blackfly_exposure_us" in raw:
-        _warn_deprecated_experiment_key("blackfly_exposure_us", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_exposure_us", hardware_path, "camera_recording")
         cfg.blackfly_exposure_us = float(raw["blackfly_exposure_us"])
 
     blackfly_roi_width = hardware_blackfly.get("roi_width", cfg.blackfly_roi_width)
     cfg.blackfly_roi_width = None if blackfly_roi_width is None else int(blackfly_roi_width)
     if "blackfly_roi_width" in raw:
-        _warn_deprecated_experiment_key("blackfly_roi_width", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_roi_width", hardware_path, "camera_recording")
         cfg.blackfly_roi_width = int(raw["blackfly_roi_width"])
 
     blackfly_roi_height = hardware_blackfly.get("roi_height", cfg.blackfly_roi_height)
     cfg.blackfly_roi_height = None if blackfly_roi_height is None else int(blackfly_roi_height)
     if "blackfly_roi_height" in raw:
-        _warn_deprecated_experiment_key("blackfly_roi_height", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_roi_height", hardware_path, "camera_recording")
         cfg.blackfly_roi_height = int(raw["blackfly_roi_height"])
 
-    cfg.blackfly_binning = int(hardware_blackfly.get("binning", cfg.blackfly_binning))
+    cfg.blackfly_binning = int(_value_or_fallback(hardware_blackfly.get("binning"), cfg.blackfly_binning))
     if "blackfly_binning" in raw:
-        _warn_deprecated_experiment_key("blackfly_binning", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_binning", hardware_path, "camera_recording")
         cfg.blackfly_binning = int(raw["blackfly_binning"])
 
     blackfly_gain = hardware_blackfly.get("gain_db", cfg.blackfly_gain_db)
     cfg.blackfly_gain_db = None if blackfly_gain is None else float(blackfly_gain)
     if "blackfly_gain_db" in raw:
-        _warn_deprecated_experiment_key("blackfly_gain_db", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_gain_db", hardware_path, "camera_recording")
         cfg.blackfly_gain_db = float(raw["blackfly_gain_db"])
 
     blackfly_gamma = hardware_blackfly.get("gamma", cfg.blackfly_gamma)
     cfg.blackfly_gamma = None if blackfly_gamma is None else float(blackfly_gamma)
     if "blackfly_gamma" in raw:
-        _warn_deprecated_experiment_key("blackfly_gamma", hardware_path, "blackfly_defaults")
+        _warn_deprecated_experiment_key("blackfly_gamma", hardware_path, "camera_recording")
         cfg.blackfly_gamma = float(raw["blackfly_gamma"])
 
     cfg.save_fictrac_camera_video = bool(
@@ -2314,11 +2403,20 @@ def main():
         action="store_true", 
         help="Enable debug logging (even more verbose than --verbose)"
     )
-    ap.add_argument(
+    progress_group = ap.add_mutually_exclusive_group()
+    progress_group.add_argument(
         "--progress",
+        dest="progress",
         action="store_true",
-        help="Enable real-time progress monitor during protocol execution"
+        help="Enable real-time progress monitor during protocol execution (default)."
     )
+    progress_group.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable real-time progress monitor during protocol execution."
+    )
+    ap.set_defaults(progress=True)
     ap.add_argument(
         "--progress-interval",
         type=int,
@@ -2329,6 +2427,17 @@ def main():
         "--fictrac-display",
         action="store_true",
         help="Keep the live FicTrac display window enabled even for long high-rate interactive runs.",
+    )
+    camera_mode_group = ap.add_mutually_exclusive_group()
+    camera_mode_group.add_argument(
+        "--nocamera",
+        action="store_true",
+        help="Run the protocol without camera triggers, camera recording, or FicTrac.",
+    )
+    camera_mode_group.add_argument(
+        "--usecamera",
+        action="store_true",
+        help="Force camera triggers, camera recording, and FicTrac to follow hardware.yaml settings.",
     )
     # Optional pulse tuning overrides (otherwise read from YAML)
     ap.add_argument("--preload-lead-ms", type=int)
@@ -2343,8 +2452,8 @@ def main():
     ap.add_argument(
         "--metadata-ui",
         choices=["off", "pre", "full"],
-        default="off",
-        help="Launch the metadata form before acquisition, or before and after acquisition with 'full'. Defaults to off for unattended runs.",
+        default="full",
+        help="Launch the metadata form before acquisition, or before and after acquisition with 'full'. Defaults to 'full'.",
     )
     ap.add_argument(
         "--metadata-history",
@@ -2421,9 +2530,16 @@ def main():
         hw.device = args.device
 
     runtime_cfg = load_run_protocol_config(args.experiment, hardware_path=hw_path)
+    use_camera = _apply_camera_mode_runtime_overrides(
+        runtime_cfg,
+        force_camera=args.usecamera,
+        force_nocamera=args.nocamera,
+    )
     run_root = Path(args.out_root) if args.out_root else resolve_run_output_root(hw_path, fallback=runtime_cfg.data_dir)
     logger.info("Runtime capture settings:")
     logger.info(f"  Run output root: {run_root}")
+    logger.info(f"  Camera mode default from hardware: {runtime_cfg.use_camera}")
+    logger.info(f"  Camera/FicTrac enabled for this run: {use_camera}")
     logger.info(f"  FicTrac enabled: {bool(runtime_cfg.fictrac_config)}")
     logger.info(f"  Second camera recording: {runtime_cfg.save_second_camera_video}")
     logger.info(f"  Raw chunk retention: {runtime_cfg.raw_chunk_retention_policy}")
@@ -2644,6 +2760,13 @@ def main():
     logger.info(f"  ✓ Timing anchors: {dataset_layout.timing_anchors_path}")
 
     protocol_block = y.get("protocol", {}) if isinstance(y, dict) else {}
+    expected_imaging_periods = _estimate_microscopy_imaging_periods(control_plan)
+    if expected_imaging_periods > 0:
+        logger.info(
+            "Protocol includes %d microscope imaging periods. Set PrairieView iterations to %d before starting.",
+            expected_imaging_periods,
+            expected_imaging_periods,
+        )
     experiment_record = build_placeholder_experiment_record(
         run_id=run_dir.name,
         run_uuid=run_uuid,
@@ -2653,6 +2776,7 @@ def main():
         rig_id=str(hw.device),
         operator=None,
     )
+    experiment_record.setdefault("pre_experiment", {})["expected_imaging_periods"] = expected_imaging_periods
     dataset_layout.experiment_record_path.write_text(json.dumps(experiment_record, indent=2), encoding="utf-8")
     logger.info(f"  ✓ Experiment record placeholder: {dataset_layout.experiment_record_path}")
     dataset_layout.experiment_record_meta_path.write_text(
@@ -2894,6 +3018,7 @@ def main():
     fictrac_thread: threading.Thread | None = None
     fictrac_state: dict[str, Exception | None] = {"error": None}
     fictrac_runtime_info: dict[str, Any] = {}
+    fictrac_recording: dict[str, Any] | None = None
     fictrac_camera_index: int | None = None
     fictrac_camera_serial: str | None = None
     other_camera_recorder: Any = None

@@ -4,6 +4,7 @@ import json
 import threading
 from pathlib import Path
 import logging
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -18,6 +19,11 @@ from multibios.fictrac_raw_recording import postprocess_fictrac_raw_recording
 from multibios.protocol.control_plan import compile_control_plan
 from multibios.protocol.schema import ProtocolCompiler, TimingConfig
 from multibios.run_protocol import (ExperimentCallback,
+                                    _apply_camera_mode_runtime_overrides,
+                                    _apply_hardware_owned_camera_timing,
+                                    _disable_camera_runtime,
+                                    _estimate_microscopy_imaging_periods,
+                                    _resolve_camera_mode,
                                     _should_force_headless_fictrac_run,
                                     _finalize_raw_chunk_retention,
                                     _write_parity_summary,
@@ -258,17 +264,24 @@ def test_experiment_callback_reports_stop_requested() -> None:
 def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) -> None:
     hw_path = tmp_path / "hardware.yaml"
     hw_path.write_text(
+        "use_camera: false\n"
         "teensy:\n"
         "  port: COM9\n"
         "  baud: 230400\n"
         "  capture_serial: true\n"
-        "fictrac:\n"
-        "  camera_serial: 26021184\n"
         "camera_recording:\n"
         "  trigger_fps_hz: 200\n"
         "  trigger_pulse_ms: 1\n"
         "  save_fictrac_camera_video: true\n"
         "  save_second_camera_video: true\n"
+        "  fictrac_config: config_camera.txt\n"
+        "  fictrac_bin: C:/rig/fictrac-spinnaker.exe\n"
+        "  fictrac_console_out: fictrac_hw.txt\n"
+        "  fictrac_camera_serial: 26021184\n"
+        "  fictrac_first_frame_timeout_ms: 0\n"
+        "  fictrac_arm_delay_s: 0.5\n"
+        "  fictrac_startup_timeout_s: 0\n"
+        "  fictrac_timeout_s: 7\n"
         "  second_camera_serial: 26048173\n"
         "  second_camera_index: 1\n"
         "  fictrac_raw_video_codec: mjpg\n"
@@ -281,6 +294,12 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "  second_camera_binning: 2\n"
         "  second_camera_gain_db: 7.5\n"
         "  second_camera_gamma: 0.8\n"
+        "  default_exposure_us: 4500\n"
+        "  default_roi_width: 400\n"
+        "  default_roi_height: 400\n"
+        "  default_binning: 1\n"
+        "  default_gain_db: 3.5\n"
+        "  default_gamma: 1.1\n"
         "  verify_no_dropped_frames: true\n"
         "  convert_second_camera_bin_to_lossless_mkv: false\n"
         "  raw_chunk_retention_policy: delete_after_parity\n"
@@ -298,14 +317,7 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
         "data_output:\n"
         "  data_dir: C:/data/runs\n"
         "  open_explorer: false\n"
-        "  explorer_port: 9000\n"
-        "blackfly_defaults:\n"
-        "  exposure_us: 4500\n"
-        "  roi_width: 400\n"
-        "  roi_height: 400\n"
-        "  binning: 1\n"
-        "  gain_db: 3.5\n"
-        "  gamma: 1.1\n",
+        "  explorer_port: 9000\n",
         encoding="utf-8",
     )
 
@@ -313,6 +325,7 @@ def test_load_run_protocol_config_reads_hardware_owned_fields(tmp_path: Path) ->
     assert cfg.teensy_port == "COM9"
     assert cfg.teensy_baud == 230400
     assert cfg.capture_teensy_serial is True
+    assert cfg.use_camera is False
     assert cfg.fictrac_camera_serial == "26021184"
     assert cfg.save_fictrac_camera_video is True
     assert cfg.save_second_camera_video is True
@@ -355,13 +368,12 @@ def test_load_run_protocol_config_second_camera_blank_values_fall_back_to_blackf
         "  second_camera_roi_height:\n"
         "  second_camera_gain_db:\n"
         "  second_camera_gamma:\n"
-        "blackfly_defaults:\n"
-        "  exposure_us: 4200\n"
-        "  roi_width: 640\n"
-        "  roi_height: 512\n"
-        "  binning: 1\n"
-        "  gain_db: 5.5\n"
-        "  gamma: 0.9\n",
+        "  default_exposure_us: 4200\n"
+        "  default_roi_width: 640\n"
+        "  default_roi_height: 512\n"
+        "  default_binning: 1\n"
+        "  default_gain_db: 5.5\n"
+        "  default_gamma: 0.9\n",
         encoding="utf-8",
     )
 
@@ -376,15 +388,15 @@ def test_load_run_protocol_config_second_camera_blank_values_fall_back_to_blackf
 def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path) -> None:
     hw_path = tmp_path / "hardware.yaml"
     hw_path.write_text(
-        "fictrac:\n"
-        "  config: config_camera.txt\n"
-        "  camera_serial: 26021184\n"
-        "  bin: C:/rig/fictrac-spinnaker.exe\n"
-        "  console_out: fictrac_hw.txt\n"
-        "  first_frame_timeout_ms: 0\n"
-        "  arm_delay_s: 0.5\n"
-        "  startup_timeout_s: 0\n"
-        "  timeout_s: 7\n",
+        "camera_recording:\n"
+        "  fictrac_config: config_camera.txt\n"
+        "  fictrac_camera_serial: 26021184\n"
+        "  fictrac_bin: C:/rig/fictrac-spinnaker.exe\n"
+        "  fictrac_console_out: fictrac_hw.txt\n"
+        "  fictrac_first_frame_timeout_ms: 0\n"
+        "  fictrac_arm_delay_s: 0.5\n"
+        "  fictrac_startup_timeout_s: 0\n"
+        "  fictrac_timeout_s: 7\n",
         encoding="utf-8",
     )
 
@@ -397,6 +409,100 @@ def test_load_run_protocol_config_reads_hardware_fictrac_defaults(tmp_path: Path
     assert cfg.fictrac_arm_delay_s == 0.5
     assert cfg.fictrac_startup_timeout_s == 0.0
     assert cfg.fictrac_timeout_s == 7.0
+
+
+def test_disable_camera_runtime_turns_off_camera_triggering_and_recording() -> None:
+    cfg = RunProtocolConfig(
+        fictrac_config="C:/rig/config_camera.txt",
+        fictrac_camera_serial="26021184",
+        save_fictrac_camera_video=True,
+        save_second_camera_video=True,
+        camera_trigger_fps_hz=200.0,
+        camera_trigger_pulse_ms=1,
+        second_camera_index=1,
+        second_camera_serial="26048173",
+        verify_camera_recording=True,
+    )
+    timing_block = {
+        "sample_rate": 1000,
+        "camera_interval": 5.0,
+        "camera_pulse_duration": 1.0,
+    }
+
+    _disable_camera_runtime(cfg)
+    _apply_hardware_owned_camera_timing(timing_block, cfg)
+
+    assert cfg.fictrac_config == ""
+    assert cfg.fictrac_camera_serial == ""
+    assert cfg.save_fictrac_camera_video is False
+    assert cfg.save_second_camera_video is False
+    assert cfg.camera_trigger_fps_hz is None
+    assert cfg.camera_trigger_pulse_ms is None
+    assert cfg.second_camera_index is None
+    assert cfg.second_camera_serial == ""
+    assert cfg.verify_camera_recording is False
+    assert timing_block["camera_interval"] == 0.0
+    assert "camera_pulse_duration" not in timing_block
+
+
+def test_resolve_camera_mode_prefers_cli_over_hardware_default() -> None:
+    assert _resolve_camera_mode(runtime_default=False, force_camera=False, force_nocamera=False) is False
+    assert _resolve_camera_mode(runtime_default=False, force_camera=True, force_nocamera=False) is True
+    assert _resolve_camera_mode(runtime_default=True, force_camera=False, force_nocamera=True) is False
+
+
+def test_estimate_microscopy_imaging_periods_counts_compiled_events() -> None:
+    plan = SimpleNamespace(microscope_times_ms=[100.0, 250.0, 500.0])
+
+    assert _estimate_microscopy_imaging_periods(plan) == 3
+
+
+def test_apply_camera_mode_runtime_overrides_disables_yaml_camera_settings_by_default() -> None:
+    cfg = RunProtocolConfig(
+        use_camera=False,
+        fictrac_config="C:/rig/config_camera.txt",
+        fictrac_camera_serial="26021184",
+        save_fictrac_camera_video=True,
+        save_second_camera_video=True,
+        camera_trigger_fps_hz=200.0,
+        camera_trigger_pulse_ms=1,
+        second_camera_index=1,
+        second_camera_serial="26048173",
+        verify_camera_recording=True,
+    )
+
+    use_camera = _apply_camera_mode_runtime_overrides(
+        cfg,
+        force_camera=False,
+        force_nocamera=False,
+    )
+
+    assert use_camera is False
+    assert cfg.fictrac_config == ""
+    assert cfg.save_fictrac_camera_video is False
+    assert cfg.save_second_camera_video is False
+    assert cfg.camera_trigger_fps_hz is None
+    assert cfg.second_camera_serial == ""
+
+
+def test_apply_camera_mode_runtime_overrides_respects_explicit_usecamera_flag() -> None:
+    cfg = RunProtocolConfig(
+        use_camera=False,
+        fictrac_config="C:/rig/config_camera.txt",
+        save_fictrac_camera_video=True,
+        camera_trigger_fps_hz=200.0,
+    )
+
+    use_camera = _apply_camera_mode_runtime_overrides(
+        cfg,
+        force_camera=True,
+        force_nocamera=False,
+    )
+
+    assert use_camera is True
+    assert cfg.fictrac_config == "C:/rig/config_camera.txt"
+    assert cfg.save_fictrac_camera_video is True
+    assert cfg.camera_trigger_fps_hz == 200.0
 
 
 def test_load_run_protocol_config_rejects_fictrac_target_fps(tmp_path: Path) -> None:
@@ -554,6 +660,73 @@ def test_compile_control_plan_expands_states_and_windows() -> None:
     assert plan.camera_windows_ms == [(0.0, 80.0)]
     assert plan.microscope_times_ms == [30.0, 130.0]
     assert [event.state for event in plan.timeline if event.action == "olfactometer"] == ["ODOR1", "ODOR2"]
+
+
+def test_protocol_numeric_timing_expressions_compile_in_plan_and_schema() -> None:
+    protocol = {
+        "_trial_baseline_ms": 10,
+        "_odor_duration_ms": 20,
+        "_trial_recovery_ms": 30,
+        "_trial_end_ms": "_trial_baseline_ms + _odor_duration_ms + _trial_recovery_ms",
+        "protocol": {
+            "timing": {
+                "sample_rate": 1000,
+                "camera_interval": 0.0,
+                "camera_pulse_duration": 1.0,
+            }
+        },
+        "sequence": [
+            {
+                "phase": "expr",
+                "duration": "_trial_end_ms + 40",
+                "actions": [
+                    {"device": "switch_valve.left", "state": "ODOR", "timing": "_trial_baseline_ms"},
+                    {
+                        "device": "switch_valve.left",
+                        "state": "CLEAN",
+                        "timing": "_trial_baseline_ms + _odor_duration_ms",
+                    },
+                    {"device": "triggers.microscope", "state": True, "timing": "_trial_end_ms"},
+                ],
+            }
+        ],
+    }
+
+    plan = compile_control_plan(protocol)
+
+    assert plan.total_duration_ms == 100.0
+    assert plan.microscope_times_ms == [60.0]
+    assert [
+        (event.device, event.state, event.time_ms)
+        for event in plan.timeline
+        if event.action == "switch_valve"
+    ] == [
+        ("switch_valve.left", "ODOR", 10.0),
+        ("switch_valve.left", "CLEAN", 30.0),
+    ]
+
+    class DummyHardware:
+        do_lines = {
+            "TRIG_MICRO": "Dev1/port0/line0",
+            "OLFACTOMETER_LEFT_S0": "Dev1/port0/line1",
+            "OLFACTOMETER_LEFT_S1": "Dev1/port0/line2",
+            "OLFACTOMETER_LEFT_S2": "Dev1/port0/line3",
+            "SWITCHVALVE_LEFT_S": "Dev1/port0/line4",
+            "SWITCHVALVE_LEFT_LOAD_REQ": "Dev1/port0/line5",
+            "RCK_SWITCHVALVE_LEFT": "Dev1/port0/line6",
+            "OLFACTOMETER_RIGHT_S0": "Dev1/port0/line7",
+            "OLFACTOMETER_RIGHT_S1": "Dev1/port0/line8",
+            "OLFACTOMETER_RIGHT_S2": "Dev1/port0/line9",
+            "SWITCHVALVE_RIGHT_S": "Dev1/port0/line10",
+        }
+        ao_channels: dict[str, str] = {}
+
+    compiler = ProtocolCompiler(DummyHardware(), TimingConfig(sample_rate=1000, camera_interval_ms=0.0))
+    compiler.compile_from_yaml(protocol)
+
+    assert compiler.N == 100
+    assert compiler.do is not None
+    assert _count_rising_edges(compiler.do[compiler.line_to_idx["TRIG_MICRO"]]) == 1
 
 
 def test_protocol_compiler_allows_submillisecond_camera_intervals() -> None:

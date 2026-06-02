@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from multibios.apps.metadata_form import (_build_pywebview_command,
+                                          _copy_imaging_dataset_into_run,
                                           _run_pywebview_window,
                                           create_app)
 from multibios.experiment_metadata import (build_experiment_record_meta_payload,
@@ -80,6 +81,9 @@ def _find_by_id(node: Any, component_id: str):
 
 def test_create_app_builds_pre_stage_layout(tmp_path: Path) -> None:
     record_path, record_meta_path, history_path = _write_metadata_inputs(tmp_path)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["pre_experiment"]["expected_imaging_periods"] = 4
+    record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     app = create_app(
         record_path=record_path,
@@ -94,6 +98,8 @@ def test_create_app_builds_pre_stage_layout(tmp_path: Path) -> None:
     ids = set(_walk_ids(app.layout))
     assert "Run ID (experiment)" in texts
     assert "Is this the same fly?" in texts
+    assert "Expected imaging periods" in texts
+    assert "Set iterations to 4 before starting the protocol." in texts
     assert "Required fields are marked Required. Optional fields can be left blank." in texts
     assert "close-window-signal" in ids
 
@@ -122,6 +128,9 @@ def test_pre_stage_hides_post_fields_but_preserves_callback_ids(tmp_path: Path) 
 
 def test_post_stage_hides_pre_fields_but_preserves_callback_ids(tmp_path: Path) -> None:
     record_path, record_meta_path, history_path = _write_metadata_inputs(tmp_path)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["pre_experiment"]["expected_imaging_periods"] = 2
+    record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     app = create_app(
         record_path=record_path,
@@ -142,8 +151,57 @@ def test_post_stage_hides_pre_fields_but_preserves_callback_ids(tmp_path: Path) 
     assert "pre-fly-choice" in ids
     assert "pre-fly-id" in ids
     assert "pre-genotype" in ids
+    assert "post-select-imaging-dataset" in ids
+    assert "post-imaging-dataset-source" in ids
+    assert "post-imaging-dataset-relative-path" in ids
+    assert "post-imaging-acquisition-type" in ids
+    assert "post-imaging-num-rois" in ids
+    assert "post-imaging-num-channels" in ids
+    assert "post-imaging-num-planes" in ids
     exclusion_field = _find_by_id(app.layout, "post-exclusion-reason-field")
     assert exclusion_field.style.get("display") == "none"
+
+
+def test_post_stage_shows_microscopy_acquisition_fields_when_imaging_is_expected(tmp_path: Path) -> None:
+    record_path, record_meta_path, history_path = _write_metadata_inputs(tmp_path)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["pre_experiment"]["expected_imaging_periods"] = 2
+    payload["post_experiment"]["imaging_acquisition_type"] = "volumetric"
+    payload["post_experiment"]["imaging_num_rois"] = 4
+    payload["post_experiment"]["imaging_num_channels"] = 2
+    payload["post_experiment"]["imaging_num_planes"] = 6
+    record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    app = create_app(
+        record_path=record_path,
+        record_meta_path=record_meta_path,
+        history_path=history_path,
+        stage="post",
+    )
+
+    texts = set(_walk_text(app.layout))
+    assert "Acquisition type" in texts
+    assert "Number of ROIs" in texts
+    assert "Number of channels" in texts
+    assert "Number of planes" in texts
+    assert _find_by_id(app.layout, "post-imaging-acquisition-type").value == "volumetric"
+    assert _find_by_id(app.layout, "post-imaging-num-rois").value == "4"
+    assert _find_by_id(app.layout, "post-imaging-num-channels").value == "2"
+    assert _find_by_id(app.layout, "post-imaging-num-planes").value == "6"
+    assert _find_by_id(app.layout, "post-imaging-num-planes-field").style.get("display") is None
+
+
+def test_copy_imaging_dataset_into_run_copies_selected_directory(tmp_path: Path) -> None:
+    record_path, _record_meta_path, _history_path = _write_metadata_inputs(tmp_path)
+    source_dir = tmp_path / "prairieview" / "dataset_001"
+    source_dir.mkdir(parents=True)
+    (source_dir / "metadata.env").write_text("ok", encoding="utf-8")
+
+    copied_dir = _copy_imaging_dataset_into_run(record_path=record_path, source_dir=source_dir)
+
+    assert copied_dir == tmp_path / "recorded" / "microscopy" / "dataset_001"
+    assert copied_dir.is_dir()
+    assert (copied_dir / "metadata.env").read_text(encoding="utf-8") == "ok"
 
 
 def test_post_stage_does_not_prefill_response_or_exclusion_reason(tmp_path: Path) -> None:
