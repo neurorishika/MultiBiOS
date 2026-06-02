@@ -233,6 +233,9 @@ def append_metadata_history_log_entry(path: Path, *, record: dict[str, Any], sta
 
 
 def persist_metadata_history_source(path: Path, history: dict[str, Any], *, record: dict[str, Any], stage: str) -> None:
+    if path.suffix.lower() == ".csv":
+        _append_metadata_history_csv_entry(path, record=record, stage=stage)
+        return
     if _should_use_history_run_log(path):
         append_metadata_history_log_entry(path, record=record, stage=stage)
         return
@@ -309,7 +312,7 @@ def _history_csv_typed_value(field_path: str, value: Any) -> Any:
     if normalized is None:
         return None
     if field_path in HISTORY_CSV_INT_FIELDS:
-        return int(normalized)
+        return int(float(normalized))
     if field_path in HISTORY_CSV_FLOAT_FIELDS:
         return float(normalized)
     return normalized
