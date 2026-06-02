@@ -121,6 +121,306 @@
         "custom_fields": {},
         "amendments": []
       }
+    },
+    {
+      "recorded_utc": "2026-06-02T18:56:11.998759Z",
+      "stage": "post",
+      "run_id": "2026-06-02_14-51-24",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_post",
+        "run_id": "2026-06-02_14-51-24",
+        "run_uuid": "3359dde8-53de-46bf-8c42-c5fc3b0110d2",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T18:51:41.496675Z",
+        "entered_completed_utc": "2026-06-02T18:56:11.993733Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 10,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "volumetric": "yes",
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": "meh",
+          "notes": "",
+          "duration_s": 207.934,
+          "completion_status": "aborted",
+          "aborted": true,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": "\\\\USER-THMDV2TUDD\\Rishika\\OrcoGCamp8m\\060226\\ZSeries-06022026-0920-018",
+          "imaging_dataset_relative_path": "recorded/microscopy/ZSeries-06022026-0920-018",
+          "imaging_acquisition_type": "single_plane",
+          "imaging_num_rois": 1,
+          "imaging_num_channels": 1,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
+    },
+    {
+      "recorded_utc": "2026-06-02T18:57:33.353848Z",
+      "stage": "pre",
+      "run_id": "2026-06-02_14-57-21",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_pre",
+        "run_id": "2026-06-02_14-57-21",
+        "run_uuid": "642b8ca5-88e6-442f-8965-50ed6e12cafb",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T18:57:33.348852Z",
+        "entered_completed_utc": "2026-06-02T18:57:33.348852Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 10,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "volumetric": "yes",
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": null,
+          "notes": null,
+          "duration_s": null,
+          "completion_status": null,
+          "aborted": false,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": null,
+          "imaging_dataset_relative_path": null,
+          "imaging_acquisition_type": null,
+          "imaging_num_rois": null,
+          "imaging_num_channels": null,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
+    },
+    {
+      "recorded_utc": "2026-06-02T18:59:10.996860Z",
+      "stage": "post",
+      "run_id": "2026-06-02_14-57-21",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_post",
+        "run_id": "2026-06-02_14-57-21",
+        "run_uuid": "642b8ca5-88e6-442f-8965-50ed6e12cafb",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T18:57:33.348852Z",
+        "entered_completed_utc": "2026-06-02T18:59:10.994858Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 10,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "volumetric": "yes",
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": "meh",
+          "notes": "",
+          "duration_s": 63.414,
+          "completion_status": "aborted",
+          "aborted": true,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": "\\\\USER-THMDV2TUDD\\Rishika\\RiiAntObir\\050826\\SingleImage-05082026-1435-016",
+          "imaging_dataset_relative_path": "recorded/microscopy/SingleImage-05082026-1435-016",
+          "imaging_acquisition_type": "single_plane",
+          "imaging_num_rois": 1,
+          "imaging_num_channels": 1,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
+    },
+    {
+      "recorded_utc": "2026-06-02T19:01:33.392925Z",
+      "stage": "pre",
+      "run_id": "2026-06-02_15-01-10",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_pre",
+        "run_id": "2026-06-02_15-01-10",
+        "run_uuid": "280c3ec0-27dd-4154-9f0a-4a8d35f34f32",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T19:01:33.388564Z",
+        "entered_completed_utc": "2026-06-02T19:01:33.388564Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 10,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "volumetric": "yes",
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": null,
+          "notes": null,
+          "duration_s": null,
+          "completion_status": null,
+          "aborted": false,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": null,
+          "imaging_dataset_relative_path": null,
+          "imaging_acquisition_type": null,
+          "imaging_num_rois": null,
+          "imaging_num_channels": null,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
+    },
+    {
+      "recorded_utc": "2026-06-02T19:02:52.063151Z",
+      "stage": "post",
+      "run_id": "2026-06-02_15-01-10",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_post",
+        "run_id": "2026-06-02_15-01-10",
+        "run_uuid": "280c3ec0-27dd-4154-9f0a-4a8d35f34f32",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T19:01:33.388564Z",
+        "entered_completed_utc": "2026-06-02T19:02:52.060649Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 10,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "volumetric": "yes",
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": "meh",
+          "notes": "",
+          "duration_s": 57.205,
+          "completion_status": "aborted",
+          "aborted": true,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": "\\\\USER-THMDV2TUDD\\Rishika\\OrcoGCamp8m\\060226\\SingleImage-06022026-0920-017",
+          "imaging_dataset_relative_path": "recorded/microscopy/SingleImage-06022026-0920-017",
+          "imaging_acquisition_type": "single_plane",
+          "imaging_num_rois": 1,
+          "imaging_num_channels": 1,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
     }
   ]
 }

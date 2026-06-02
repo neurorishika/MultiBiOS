@@ -452,9 +452,16 @@ def test_resolve_camera_mode_prefers_cli_over_hardware_default() -> None:
 
 
 def test_estimate_microscopy_imaging_periods_counts_compiled_events() -> None:
+    plan = SimpleNamespace(microscope_times_ms=[100.0, 250.0, 500.0, 750.0])
+
+    assert _estimate_microscopy_imaging_periods(plan) == 2
+
+
+def test_estimate_microscopy_imaging_periods_rejects_unpaired_triggers() -> None:
     plan = SimpleNamespace(microscope_times_ms=[100.0, 250.0, 500.0])
 
-    assert _estimate_microscopy_imaging_periods(plan) == 3
+    with pytest.raises(ValueError, match="start and stop trigger"):
+        _estimate_microscopy_imaging_periods(plan)
 
 
 def test_apply_camera_mode_runtime_overrides_disables_yaml_camera_settings_by_default() -> None:

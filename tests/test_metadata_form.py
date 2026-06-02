@@ -100,8 +100,29 @@ def test_create_app_builds_pre_stage_layout(tmp_path: Path) -> None:
     assert "Is this the same fly?" in texts
     assert "Expected imaging periods" in texts
     assert "Set iterations to 4 before starting the protocol." in texts
+    assert "Volumetric" not in texts
     assert "Required fields are marked Required. Optional fields can be left blank." in texts
     assert "close-window-signal" in ids
+    assert "pre-microscopy-start-confirm" in ids
+
+
+def test_pre_stage_exposes_microscopy_start_confirmation_controls_for_imaging_runs(tmp_path: Path) -> None:
+    record_path, record_meta_path, history_path = _write_metadata_inputs(tmp_path)
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["pre_experiment"]["expected_imaging_periods"] = 3
+    record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    app = create_app(
+        record_path=record_path,
+        record_meta_path=record_meta_path,
+        history_path=history_path,
+        stage="pre",
+    )
+
+    ids = set(_walk_ids(app.layout))
+    assert "pre-microscopy-start-confirm-field" in ids
+    assert "pre-microscopy-start-message" in ids
+    assert "pre-microscopy-start-confirm" in ids
 
 
 def test_pre_stage_hides_post_fields_but_preserves_callback_ids(tmp_path: Path) -> None:

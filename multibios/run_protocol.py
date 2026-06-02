@@ -182,7 +182,14 @@ def _estimate_microscopy_imaging_periods(control_plan: Any) -> int:
     microscope_times_ms = getattr(control_plan, "microscope_times_ms", None)
     if microscope_times_ms is None:
         return 0
-    return len(microscope_times_ms)
+    trigger_count = len(microscope_times_ms)
+    if trigger_count == 0:
+        return 0
+    if trigger_count % 2 != 0:
+        raise ValueError(
+            "Protocol has an unmatched microscope trigger: each imaging block must include both a start and stop trigger."
+        )
+    return trigger_count // 2
 
 
 @dataclass

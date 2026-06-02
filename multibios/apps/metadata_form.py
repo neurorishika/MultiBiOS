@@ -146,6 +146,9 @@ def create_app(
             Output("pre-new-terms-message", "children"),
             Output("pre-new-terms-confirm-field", "style"),
             Output("pre-new-terms-confirm", "value"),
+            Output("pre-microscopy-start-message", "children"),
+            Output("pre-microscopy-start-confirm-field", "style"),
+            Output("pre-microscopy-start-confirm", "value"),
             Input("submit-button", "n_clicks"),
             State("entered-by", "value"),
             State("pre-fly-choice", "value"),
@@ -158,7 +161,6 @@ def create_app(
             State("pre-age-unit", "value"),
             State("pre-starvation-value", "value"),
             State("pre-starvation-unit", "value"),
-            State("pre-volumetric", "value"),
             State("pre-stimulus-modality", "value"),
             State("pre-stimulus-modality-new", "value"),
             State("pre-rig-temperature", "value"),
@@ -178,7 +180,6 @@ def create_app(
             age_unit: str | None,
             starvation_value: str | None,
             starvation_unit: str | None,
-            volumetric: str | None,
             stimulus_modality: str | None,
             stimulus_modality_new: str | None,
             rig_temperature: str | None,
@@ -205,14 +206,20 @@ def create_app(
                 age_unit=age_unit,
                 starvation_value=starvation_value,
                 starvation_unit=starvation_unit,
-                volumetric=volumetric,
                 stimulus_modality=resolved_stimulus_modality,
                 rig_temperature=rig_temperature,
                 humidity=humidity,
             )
             confirmation_message = _pending_new_terms_message(pending_new_terms)
             confirmation_style = _new_terms_confirm_style(bool(pending_new_terms))
-            return summary, _modal_style(), confirmation_message, confirmation_style, []
+            expected_imaging_periods = _coerce_int((prefilled_record.get("pre_experiment") or {}).get("expected_imaging_periods")) or 0
+            microscopy_message = (
+                f"Before starting, confirm PrairieView iterations are set to {expected_imaging_periods} and acquisition has already started."
+                if expected_imaging_periods > 0
+                else ""
+            )
+            microscopy_style = _new_terms_confirm_style(expected_imaging_periods > 0)
+            return summary, _modal_style(), confirmation_message, confirmation_style, [], microscopy_message, microscopy_style, []
 
         @app.callback(
             Output("pre-save-confirm-modal", "style", allow_duplicate=True),
@@ -302,12 +309,12 @@ def create_app(
         State("pre-age-unit", "value"),
         State("pre-starvation-value", "value"),
         State("pre-starvation-unit", "value"),
-        State("pre-volumetric", "value"),
         State("pre-stimulus-modality", "value"),
         State("pre-stimulus-modality-new", "value"),
         State("pre-rig-temperature", "value"),
         State("pre-humidity", "value"),
         State("pre-new-terms-confirm", "value"),
+        State("pre-microscopy-start-confirm", "value"),
         State("post-response", "value"),
         State("post-notes", "value"),
         State("post-completion-status", "value"),
@@ -337,12 +344,12 @@ def create_app(
         age_unit: str | None,
         starvation_value: str | None,
         starvation_unit: str | None,
-        volumetric: str | None,
         stimulus_modality: str | None,
         stimulus_modality_new: str | None,
         rig_temperature: str | None,
         humidity: str | None,
         confirm_new_terms: list[str] | None,
+        confirm_microscopy_start: list[str] | None,
         response: str | None,
         notes: str | None,
         completion_status: str | None,
@@ -378,6 +385,11 @@ def create_app(
         if stage == "pre":
             if pending_new_terms and "confirmed" not in (confirm_new_terms or []):
                 return "Confirmation required: review and confirm the new species or stimulus modality before saving."
+            expected_imaging_periods = _coerce_int(((current_record.get("pre_experiment") or {}).get("expected_imaging_periods"))) or 0
+            if expected_imaging_periods > 0:
+                required_confirmations = {"iterations_set", "acquisition_started"}
+                if not required_confirmations.issubset(set(confirm_microscopy_start or [])):
+                    return "Confirmation required: verify PrairieView iterations are set correctly and acquisition has started before saving."
             updated = apply_pre_experiment_updates(
                 current_record,
                 updates={
@@ -389,7 +401,6 @@ def create_app(
                     "pre_experiment.age.unit": age_unit,
                     "pre_experiment.starvation.value": _coerce_number(starvation_value),
                     "pre_experiment.starvation.unit": starvation_unit,
-                    "pre_experiment.volumetric": volumetric,
                     "pre_experiment.stimulus_modality": resolved_stimulus_modality,
                     "pre_experiment.rig_temperature_c": _coerce_number(rig_temperature),
                     "pre_experiment.humidity_percent": _coerce_number(humidity),
@@ -430,7 +441,6 @@ def create_app(
             "pre_experiment.hemisphere": hemisphere,
             "pre_experiment.age.unit": age_unit,
             "pre_experiment.starvation.unit": starvation_unit,
-            "pre_experiment.volumetric": volumetric,
             "pre_experiment.stimulus_modality": resolved_stimulus_modality,
             "pre_experiment.operator": entered_by,
             "post_experiment.response": response,
@@ -460,7 +470,6 @@ def create_app(
                     "pre_experiment.age.unit": age_unit,
                     "pre_experiment.starvation.value": _coerce_number(starvation_value),
                     "pre_experiment.starvation.unit": starvation_unit,
-                    "pre_experiment.volumetric": volumetric,
                     "pre_experiment.stimulus_modality": resolved_stimulus_modality,
                     "pre_experiment.rig_temperature_c": _coerce_number(rig_temperature),
                     "pre_experiment.humidity_percent": _coerce_number(humidity),
@@ -668,7 +677,6 @@ def _pre_stage_fields(pre: dict, history: dict, *, run_id: str | None) -> list:
                 _field_block("Age unit", dcc.Dropdown(id="pre-age-unit", options=_options(["hours", "days", "weeks", "unknown"]), value=(pre.get("age") or {}).get("unit") or "unknown", clearable=False, style=_dropdown_style()), required=False),
                 _field_block("Starvation value", dcc.Input(id="pre-starvation-value", value=_stringify((pre.get("starvation") or {}).get("value")), type="number", style=_input_style()), required=False),
                 _field_block("Starvation unit", dcc.Dropdown(id="pre-starvation-unit", options=_options(["hours", "days", "weeks", "unknown"]), value=(pre.get("starvation") or {}).get("unit") or "unknown", clearable=False, style=_dropdown_style()), required=False),
-                _field_block("Volumetric", dcc.Dropdown(id="pre-volumetric", options=_options(["yes", "no", "unknown"]), value=pre.get("volumetric") or "unknown", clearable=False, style=_dropdown_style()), required=False),
                 _field_block("Stimulus modality", dcc.Dropdown(id="pre-stimulus-modality", options=stimulus_options, value=stimulus_value, clearable=False, style=_dropdown_style()), required=True),
                 _field_block("New stimulus modality", dcc.Input(id="pre-stimulus-modality-new", value=stimulus_new_value, style=_input_style()), required=True, container_id="pre-stimulus-modality-new-field", style=_controlled_new_field_style(stimulus_value)),
                 _field_block("Rig temperature (C)", dcc.Input(id="pre-rig-temperature", value=_stringify(pre.get("rig_temperature_c")), type="number", style=_input_style()), required=False),
@@ -719,7 +727,6 @@ def _hidden_pre_stage_fields(pre: dict) -> list:
         dcc.Input(id="pre-age-unit", value=(pre.get("age") or {}).get("unit") or "unknown"),
         dcc.Input(id="pre-starvation-value", value=_stringify((pre.get("starvation") or {}).get("value"))),
         dcc.Input(id="pre-starvation-unit", value=(pre.get("starvation") or {}).get("unit") or "unknown"),
-        dcc.Input(id="pre-volumetric", value=pre.get("volumetric") or "unknown"),
         dcc.Input(id="pre-stimulus-modality", value=stimulus_value),
         dcc.Input(id="pre-stimulus-modality-new", value=stimulus_new_value),
         dcc.Input(id="pre-rig-temperature", value=_stringify(pre.get("rig_temperature_c"))),
@@ -746,6 +753,7 @@ def _hidden_post_stage_fields(post: dict) -> list:
         dcc.Textarea(id="post-notes", value=post.get("notes") or ""),
         dcc.Textarea(id="post-observed-anomalies", value="\n".join(post.get("observed_anomalies") or [])),
         dcc.Textarea(id="post-quality-flags", value="\n".join(post.get("quality_flags") or [])),
+        dcc.Checklist(id="pre-microscopy-start-confirm", options=[{"label": "", "value": "iterations_set"}, {"label": "", "value": "acquisition_started"}], value=[]),
     ]
 
 
@@ -1006,6 +1014,23 @@ def _pre_save_confirmation_modal() -> html.Div:
                     ),
                     html.Div(
                         [
+                            html.P(id="pre-microscopy-start-message", style={"margin": "0 0 10px 0", "fontSize": "13px", "lineHeight": "1.5", "color": TEXT}),
+                            dcc.Checklist(
+                                id="pre-microscopy-start-confirm",
+                                options=[
+                                    {"label": "PrairieView iterations are set to the required count.", "value": "iterations_set"},
+                                    {"label": "PrairieView acquisition has already started.", "value": "acquisition_started"},
+                                ],
+                                value=[],
+                                inputStyle={"marginRight": "8px"},
+                                labelStyle={"display": "block", "lineHeight": "1.5", "marginBottom": "8px"},
+                            ),
+                        ],
+                        id="pre-microscopy-start-confirm-field",
+                        style=_hidden_modal_style(),
+                    ),
+                    html.Div(
+                        [
                             html.Button("Back", id="pre-save-cancel-button", style=_secondary_button_style()),
                             html.Button("Confirm And Start", id="confirm-save-button", style=_button_style()),
                         ],
@@ -1047,7 +1072,6 @@ def _prefill_record_from_history(*, record: dict, history: dict, stage: str) -> 
     age["unit"] = _prefill_value(age.get("unit"), history, "pre_experiment.age.unit", preferred_value=daily_defaults.get("pre_experiment.age.unit"), fallback="unknown", treat_unknown_as_missing=True)
     starvation["value"] = _prefill_value(starvation.get("value"), history, "pre_experiment.starvation.value", preferred_value=daily_defaults.get("pre_experiment.starvation.value"))
     starvation["unit"] = _prefill_value(starvation.get("unit"), history, "pre_experiment.starvation.unit", preferred_value=daily_defaults.get("pre_experiment.starvation.unit"), fallback="unknown", treat_unknown_as_missing=True)
-    pre["volumetric"] = _prefill_value(pre.get("volumetric"), history, "pre_experiment.volumetric", preferred_value=daily_defaults.get("pre_experiment.volumetric"), fallback="unknown", treat_unknown_as_missing=True)
     pre["stimulus_modality"] = _prefill_value(pre.get("stimulus_modality"), history, "pre_experiment.stimulus_modality", preferred_value=daily_defaults.get("pre_experiment.stimulus_modality"))
     pre["rig_temperature_c"] = _prefill_value(pre.get("rig_temperature_c"), history, "pre_experiment.rig_temperature_c", preferred_value=daily_defaults.get("pre_experiment.rig_temperature_c"))
     pre["humidity_percent"] = _prefill_value(pre.get("humidity_percent"), history, "pre_experiment.humidity_percent", preferred_value=daily_defaults.get("pre_experiment.humidity_percent"))
@@ -1112,7 +1136,6 @@ def _build_pre_run_confirmation_summary(**values):
         ("Hemisphere", values.get("hemisphere"), True),
         ("Age", _join_value_unit(values.get("age_value"), values.get("age_unit")), False),
         ("Starvation", _join_value_unit(values.get("starvation_value"), values.get("starvation_unit")), False),
-        ("Volumetric", values.get("volumetric"), False),
         ("Stimulus modality", values.get("stimulus_modality"), True),
         ("Rig temperature", values.get("rig_temperature"), False),
         ("Humidity", values.get("humidity"), False),

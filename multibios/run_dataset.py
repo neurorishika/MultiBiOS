@@ -494,7 +494,6 @@ def build_placeholder_experiment_record(
             "hemisphere": "unknown",
             "age": {"value": None, "unit": "unknown"},
             "starvation": {"value": None, "unit": "unknown"},
-            "volumetric": "unknown",
             "stimulus_modality": None,
             "rig_temperature_c": None,
             "humidity_percent": None,
