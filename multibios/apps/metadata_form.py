@@ -5,12 +5,14 @@ from copy import deepcopy
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import webbrowser
+import xml.etree.ElementTree as ET
 
 import dash
 from dash import Input, Output, State, dcc, html
@@ -266,33 +268,57 @@ def create_app(
         @app.callback(
             Output("post-imaging-dataset-source", "value"),
             Output("post-imaging-dataset-relative-path", "value"),
+            Output("post-imaging-acquisition-type", "value"),
+            Output("post-imaging-acquired-iterations", "value"),
+            Output("post-imaging-num-channels", "value"),
+            Output("post-imaging-num-planes", "value"),
             Output("post-imaging-dataset-status", "children"),
             Input("post-select-imaging-dataset", "n_clicks"),
             State("post-imaging-dataset-source", "value"),
             State("post-imaging-dataset-relative-path", "value"),
+            State("post-imaging-acquisition-type", "value"),
+            State("post-imaging-acquired-iterations", "value"),
+            State("post-imaging-num-channels", "value"),
+            State("post-imaging-num-planes", "value"),
             prevent_initial_call=True,
         )
         def select_imaging_dataset(
             _n_clicks: int | None,
             current_source: str | None,
             current_relative_path: str | None,
-        ) -> tuple[str, str, str]:
+            current_acquisition_type: str | None,
+            current_acquired_iterations: str | None,
+            current_num_channels: str | None,
+            current_num_planes: str | None,
+        ) -> tuple[str, str, str | None, str, str, str, str]:
             try:
                 selected_dir = _select_directory_dialog(
                     title="Select completed PrairieView imaging dataset",
                     initial_dir=_initial_dialog_directory(current_source),
                 )
             except Exception as exc:
-                return current_source or "", current_relative_path or "", f"Failed to open imaging dataset picker: {exc}"
+                return current_source or "", current_relative_path or "", current_acquisition_type, current_acquired_iterations or "", current_num_channels or "", current_num_planes or "", f"Failed to open imaging dataset picker: {exc}"
             if selected_dir is None:
-                return current_source or "", current_relative_path or "", "Imaging dataset selection cancelled."
+                return current_source or "", current_relative_path or "", current_acquisition_type, current_acquired_iterations or "", current_num_channels or "", current_num_planes or "", "Imaging dataset selection cancelled."
 
             try:
                 destination = _copy_imaging_dataset_into_run(record_path=record_path, source_dir=selected_dir)
             except Exception as exc:
-                return current_source or "", current_relative_path or "", f"Failed to copy imaging dataset: {exc}"
+                return current_source or "", current_relative_path or "", current_acquisition_type, current_acquired_iterations or "", current_num_channels or "", current_num_planes or "", f"Failed to copy imaging dataset: {exc}"
             relative_destination = normalize_run_relative_path(record_path.parent.parent, destination)
-            return str(selected_dir), relative_destination, f"Copied imaging dataset to {relative_destination}"
+            inferred = _infer_bruker_dataset_metadata(destination)
+            current_record = json.loads(record_path.read_text(encoding="utf-8"))
+            expected_imaging_periods = _coerce_int(((current_record.get("pre_experiment") or {}).get("expected_imaging_periods"))) or 0
+            status_message = _build_imaging_dataset_status_message(relative_destination, inferred, expected_imaging_periods)
+            return (
+                str(selected_dir),
+                relative_destination,
+                inferred.get("imaging_acquisition_type") or current_acquisition_type,
+                _stringify(inferred.get("imaging_acquired_iterations")),
+                _stringify(inferred.get("imaging_num_channels")),
+                _stringify(inferred.get("imaging_num_planes")),
+                status_message,
+            )
 
     @app.callback(
         Output("submit-status", "children"),
@@ -323,6 +349,7 @@ def create_app(
         State("post-imaging-dataset-source", "value"),
         State("post-imaging-dataset-relative-path", "value"),
         State("post-imaging-acquisition-type", "value"),
+        State("post-imaging-acquired-iterations", "value"),
         State("post-imaging-num-rois", "value"),
         State("post-imaging-num-channels", "value"),
         State("post-imaging-num-planes", "value"),
@@ -358,6 +385,7 @@ def create_app(
         imaging_dataset_source_path: str | None,
         imaging_dataset_relative_path: str | None,
         imaging_acquisition_type: str | None,
+        imaging_acquired_iterations: str | None,
         imaging_num_rois: str | None,
         imaging_num_channels: str | None,
         imaging_num_planes: str | None,
@@ -421,6 +449,7 @@ def create_app(
                     "post_experiment.imaging_dataset_source_path": _strip_or_none(imaging_dataset_source_path),
                     "post_experiment.imaging_dataset_relative_path": _strip_or_none(imaging_dataset_relative_path),
                     "post_experiment.imaging_acquisition_type": _strip_or_none(imaging_acquisition_type),
+                    "post_experiment.imaging_acquired_iterations": _coerce_int(imaging_acquired_iterations),
                     "post_experiment.imaging_num_rois": _coerce_int(imaging_num_rois),
                     "post_experiment.imaging_num_channels": _coerce_int(imaging_num_channels),
                     "post_experiment.imaging_num_planes": _coerce_int(imaging_num_planes) if imaging_acquisition_type == "volumetric" else None,
@@ -499,7 +528,8 @@ def main() -> None:
     parser.add_argument("--pywebview-url", help=argparse.SUPPRESS)
     parser.add_argument("--record", help="Path to experiment/record.json")
     parser.add_argument("--record-meta", help="Path to experiment/record.meta.json")
-    parser.add_argument("--history", default=str(default_metadata_history_path()), help="Path to metadata history store")
+    parser.add_argument("--history", help="Path to metadata history store")
+    parser.add_argument("--hardware", default="config/hardware.yaml", help="Path to hardware.yaml used to resolve the default metadata history path")
     parser.add_argument("--stage", choices=["pre", "post"])
     parser.add_argument("--completion-file")
     parser.add_argument("--host", default="127.0.0.1")
@@ -518,7 +548,7 @@ def main() -> None:
 
     record_path = Path(args.record)
     record_meta_path = Path(args.record_meta) if args.record_meta else record_path.with_name("record.meta.json")
-    history_path = Path(args.history)
+    history_path = Path(args.history) if args.history else default_metadata_history_path(hardware_path=args.hardware)
     completion_file = Path(args.completion_file) if args.completion_file else None
 
     app = create_app(
@@ -743,6 +773,7 @@ def _hidden_post_stage_fields(post: dict) -> list:
         dcc.Input(id="post-imaging-dataset-source", value=post.get("imaging_dataset_source_path") or ""),
         dcc.Input(id="post-imaging-dataset-relative-path", value=post.get("imaging_dataset_relative_path") or ""),
         dcc.Input(id="post-imaging-acquisition-type", value=post.get("imaging_acquisition_type") or ""),
+        dcc.Input(id="post-imaging-acquired-iterations", value=_stringify(post.get("imaging_acquired_iterations"))),
         dcc.Input(id="post-imaging-num-rois", value=_stringify(post.get("imaging_num_rois"))),
         dcc.Input(id="post-imaging-num-channels", value=_stringify(post.get("imaging_num_channels"))),
         dcc.Input(id="post-imaging-num-planes", value=_stringify(post.get("imaging_num_planes"))),
@@ -753,7 +784,6 @@ def _hidden_post_stage_fields(post: dict) -> list:
         dcc.Textarea(id="post-notes", value=post.get("notes") or ""),
         dcc.Textarea(id="post-observed-anomalies", value="\n".join(post.get("observed_anomalies") or [])),
         dcc.Textarea(id="post-quality-flags", value="\n".join(post.get("quality_flags") or [])),
-        dcc.Checklist(id="pre-microscopy-start-confirm", options=[{"label": "", "value": "iterations_set"}, {"label": "", "value": "acquisition_started"}], value=[]),
     ]
 
 
@@ -1254,6 +1284,7 @@ def _post_imaging_dataset_block(post: dict, expected_imaging_periods: int) -> ht
                 dcc.Input(id="post-imaging-dataset-source", value=post.get("imaging_dataset_source_path") or ""),
                 dcc.Input(id="post-imaging-dataset-relative-path", value=post.get("imaging_dataset_relative_path") or ""),
                 dcc.Input(id="post-imaging-acquisition-type", value=post.get("imaging_acquisition_type") or ""),
+                dcc.Input(id="post-imaging-acquired-iterations", value=_stringify(post.get("imaging_acquired_iterations"))),
                 dcc.Input(id="post-imaging-num-rois", value=_stringify(post.get("imaging_num_rois"))),
                 dcc.Input(id="post-imaging-num-channels", value=_stringify(post.get("imaging_num_channels"))),
                 dcc.Input(id="post-imaging-num-planes", value=_stringify(post.get("imaging_num_planes"))),
@@ -1267,16 +1298,24 @@ def _post_imaging_dataset_block(post: dict, expected_imaging_periods: int) -> ht
     copied_path = post.get("imaging_dataset_relative_path") or ""
     source_path = post.get("imaging_dataset_source_path") or ""
     acquisition_type = post.get("imaging_acquisition_type") or None
+    acquired_iterations = _stringify(post.get("imaging_acquired_iterations"))
     num_rois = _stringify(post.get("imaging_num_rois"))
     num_channels = _stringify(post.get("imaging_num_channels"))
     num_planes = _stringify(post.get("imaging_num_planes"))
-    status_text = f"Current copied dataset: {copied_path}" if copied_path else "Select the completed PrairieView dataset and copy it into this run before saving metadata."
+    inferred = {
+        "imaging_acquisition_type": acquisition_type,
+        "imaging_acquired_iterations": _coerce_int(acquired_iterations),
+        "imaging_num_channels": _coerce_int(num_channels),
+        "imaging_num_planes": _coerce_int(num_planes),
+    }
+    status_text = _build_imaging_dataset_status_message(copied_path, inferred, expected_imaging_periods) if copied_path else "Select the completed PrairieView dataset and copy it into this run before saving metadata."
     return html.Div(
         [
             html.Div("Microscopy dataset", style={"fontSize": "13px", "fontWeight": "600", "marginBottom": "8px"}),
             html.Div(
                 [
                     _readonly_row("Expected imaging periods", str(expected_imaging_periods)),
+                    _readonly_row("Acquired iterations", acquired_iterations or "Unknown"),
                     _readonly_row("Copied dataset", copied_path or "Not copied yet"),
                 ],
                 style=_compact_info_grid_style(),
@@ -1293,6 +1332,7 @@ def _post_imaging_dataset_block(post: dict, expected_imaging_periods: int) -> ht
                     _field_block("Selected source path", dcc.Input(id="post-imaging-dataset-source", value=source_path, readOnly=True, style=_disabled_input_style()), required=False),
                     _field_block("Copied dataset path", dcc.Input(id="post-imaging-dataset-relative-path", value=copied_path, readOnly=True, style=_disabled_input_style()), required=True),
                     _field_block("Acquisition type", dcc.Dropdown(id="post-imaging-acquisition-type", options=[{"label": "Single-plane", "value": "single_plane"}, {"label": "Volumetric", "value": "volumetric"}], value=acquisition_type, clearable=False, style=_dropdown_style()), required=True),
+                    _field_block("Acquired iterations", dcc.Input(id="post-imaging-acquired-iterations", value=acquired_iterations, type="number", readOnly=True, style=_disabled_input_style()), required=False),
                     _field_block("Number of ROIs", dcc.Input(id="post-imaging-num-rois", value=num_rois, type="number", min=1, step=1, style=_input_style()), required=True),
                     _field_block("Number of channels", dcc.Input(id="post-imaging-num-channels", value=num_channels, type="number", min=1, step=1, style=_input_style()), required=True),
                     _field_block("Number of planes", dcc.Input(id="post-imaging-num-planes", value=num_planes, type="number", min=1, step=1, style=_input_style()), required=acquisition_type == "volumetric", container_id="post-imaging-num-planes-field", badge_id="post-imaging-num-planes-required", style={} if acquisition_type == "volumetric" else {"display": "none"}),
@@ -1315,6 +1355,12 @@ def _initial_dialog_directory(current_source: str | None) -> str | None:
 
 
 def _select_directory_dialog(*, title: str, initial_dir: str | None = None) -> Path | None:
+    if sys.platform.startswith("win"):
+        try:
+            return _select_directory_dialog_windows(title=title, initial_dir=initial_dir)
+        except RuntimeError:
+            pass
+
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -1337,6 +1383,44 @@ def _select_directory_dialog(*, title: str, initial_dir: str | None = None) -> P
     return selected_path if selected_path.exists() else None
 
 
+def _select_directory_dialog_windows(*, title: str, initial_dir: str | None = None) -> Path | None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell") or shutil.which("powershell.exe")
+    if not powershell:
+        raise RuntimeError("PowerShell is unavailable for the Windows directory picker")
+
+    resolved_initial_dir = initial_dir or str(Path.home())
+
+    def _ps_single_quoted(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    script = "\n".join(
+        [
+            "Add-Type -AssemblyName System.Windows.Forms | Out-Null",
+            "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+            f"$dialog.Description = {_ps_single_quoted(title)}",
+            f"$initialPath = {_ps_single_quoted(resolved_initial_dir)}",
+            "if (Test-Path -LiteralPath $initialPath -PathType Container) { $dialog.SelectedPath = $initialPath }",
+            "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }",
+        ]
+    )
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-STA", "-Command", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        error_text = (completed.stderr or completed.stdout).strip() or "Windows directory picker failed"
+        raise RuntimeError(error_text)
+
+    selected = completed.stdout.strip()
+    if not selected:
+        return None
+    selected_path = Path(selected)
+    return selected_path if selected_path.exists() else None
+
+
 def _copy_imaging_dataset_into_run(*, record_path: Path, source_dir: Path) -> Path:
     if not source_dir.exists() or not source_dir.is_dir():
         raise FileNotFoundError(f"Imaging dataset directory not found: {source_dir}")
@@ -1351,6 +1435,116 @@ def _copy_imaging_dataset_into_run(*, record_path: Path, source_dir: Path) -> Pa
             destination.unlink()
     shutil.copytree(source_dir, destination)
     return destination
+
+
+_BRUKER_TIFF_PATTERN = re.compile(r"_Cycle(?P<cycle>\d+)_Ch(?P<channel>\d+)_(?P<plane>\d+)\.ome\.tif$", re.IGNORECASE)
+
+
+def _infer_bruker_dataset_metadata(dataset_dir: Path) -> dict[str, object]:
+    cycle_numbers: set[int] = set()
+    channel_numbers: set[int] = set()
+    plane_numbers: set[int] = set()
+
+    xml_candidates = sorted(dataset_dir.glob("*.xml"))
+    if xml_candidates:
+        try:
+            _collect_bruker_metadata_from_xml(xml_candidates[0], cycle_numbers, channel_numbers, plane_numbers)
+        except Exception:
+            cycle_numbers.clear()
+            channel_numbers.clear()
+            plane_numbers.clear()
+
+    if not cycle_numbers or not channel_numbers or not plane_numbers:
+        _collect_bruker_metadata_from_filenames(dataset_dir, cycle_numbers, channel_numbers, plane_numbers)
+
+    acquired_iterations = len(cycle_numbers) if cycle_numbers else None
+    num_channels = len(channel_numbers) if channel_numbers else None
+    max_plane_number = max(plane_numbers) if plane_numbers else None
+    acquisition_type = None
+    num_planes = None
+    if max_plane_number is not None:
+        acquisition_type = "volumetric" if max_plane_number > 1 else "single_plane"
+        num_planes = max_plane_number if acquisition_type == "volumetric" else None
+
+    return {
+        "imaging_acquisition_type": acquisition_type,
+        "imaging_acquired_iterations": acquired_iterations,
+        "imaging_num_channels": num_channels,
+        "imaging_num_planes": num_planes,
+    }
+
+
+def _collect_bruker_metadata_from_xml(
+    xml_path: Path,
+    cycle_numbers: set[int],
+    channel_numbers: set[int],
+    plane_numbers: set[int],
+) -> None:
+    root = ET.parse(xml_path).getroot()
+    for sequence in root.findall(".//Sequence"):
+        cycle_value = _coerce_int(sequence.attrib.get("cycle"))
+        if cycle_value is not None:
+            cycle_numbers.add(cycle_value)
+        for frame in sequence.findall("Frame"):
+            frame_index = _coerce_int(frame.attrib.get("index"))
+            if frame_index is not None:
+                plane_numbers.add(frame_index)
+            for file_node in frame.findall("File"):
+                channel_value = _coerce_int(file_node.attrib.get("channel"))
+                if channel_value is not None:
+                    channel_numbers.add(channel_value)
+                filename = file_node.attrib.get("filename") or ""
+                match = _BRUKER_TIFF_PATTERN.search(filename)
+                if match:
+                    cycle_numbers.add(int(match.group("cycle")))
+                    channel_numbers.add(int(match.group("channel")))
+                    plane_numbers.add(int(match.group("plane")))
+
+
+def _collect_bruker_metadata_from_filenames(
+    dataset_dir: Path,
+    cycle_numbers: set[int],
+    channel_numbers: set[int],
+    plane_numbers: set[int],
+) -> None:
+    for tif_path in dataset_dir.glob("*.ome.tif"):
+        match = _BRUKER_TIFF_PATTERN.search(tif_path.name)
+        if not match:
+            continue
+        cycle_numbers.add(int(match.group("cycle")))
+        channel_numbers.add(int(match.group("channel")))
+        plane_numbers.add(int(match.group("plane")))
+
+
+def _build_imaging_dataset_status_message(
+    copied_path: str,
+    inferred: dict[str, object],
+    expected_imaging_periods: int,
+) -> str:
+    summary_parts: list[str] = []
+    acquired_iterations = _coerce_int(inferred.get("imaging_acquired_iterations"))
+    num_channels = _coerce_int(inferred.get("imaging_num_channels"))
+    num_planes = _coerce_int(inferred.get("imaging_num_planes"))
+    acquisition_type = inferred.get("imaging_acquisition_type") or "unknown"
+
+    if acquired_iterations is not None:
+        summary_parts.append(f"{acquired_iterations} acquired iterations")
+    if num_channels is not None:
+        summary_parts.append(f"{num_channels} channels")
+    if acquisition_type == "volumetric" and num_planes is not None:
+        summary_parts.append(f"volumetric ({num_planes} planes)")
+    elif acquisition_type == "single_plane":
+        summary_parts.append("single-plane")
+
+    message = f"Copied imaging dataset to {copied_path}"
+    if summary_parts:
+        message += ". Inferred " + ", ".join(summary_parts)
+    if expected_imaging_periods > 0 and acquired_iterations is not None:
+        if acquired_iterations == expected_imaging_periods:
+            message += f". Acquired iterations match the expected {expected_imaging_periods}."
+        else:
+            message += f". Expected {expected_imaging_periods}, but found {acquired_iterations}."
+    return message
 
 
 def _strip_or_none(value: str | None) -> str | None:

@@ -421,6 +421,66 @@
         "custom_fields": {},
         "amendments": []
       }
+    },
+    {
+      "recorded_utc": "2026-06-02T19:31:03.990810Z",
+      "stage": "pre",
+      "run_id": "2026-06-02_15-30-41",
+      "record": {
+        "schema_name": "multibios.experiment_record",
+        "schema_version": "1.0.0",
+        "artifact_role": "input_record",
+        "record_status": "completed_pre",
+        "run_id": "2026-06-02_15-30-41",
+        "run_uuid": "09e32e6d-d603-456c-ac43-3ab5f8671c24",
+        "entered_by": "Rishika",
+        "entered_started_utc": "2026-06-02T19:31:03.986814Z",
+        "entered_completed_utc": "2026-06-02T19:31:03.986814Z",
+        "ui_version": "multibios-metadata-form/1.0.0",
+        "pre_experiment": {
+          "experiment_date": "2026-06-02",
+          "source_filename": "odor_lateralization.yaml",
+          "expected_imaging_periods": 5,
+          "fly_id": 1,
+          "species": "D.mel",
+          "genotype": "Orco-Gal4/+;RSET-GCamp8m/+",
+          "hemisphere": "bilateral",
+          "age": {
+            "value": 4.0,
+            "unit": "days"
+          },
+          "starvation": {
+            "value": 0.0,
+            "unit": "hours"
+          },
+          "stimulus_modality": "Odor",
+          "rig_temperature_c": 25.0,
+          "humidity_percent": 40.0,
+          "protocol_name": "Odor Lateralization",
+          "protocol_version": "1.0",
+          "rig_id": "Dev1",
+          "operator": "Rishika"
+        },
+        "post_experiment": {
+          "response": null,
+          "notes": null,
+          "duration_s": null,
+          "completion_status": null,
+          "aborted": false,
+          "exclusion_reason": null,
+          "imaging_dataset_source_path": null,
+          "imaging_dataset_relative_path": null,
+          "imaging_acquisition_type": null,
+          "imaging_acquired_iterations": null,
+          "imaging_num_rois": null,
+          "imaging_num_channels": null,
+          "imaging_num_planes": null,
+          "observed_anomalies": [],
+          "quality_flags": []
+        },
+        "custom_fields": {},
+        "amendments": []
+      }
     }
   ]
 }

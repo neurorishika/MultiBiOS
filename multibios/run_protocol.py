@@ -90,7 +90,8 @@ from multibios.run_dataset import (RunDatasetLayout,
                                    relocate_artifact_file,
                                    build_software_environment_payload,
                                    build_source_snapshot_payload,
-                                   build_timing_anchors_payload)
+                                   build_timing_anchors_payload,
+                                   write_input_file_copies)
 from multibios.protocol.control_plan import (compile_control_plan,
                                              write_control_plan_csv)
 # Compiler
@@ -2464,8 +2465,8 @@ def main():
     )
     ap.add_argument(
         "--metadata-history",
-        default=str(default_metadata_history_path()),
-        help="Path to the persistent metadata history store.",
+        default=None,
+        help="Path to the persistent metadata history store. Defaults to metadata_history_log.csv under hardware.yaml data_output.data_dir.",
     )
     ap.add_argument("--metadata-host", default="127.0.0.1", help="Host for the metadata form server")
     ap.add_argument("--metadata-port", type=int, default=8060, help="Port for the metadata form server")
@@ -2537,6 +2538,13 @@ def main():
         hw.device = args.device
 
     runtime_cfg = load_run_protocol_config(args.experiment, hardware_path=hw_path)
+    if args.metadata_history is None:
+        args.metadata_history = str(
+            default_metadata_history_path(
+                hardware_path=hw_path,
+                fallback_data_dir=runtime_cfg.data_dir,
+            )
+        )
     use_camera = _apply_camera_mode_runtime_overrides(
         runtime_cfg,
         force_camera=args.usecamera,
@@ -2545,6 +2553,7 @@ def main():
     run_root = Path(args.out_root) if args.out_root else resolve_run_output_root(hw_path, fallback=runtime_cfg.data_dir)
     logger.info("Runtime capture settings:")
     logger.info(f"  Run output root: {run_root}")
+    logger.info(f"  Metadata history store: {args.metadata_history}")
     logger.info(f"  Camera mode default from hardware: {runtime_cfg.use_camera}")
     logger.info(f"  Camera/FicTrac enabled for this run: {use_camera}")
     logger.info(f"  FicTrac enabled: {bool(runtime_cfg.fictrac_config)}")
@@ -2677,9 +2686,9 @@ def main():
     
     # Save input files for reproducibility
     logger.info("Saving input files for reproducibility...")
-    dataset_layout.protocol_copy_path.write_text(proto_path.read_text(encoding="utf-8"), encoding="utf-8")
-    dataset_layout.hardware_copy_path.write_text(hw_path.read_text(encoding="utf-8"), encoding="utf-8")
+    write_input_file_copies(layout=dataset_layout, protocol_path=proto_path, hardware_path=hw_path)
     logger.info(f"  ✓ Protocol YAML copy: {dataset_layout.protocol_copy_path}")
+    logger.info(f"  ✓ Run-folder protocol YAML copy: {dataset_layout.run_root_protocol_copy_path}")
     logger.info(f"  ✓ Hardware YAML copy: {dataset_layout.hardware_copy_path}")
 
     package_versions = {

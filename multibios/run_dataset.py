@@ -122,6 +122,10 @@ class RunDatasetLayout:
         return self.inputs_dir / "protocol.yaml"
 
     @property
+    def run_root_protocol_copy_path(self) -> Path:
+        return self.run_dir / "protocol.yaml"
+
+    @property
     def readme_path(self) -> Path:
         return self.run_dir / "README.md"
 
@@ -462,6 +466,13 @@ def build_timing_anchors_payload(
     }
 
 
+def write_input_file_copies(*, layout: RunDatasetLayout, protocol_path: Path, hardware_path: Path) -> None:
+    protocol_text = protocol_path.read_text(encoding="utf-8")
+    layout.protocol_copy_path.write_text(protocol_text, encoding="utf-8")
+    layout.run_root_protocol_copy_path.write_text(protocol_text, encoding="utf-8")
+    layout.hardware_copy_path.write_text(hardware_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def build_placeholder_experiment_record(
     *,
     run_id: str,
@@ -512,6 +523,7 @@ def build_placeholder_experiment_record(
             "imaging_dataset_source_path": None,
             "imaging_dataset_relative_path": None,
             "imaging_acquisition_type": None,
+            "imaging_acquired_iterations": None,
             "imaging_num_rois": None,
             "imaging_num_channels": None,
             "imaging_num_planes": None,
@@ -862,6 +874,7 @@ def build_run_manifest_payload(
 ) -> dict[str, Any]:
     artifact_index: list[dict[str, Any]] = []
     root_level_roles = {
+        "protocol.yaml": "input_record",
         "README.md": "derived_summary",
         "checksums.sha256": "derived_summary",
         "notes.md": "input_record",

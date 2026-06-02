@@ -1,16 +1,50 @@
 from __future__ import annotations
 
+import csv
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
 
+from multibios.run_paths import DEFAULT_HARDWARE_PATH, resolve_run_output_root
+
 
 SCHEMA_VERSION = "1.0.0"
 UI_VERSION = "multibios-metadata-form/1.0.0"
 HISTORY_SCHEMA_NAME = "multibios.metadata_history"
 HISTORY_RUN_LOG_SCHEMA_NAME = "multibios.metadata_history_run_log"
+HISTORY_CSV_FILE_NAME = "metadata_history_log.csv"
+HISTORY_CSV_COLUMNS = [
+    "recorded_utc",
+    "stage",
+    "run_id",
+    "entered_by",
+    "pre_experiment.experiment_date",
+    "pre_experiment.fly_id",
+    "pre_experiment.operator",
+    "pre_experiment.species",
+    "pre_experiment.genotype",
+    "pre_experiment.hemisphere",
+    "pre_experiment.age.value",
+    "pre_experiment.age.unit",
+    "pre_experiment.starvation.value",
+    "pre_experiment.starvation.unit",
+    "pre_experiment.stimulus_modality",
+    "pre_experiment.rig_temperature_c",
+    "pre_experiment.humidity_percent",
+    "post_experiment.response",
+    "post_experiment.exclusion_reason",
+]
+HISTORY_CSV_INT_FIELDS = {
+    "pre_experiment.fly_id",
+    "pre_experiment.age.value",
+    "pre_experiment.starvation.value",
+}
+HISTORY_CSV_FLOAT_FIELDS = {
+    "pre_experiment.rig_temperature_c",
+    "pre_experiment.humidity_percent",
+}
 
 REQUIRED_PRE_FIELDS = [
     "pre_experiment.experiment_date",
@@ -43,8 +77,16 @@ HISTORY_ENABLED_FIELDS = [
 ]
 
 
-def default_metadata_history_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "data" / "metadata_history_log.json"
+def default_metadata_history_path(
+    *,
+    hardware_path: str | Path | None = DEFAULT_HARDWARE_PATH,
+    fallback_data_dir: str | Path | None = None,
+) -> Path:
+    data_root = resolve_run_output_root(
+        hardware_path,
+        fallback=fallback_data_dir if fallback_data_dir is not None else Path(__file__).resolve().parent.parent / "data",
+    )
+    return data_root / HISTORY_CSV_FILE_NAME
 
 
 def utc_now_iso() -> str:
@@ -80,6 +122,7 @@ def build_experiment_record_meta_payload() -> dict[str, Any]:
         _field("post_experiment.imaging_dataset_source_path", "Imaging dataset source path", "string", False, True, None, "user", "Original PrairieView dataset path selected after the run."),
         _field("post_experiment.imaging_dataset_relative_path", "Imaging dataset copied path", "string", False, False, None, "system", "Run-relative destination for the copied PrairieView dataset."),
         _field("post_experiment.imaging_acquisition_type", "Imaging acquisition type", "enum", False, False, None, "user", "Microscopy acquisition type for the selected PrairieView dataset."),
+        _field("post_experiment.imaging_acquired_iterations", "Imaging acquired iterations", "integer", False, False, None, "system", "Number of acquired imaging iterations inferred from the selected PrairieView dataset."),
         _field("post_experiment.imaging_num_rois", "Imaging ROI count", "integer", False, False, None, "user", "Number of microscope ROIs in the selected dataset."),
         _field("post_experiment.imaging_num_channels", "Imaging channel count", "integer", False, False, None, "user", "Number of recorded channels in the selected dataset."),
         _field("post_experiment.imaging_num_planes", "Imaging plane count", "integer", False, False, None, "user", "Number of planes in the selected dataset when the acquisition is volumetric."),
@@ -136,6 +179,8 @@ def default_history_run_log_store() -> dict[str, Any]:
 def load_metadata_history(path: Path) -> dict[str, Any]:
     if not path.exists():
         return default_history_store()
+    if path.suffix.lower() == ".csv":
+        return _derive_history_from_csv_log(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_name") == HISTORY_RUN_LOG_SCHEMA_NAME:
         return _derive_history_from_run_log(payload)
@@ -158,10 +203,15 @@ def load_experiment_record(path: Path) -> dict[str, Any] | None:
 
 def save_metadata_history(path: Path, history: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() == ".csv":
+        raise ValueError("CSV history paths are append-only; use persist_metadata_history_source or append_metadata_history_log_entry")
     path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
 def append_metadata_history_log_entry(path: Path, *, record: dict[str, Any], stage: str) -> None:
+    if path.suffix.lower() == ".csv":
+        _append_metadata_history_csv_entry(path, record=record, stage=stage)
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -187,6 +237,82 @@ def persist_metadata_history_source(path: Path, history: dict[str, Any], *, reco
         append_metadata_history_log_entry(path, record=record, stage=stage)
         return
     save_metadata_history(path, history)
+
+
+def _append_metadata_history_csv_entry(path: Path, *, record: dict[str, Any], stage: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = _history_csv_row(record, stage=stage)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=HISTORY_CSV_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def _history_csv_row(record: dict[str, Any], *, stage: str) -> dict[str, str]:
+    row: dict[str, str] = {
+        "recorded_utc": utc_now_iso(),
+        "stage": stage,
+        "run_id": _stringify_csv_value(record.get("run_id")),
+        "entered_by": _stringify_csv_value(record.get("entered_by")),
+    }
+    for field_path in HISTORY_CSV_COLUMNS:
+        if field_path in row:
+            continue
+        row[field_path] = _stringify_csv_value(_get_path(record, field_path))
+    return row
+
+
+def _stringify_csv_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _derive_history_from_csv_log(path: Path) -> dict[str, Any]:
+    history = default_history_store()
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if not isinstance(row, dict):
+                continue
+            history = _apply_record_to_history(history, _record_from_history_csv_row(row))
+    return history
+
+
+def _record_from_history_csv_row(row: dict[str, Any]) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "run_id": _empty_to_none(row.get("run_id")),
+        "entered_by": _empty_to_none(row.get("entered_by")),
+        "pre_experiment": {},
+        "post_experiment": {},
+    }
+    for field_path in HISTORY_CSV_COLUMNS:
+        if field_path in {"recorded_utc", "stage", "run_id", "entered_by"}:
+            continue
+        value = _history_csv_typed_value(field_path, row.get(field_path))
+        if value is not None:
+            _set_path(record, field_path, value)
+    return record
+
+
+def _empty_to_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _history_csv_typed_value(field_path: str, value: Any) -> Any:
+    normalized = _empty_to_none(value)
+    if normalized is None:
+        return None
+    if field_path in HISTORY_CSV_INT_FIELDS:
+        return int(normalized)
+    if field_path in HISTORY_CSV_FLOAT_FIELDS:
+        return float(normalized)
+    return normalized
 
 
 def update_metadata_history(

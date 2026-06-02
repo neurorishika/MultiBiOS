@@ -10,12 +10,13 @@ from multibios.run_dataset import (RunDatasetLayout,
                                    build_resolved_runtime_payload,
                                    build_run_manifest_payload,
                                    build_teensy_transcript_meta_payload,
-                                   mirror_fictrac_camera_recording,
-                                   mirror_secondary_camera_recording,
                                    build_software_environment_payload,
                                    build_source_snapshot_payload,
                                    build_timing_anchors_payload,
-                                   normalize_run_relative_path)
+                                   mirror_fictrac_camera_recording,
+                                   mirror_secondary_camera_recording,
+                                   normalize_run_relative_path,
+                                   write_input_file_copies)
 
 
 def test_run_dataset_layout_uses_new_tree_paths(tmp_path: Path) -> None:
@@ -26,6 +27,7 @@ def test_run_dataset_layout_uses_new_tree_paths(tmp_path: Path) -> None:
     layout.ensure_directories()
 
     assert layout.protocol_copy_path == run_dir / "inputs" / "protocol.yaml"
+    assert layout.run_root_protocol_copy_path == run_dir / "protocol.yaml"
     assert layout.hardware_copy_path == run_dir / "inputs" / "hardware.yaml"
     assert layout.timing_anchors_path == run_dir / "planned" / "timing_anchors.json"
     assert layout.experiment_record_path == run_dir / "experiment" / "record.json"
@@ -115,6 +117,7 @@ def test_build_run_manifest_payload_indexes_new_tree_files(tmp_path: Path) -> No
     layout = RunDatasetLayout(run_dir)
     layout.ensure_directories()
     layout.protocol_copy_path.write_text("protocol: {}\n", encoding="utf-8")
+    layout.run_root_protocol_copy_path.write_text("protocol: {}\n", encoding="utf-8")
     layout.experiment_record_path.write_text("{}", encoding="utf-8")
     layout.experiment_record_meta_path.write_text("{}", encoding="utf-8")
     layout.timing_anchors_path.write_text("{}", encoding="utf-8")
@@ -138,10 +141,30 @@ def test_build_run_manifest_payload_indexes_new_tree_files(tmp_path: Path) -> No
     assert manifest["experiment_record_meta_path"] == "experiment/record.meta.json"
     assert manifest["metadata_status"]["record_present"] is False
     assert manifest["metadata_status"]["metadata_complete"] is False
+    assert "protocol.yaml" in indexed_paths
     assert "inputs/protocol.yaml" in indexed_paths
     assert "planned/timing_anchors.json" in indexed_paths
     assert "experiment/record.json" in indexed_paths
     assert "experiment/record.meta.json" in indexed_paths
+
+
+def test_write_input_file_copies_writes_run_root_protocol_copy(tmp_path: Path) -> None:
+    run_dir = tmp_path / "2026-05-03_16-49-37"
+    run_dir.mkdir()
+    layout = RunDatasetLayout(run_dir)
+    layout.ensure_directories()
+
+    protocol_path = tmp_path / "protocol.yaml"
+    hardware_path = tmp_path / "hardware.yaml"
+    protocol_path.write_text("protocol:\n  name: Example\n", encoding="utf-8")
+    hardware_path.write_text("device: Dev1\n", encoding="utf-8")
+
+    write_input_file_copies(layout=layout, protocol_path=protocol_path, hardware_path=hardware_path)
+
+    expected_protocol = "protocol:\n  name: Example\n"
+    assert layout.protocol_copy_path.read_text(encoding="utf-8") == expected_protocol
+    assert layout.run_root_protocol_copy_path.read_text(encoding="utf-8") == expected_protocol
+    assert layout.hardware_copy_path.read_text(encoding="utf-8") == "device: Dev1\n"
 
 
 def test_build_run_manifest_payload_populates_checksums(tmp_path: Path) -> None:

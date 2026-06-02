@@ -65,14 +65,26 @@ def test_metadata_history_load_save_and_recency_order(tmp_path: Path) -> None:
 
 
 def test_default_metadata_history_path_uses_runs_adjacent_data_log() -> None:
-    path = default_metadata_history_path()
+    path = default_metadata_history_path(hardware_path=None)
 
-    assert path.name == "metadata_history_log.json"
+    assert path.name == "metadata_history_log.csv"
     assert path.parent.name == "data"
 
 
-def test_load_metadata_history_derives_history_from_run_log(tmp_path: Path) -> None:
-    history_path = tmp_path / "metadata_history_log.json"
+def test_default_metadata_history_path_uses_hardware_data_dir(tmp_path: Path) -> None:
+    hardware_path = tmp_path / "hardware.yaml"
+    hardware_path.write_text(
+        f"data_output:\n  data_dir: {tmp_path.as_posix()}/true-data-root\n",
+        encoding="utf-8",
+    )
+
+    path = default_metadata_history_path(hardware_path=hardware_path)
+
+    assert path == tmp_path / "true-data-root" / "metadata_history_log.csv"
+
+
+def test_load_metadata_history_derives_history_from_csv_log(tmp_path: Path) -> None:
+    history_path = tmp_path / "metadata_history_log.csv"
     record = apply_pre_experiment_updates(
         _placeholder_record(),
         updates={
@@ -111,6 +123,34 @@ def test_load_metadata_history_derives_history_from_run_log(tmp_path: Path) -> N
         "pre_experiment.rig_temperature_c": 24.5,
         "pre_experiment.humidity_percent": 52.0,
     }
+
+
+def test_load_metadata_history_derives_history_from_legacy_json_run_log(tmp_path: Path) -> None:
+    history_path = tmp_path / "metadata_history_log.json"
+    record = apply_pre_experiment_updates(
+        _placeholder_record(),
+        updates={
+            "pre_experiment.fly_id": 2,
+            "pre_experiment.species": "dmel",
+            "pre_experiment.genotype": "MB247B",
+            "pre_experiment.hemisphere": "left",
+            "pre_experiment.age.value": 4,
+            "pre_experiment.age.unit": "days",
+            "pre_experiment.starvation.value": 20,
+            "pre_experiment.starvation.unit": "hours",
+            "pre_experiment.stimulus_modality": "odor",
+            "pre_experiment.rig_temperature_c": 24.5,
+            "pre_experiment.humidity_percent": 52.0,
+            "pre_experiment.operator": "rm",
+        },
+        entered_by="rm",
+        timestamp_utc="2026-05-04T12:00:00Z",
+    )
+
+    append_metadata_history_log_entry(history_path, record=record, stage="pre")
+    loaded = load_metadata_history(history_path)
+
+    assert recent_history_value(loaded, "pre_experiment.species") == "dmel"
 
 
 def test_daily_fly_id_tracking_reuses_or_increments_by_date() -> None:

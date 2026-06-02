@@ -4,7 +4,7 @@ device: "Dev1"
 use_camera: false 
 
 data_output:
-  data_dir: "data/runs"
+  data_dir: "D:/Rishika2p/MULTIBIOS"
   open_explorer: true
   explorer_port: 8050
 

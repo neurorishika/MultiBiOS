@@ -87,8 +87,11 @@ def find_runs(runs_dir: Path) -> list[dict]:
                 label = f"{d.name}  ({n:,} frames)"
             except Exception:
                 pass
-        # Read protocol name from protocol.yaml if present
+        # Read protocol name from the visible run-root copy when present, and
+        # fall back to the canonical inputs snapshot for older runs.
         proto_path = d / "protocol.yaml"
+        if not proto_path.exists():
+            proto_path = d / "inputs" / "protocol.yaml"
         if proto_path.exists():
             try:
                 import yaml
@@ -146,6 +149,8 @@ def load_run(run_dir: str) -> dict:
 
     # protocol.yaml
     proto_path = p / "protocol.yaml"
+    if not proto_path.exists():
+        proto_path = p / "inputs" / "protocol.yaml"
     if proto_path.exists():
         with open(proto_path, encoding="utf-8") as f:
             result["protocol_text"] = f.read()
@@ -1018,7 +1023,7 @@ def create_app(runs_dir: Path) -> dash.Dash:
         elif tab == "protocol":
             proto_text = store.get("protocol_text", "")
             if not proto_text:
-                return html.Div("No protocol.yaml in this run directory.",
+                return html.Div("No protocol.yaml copy found in this run directory.",
                                 style={"color": SUBTEXT, "padding": "24px"})
             return html.Div([
                 html.Pre(

@@ -6,8 +6,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from multibios.apps.metadata_form import (_build_pywebview_command,
+                                          _build_imaging_dataset_status_message,
                                           _copy_imaging_dataset_into_run,
+                                          _infer_bruker_dataset_metadata,
+                                          _select_directory_dialog_windows,
                                           _run_pywebview_window,
                                           create_app)
 from multibios.experiment_metadata import (build_experiment_record_meta_payload,
@@ -145,6 +150,7 @@ def test_pre_stage_hides_post_fields_but_preserves_callback_ids(tmp_path: Path) 
     assert "Quality flags" not in texts
     assert "post-notes" in ids
     assert "post-response" in ids
+    assert "post-imaging-acquired-iterations" in ids
 
 
 def test_post_stage_hides_pre_fields_but_preserves_callback_ids(tmp_path: Path) -> None:
@@ -176,6 +182,7 @@ def test_post_stage_hides_pre_fields_but_preserves_callback_ids(tmp_path: Path) 
     assert "post-imaging-dataset-source" in ids
     assert "post-imaging-dataset-relative-path" in ids
     assert "post-imaging-acquisition-type" in ids
+    assert "post-imaging-acquired-iterations" in ids
     assert "post-imaging-num-rois" in ids
     assert "post-imaging-num-channels" in ids
     assert "post-imaging-num-planes" in ids
@@ -188,6 +195,7 @@ def test_post_stage_shows_microscopy_acquisition_fields_when_imaging_is_expected
     payload = json.loads(record_path.read_text(encoding="utf-8"))
     payload["pre_experiment"]["expected_imaging_periods"] = 2
     payload["post_experiment"]["imaging_acquisition_type"] = "volumetric"
+    payload["post_experiment"]["imaging_acquired_iterations"] = 3
     payload["post_experiment"]["imaging_num_rois"] = 4
     payload["post_experiment"]["imaging_num_channels"] = 2
     payload["post_experiment"]["imaging_num_planes"] = 6
@@ -202,10 +210,12 @@ def test_post_stage_shows_microscopy_acquisition_fields_when_imaging_is_expected
 
     texts = set(_walk_text(app.layout))
     assert "Acquisition type" in texts
+    assert "Acquired iterations" in texts
     assert "Number of ROIs" in texts
     assert "Number of channels" in texts
     assert "Number of planes" in texts
     assert _find_by_id(app.layout, "post-imaging-acquisition-type").value == "volumetric"
+    assert _find_by_id(app.layout, "post-imaging-acquired-iterations").value == "3"
     assert _find_by_id(app.layout, "post-imaging-num-rois").value == "4"
     assert _find_by_id(app.layout, "post-imaging-num-channels").value == "2"
     assert _find_by_id(app.layout, "post-imaging-num-planes").value == "6"
@@ -223,6 +233,107 @@ def test_copy_imaging_dataset_into_run_copies_selected_directory(tmp_path: Path)
     assert copied_dir == tmp_path / "recorded" / "microscopy" / "dataset_001"
     assert copied_dir.is_dir()
     assert (copied_dir / "metadata.env").read_text(encoding="utf-8") == "ok"
+
+
+def test_select_directory_dialog_windows_uses_native_picker(tmp_path: Path) -> None:
+    completed = SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n", stderr="")
+
+    with patch("multibios.apps.metadata_form.shutil.which", return_value="pwsh"), patch(
+        "multibios.apps.metadata_form.subprocess.run", return_value=completed
+    ) as run:
+        selected = _select_directory_dialog_windows(
+            title="Select completed PrairieView imaging dataset",
+            initial_dir=str(tmp_path),
+        )
+
+    assert selected == tmp_path
+    assert run.call_args.args[0][:3] == ["pwsh", "-NoProfile", "-STA"]
+
+
+def test_select_directory_dialog_windows_raises_when_powershell_missing() -> None:
+    with patch("multibios.apps.metadata_form.shutil.which", return_value=None):
+        with pytest.raises(RuntimeError, match="PowerShell is unavailable"):
+            _select_directory_dialog_windows(title="Select dataset", initial_dir=None)
+
+
+def test_infer_bruker_dataset_metadata_from_xml(tmp_path: Path) -> None:
+        dataset_dir = tmp_path / "TSeries-xml"
+        dataset_dir.mkdir()
+        (dataset_dir / "TSeries-xml.xml").write_text(
+                """<?xml version=\"1.0\" encoding=\"utf-8\"?>
+<PVScan>
+    <Sequence cycle=\"10\">
+        <Frame index=\"1\">
+            <File channel=\"1\" filename=\"TSeries-xml_Cycle00010_Ch1_000001.ome.tif\" />
+            <File channel=\"2\" filename=\"TSeries-xml_Cycle00010_Ch2_000001.ome.tif\" />
+        </Frame>
+        <Frame index=\"2\">
+            <File channel=\"1\" filename=\"TSeries-xml_Cycle00010_Ch1_000002.ome.tif\" />
+            <File channel=\"2\" filename=\"TSeries-xml_Cycle00010_Ch2_000002.ome.tif\" />
+        </Frame>
+    </Sequence>
+    <Sequence cycle=\"12\">
+        <Frame index=\"1\">
+            <File channel=\"1\" filename=\"TSeries-xml_Cycle00012_Ch1_000001.ome.tif\" />
+            <File channel=\"2\" filename=\"TSeries-xml_Cycle00012_Ch2_000001.ome.tif\" />
+        </Frame>
+        <Frame index=\"2\">
+            <File channel=\"1\" filename=\"TSeries-xml_Cycle00012_Ch1_000002.ome.tif\" />
+            <File channel=\"2\" filename=\"TSeries-xml_Cycle00012_Ch2_000002.ome.tif\" />
+        </Frame>
+    </Sequence>
+</PVScan>
+""",
+                encoding="utf-8",
+        )
+
+        inferred = _infer_bruker_dataset_metadata(dataset_dir)
+
+        assert inferred == {
+                "imaging_acquisition_type": "volumetric",
+                "imaging_acquired_iterations": 2,
+                "imaging_num_channels": 2,
+                "imaging_num_planes": 2,
+        }
+
+
+def test_infer_bruker_dataset_metadata_falls_back_to_filenames(tmp_path: Path) -> None:
+        dataset_dir = tmp_path / "TSeries-files"
+        dataset_dir.mkdir()
+        for name in [
+                "TSeries-files_Cycle00001_Ch1_000001.ome.tif",
+                "TSeries-files_Cycle00001_Ch2_000001.ome.tif",
+                "TSeries-files_Cycle00003_Ch1_000001.ome.tif",
+                "TSeries-files_Cycle00003_Ch2_000001.ome.tif",
+        ]:
+                (dataset_dir / name).write_text("", encoding="utf-8")
+
+        inferred = _infer_bruker_dataset_metadata(dataset_dir)
+
+        assert inferred == {
+                "imaging_acquisition_type": "single_plane",
+                "imaging_acquired_iterations": 2,
+                "imaging_num_channels": 2,
+                "imaging_num_planes": None,
+        }
+
+
+def test_build_imaging_dataset_status_message_reports_iteration_mismatch() -> None:
+        message = _build_imaging_dataset_status_message(
+                "recorded/microscopy/TSeries-001",
+                {
+                        "imaging_acquisition_type": "volumetric",
+                        "imaging_acquired_iterations": 3,
+                        "imaging_num_channels": 2,
+                        "imaging_num_planes": 7,
+                },
+                5,
+        )
+
+        assert "3 acquired iterations" in message
+        assert "2 channels" in message
+        assert "volumetric (7 planes)" in message
+        assert "Expected 5, but found 3." in message
 
 
 def test_post_stage_does_not_prefill_response_or_exclusion_reason(tmp_path: Path) -> None:
